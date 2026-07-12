@@ -21,11 +21,16 @@ class Store {
         dayStartHour: 4,
         userName: 'あなた',
         autoLaunch: false,
-        trackWork: false     // 案件トラッキング(オプトイン)
+        trackWork: false,    // 案件トラッキング(オプトイン)
+        sync: {              // Firebaseチーム同期
+          enabled: false, projectId: '', apiKey: '', teamId: '', memberId: ''
+        }
       },
       days: {},        // { 'YYYY-MM-DD': dayRecord }
       rules: [],       // マイルール
       projects: [],    // 案件マスター [{id,code,name,keywords,active}]
+      learnStats: { tokens: {}, slots: {}, totals: {}, n: 0 }, // 動向学習(語句・時間帯→案件回数のみ)
+      remoteTeam: null, // Firebase同期で取得したチームの実データ
       team: null,      // 管理者ビュー用デモデータ
       ruleSeq: 1,
       projSeq: 1
@@ -38,6 +43,8 @@ class Store {
       if (fs.existsSync(this.file)) {
         const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
         this.data = { ...this.data, ...raw, settings: { ...this.data.settings, ...(raw.settings || {}) } };
+        if (!this.data.settings.sync) this.data.settings.sync = { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: '' };
+        if (!this.data.learnStats) this.data.learnStats = { tokens: {}, slots: {}, totals: {}, n: 0 };
         // 旧バージョンのデータを補完
         for (const d of Object.values(this.data.days || {})) {
           if (!d.projectMin) d.projectMin = {};

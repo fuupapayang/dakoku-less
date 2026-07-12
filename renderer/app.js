@@ -235,12 +235,14 @@ function renderProjects() {
     </div>
 
     ${unc.length ? `<div class="card"><h2>未分類の作業 <span class="tag exclude">HITL</span></h2>
-      <p class="muted">割り当てると、そのとき検出された語句をキーワードとして学習し、次回から自動判定されます。</p>
-      ${unc.map((b, i) => `
+      <p class="muted">割り当てると語句・時間帯の傾向を学習し、次回から自動判定されます(学習データ: ${Math.round(state.learnN || 0)}件)。</p>
+      ${unc.map((b) => `
         <div class="rule-item">
           <div class="grow"><b>${fmtTime(b.s)}〜${fmtTime(b.e)}</b>(${fmtDur(Math.round((b.e - b.s) / 60000))})
-            <div class="meta">検出語句: ${(b.tokens || []).map(esc).join('、 ') || 'なし'}</div></div>
-          <button class="btn sm primary" data-act="assign" data-idx="${(day.unclassified || []).indexOf(b)}">案件に割り当て</button>
+            <div class="meta">検出語句: ${(b.tokens || []).map(esc).join('、 ') || 'なし'}
+            ${b.hint ? `<br>AI候補: <b>${esc(projName(b.hint.pid))}</b>(確度${b.hint.pct}%)` : ''}</div></div>
+          ${b.hint ? `<button class="btn sm primary" data-act="assign-hint" data-idx="${(day.unclassified || []).indexOf(b)}" data-pid="${esc(b.hint.pid)}">候補で割り当て</button>` : ''}
+          <button class="btn sm ${b.hint ? '' : 'primary'}" data-act="assign" data-idx="${(day.unclassified || []).indexOf(b)}">選んで割り当て</button>
         </div>`).join('')}</div>` : ''}
 
     <div class="card">
@@ -385,6 +387,25 @@ function renderSettings() {
       <button class="btn primary mt16" data-act="save-settings">保存</button>
     </div>
     <div class="card">
+      <h2>チーム同期(Firebase)</h2>
+      <p class="muted">Firestoreを通じて、案件マスター・学習辞書・勤怠/工数サマリーをチームで共有します。
+      タイトルや生ログは送信されません。${syncStatusHTML()}</p>
+      <div class="field-row mt8">
+        <label class="field">Firebase Project ID<input type="text" id="sy-pid" value="${esc(s.sync.projectId || '')}" placeholder="例: my-team-kintai"></label>
+        <label class="field">Web API Key<input type="text" id="sy-key" value="${esc(s.sync.apiKey || '')}" placeholder="AIza..."></label>
+        <label class="field">チームID(全員で同じ文字列)<input type="text" id="sy-team" value="${esc(s.sync.teamId || '')}" placeholder="例: eigyo-1"></label>
+      </div>
+      <div class="row">
+        <div class="toggle ${s.sync.enabled ? 'on' : ''}" data-act="sync-toggle"></div>
+        <span>チーム同期を有効にする</span>
+        <span class="grow"></span>
+        <button class="btn" data-act="sync-save">接続設定を保存</button>
+        <button class="btn primary" data-act="sync-now" ${s.sync.enabled ? '' : 'disabled'}>今すぐ同期</button>
+      </div>
+      <p class="muted mt8">セットアップ: console.firebase.google.com → プロジェクト作成 → Firestore Database を「テストモード」で作成 →
+      プロジェクトの設定からProject IDとWeb API Keyをコピー。チーム全員が同じ値+同じチームIDを設定すれば共有されます。</p>
+    </div>
+    <div class="card">
       <h2>データ連携</h2>
       <p class="muted">カレンダーの予定(.ics)をかけ合わせると、会議中の無操作を稼働として、移動予定を対象外として推定できます。</p>
       <div class="row mt8">
@@ -422,10 +443,18 @@ function renderAdmin() {
   })();
   renderAdmin.date = sel;
 
+  // 同期メンバーがいれば実データを優先、いなければデモデータ
+  const myId = (state.settings.sync && state.settings.sync.memberId) || '';
+  const remote = state.remoteTeam && state.remoteTeam.members && state.remoteTeam.members.length
+    ? state.remoteTeam.members.filter(m => m.id !== myId) : null;
+  const roster = remote
+    ? remote.map(m => ({ id: m.id, name: m.name, dept: '同期', days: m.days }))
+    : team.members;
+
   const rows = [];
   const self = selfRow(sel);
   if (self) rows.push(self);
-  for (const m of team.members) {
+  for (const m of roster) {
     const d = m.days[sel];
     rows.push(d ? { id: m.id, name: m.name, dept: m.dept, ...d } : { id: m.id, name: m.name, dept: m.dept, start: null });
   }
@@ -470,6 +499,7 @@ function renderAdmin() {
     </div>
     <div class="card">
       <div class="row"><h2 class="grow">案件別 工数マトリクス(直近30日)</h2>
+        <button class="btn sm" data-act="csv-long">シート用CSV出力</button>
         <button class="btn sm" data-act="csv-export">CSV出力</button></div>
       ${projMatrixHTML()}
     </div>
@@ -480,6 +510,16 @@ function renderAdmin() {
         <td class="disc-warn">${a.min}分</td></tr>`).join('')}</tbody></table>`
       : '<div class="muted">乖離はありません。勤怠データに客観的な根拠が紐づいています。</div>'}
     </div>`;
+}
+
+function syncStatusHTML() {
+  const st = state.syncStatus;
+  if (!st || !state.settings.sync.enabled) return '';
+  const map = { idle: '待機中', syncing: '同期中…', ok: '正常', error: 'エラー' };
+  let s = `<br>状態: <b>${map[st.state] || st.state}</b>`;
+  if (st.lastSync) s += ` ／ 最終同期 ${fmtTime(st.lastSync)} ／ メンバー${st.members}人`;
+  if (st.error) s += `<br><span style="color:var(--red)">${esc(st.error)}</span>`;
+  return s;
 }
 
 /* ---------- 管理者: 案件マトリクス ---------- */
@@ -500,21 +540,41 @@ function buildMatrix() {
     mine.unclassified += (d.unclassified || []).reduce((a, b) => a + Math.round((b.e - b.s) / 60000), 0);
   }
   rows.push(mine);
-  // デモメンバー(実働時間を案件へ擬似配分 ― デモ表示用)
-  for (const m of (state.team ? state.team.members : [])) {
-    const r = { name: m.name + ' *', cells: {}, unclassified: 0 };
-    for (const [k, d] of Object.entries(m.days)) {
-      if (new Date(k).getTime() < cutoff || !d.workMin) continue;
-      const weights = projects.map(p => 1 + hashN(m.id + p.id) % 5);
-      const wsum = weights.reduce((a, b) => a + b, 0) + 2;
-      projects.forEach((p, i) => {
-        r.cells[p.id] = (r.cells[p.id] || 0) + Math.round(d.workMin * weights[i] / wsum);
-      });
-      r.unclassified += Math.round(d.workMin * 2 / wsum);
+  const myId = (state.settings.sync && state.settings.sync.memberId) || '';
+  const remote = state.remoteTeam && state.remoteTeam.members && state.remoteTeam.members.length
+    ? state.remoteTeam.members.filter(m => m.id !== myId) : null;
+  if (remote) {
+    // 同期メンバー(実データ)
+    for (const m of remote) {
+      const r = { name: m.name, cells: {}, unclassified: 0 };
+      for (const [k, d] of Object.entries(m.days || {})) {
+        if (new Date(k).getTime() < cutoff) continue;
+        let assigned = 0;
+        for (const [pid, min] of Object.entries(d.projectMin || {})) {
+          r.cells[pid] = (r.cells[pid] || 0) + Math.round(min);
+          assigned += Math.round(min);
+        }
+        r.unclassified += Math.max(0, (d.workMin || 0) - assigned);
+      }
+      rows.push(r);
     }
-    rows.push(r);
+  } else {
+    // デモメンバー(実働時間を案件へ擬似配分 ― デモ表示用)
+    for (const m of (state.team ? state.team.members : [])) {
+      const r = { name: m.name + ' *', cells: {}, unclassified: 0 };
+      for (const [k, d] of Object.entries(m.days)) {
+        if (new Date(k).getTime() < cutoff || !d.workMin) continue;
+        const weights = projects.map(p => 1 + hashN(m.id + p.id) % 5);
+        const wsum = weights.reduce((a, b) => a + b, 0) + 2;
+        projects.forEach((p, i) => {
+          r.cells[p.id] = (r.cells[p.id] || 0) + Math.round(d.workMin * weights[i] / wsum);
+        });
+        r.unclassified += Math.round(d.workMin * 2 / wsum);
+      }
+      rows.push(r);
+    }
   }
-  return { projects, rows };
+  return { projects, rows, remote: !!remote };
 }
 
 function projMatrixHTML() {
@@ -529,7 +589,38 @@ function projMatrixHTML() {
         ${m.projects.map(p => `<td>${r.cells[p.id] ? fmtDur(r.cells[p.id]) : '-'}</td>`).join('')}
         <td>${r.unclassified ? fmtDur(r.unclassified) : '-'}</td><td><b>${fmtDur(total)}</b></td></tr>`;
     }).join('')}</tbody></table>
-    <p class="muted mt8">* はデモデータ(擬似配分)。実データは各メンバーのアプリから収集されます。</p>`;
+    <p class="muted mt8">${m.remote ? 'チーム同期による実データです。' : '* はデモデータ(擬似配分)。チーム同期を有効にすると実データに置き換わります。'}</p>`;
+}
+
+/** シート用CSV(縦持ち): 日付,メンバー,案件コード,案件名,分 */
+function exportLongCSV() {
+  const projects = state.projects || [];
+  const byId = Object.fromEntries(projects.map(p => [p.id, p]));
+  const cutoff = Date.now() - 30 * 86400000;
+  const lines = [['日付', 'メンバー', '案件コード', '案件名', '分']];
+  const pushDays = (name, days, projectMinGetter) => {
+    for (const [k, d] of Object.entries(days)) {
+      if (new Date(k).getTime() < cutoff) continue;
+      for (const [pid, min] of Object.entries(projectMinGetter(d) || {})) {
+        const p = byId[pid];
+        if (Math.round(min) > 0) lines.push([k, name, p ? p.code : pid, p ? p.name : '(削除済み)', Math.round(min)]);
+      }
+    }
+  };
+  pushDays(state.settings.userName, state.days, d => d.projectMin);
+  const myId = (state.settings.sync && state.settings.sync.memberId) || '';
+  for (const m of ((state.remoteTeam && state.remoteTeam.members) || [])) {
+    if (m.id === myId) continue;
+    pushDays(m.name, m.days || {}, d => d.projectMin);
+  }
+  if (lines.length === 1) { toast('出力できる工数データがありません'); return; }
+  const csv = '﻿' + lines.map(l => l.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `工数実績_${state.todayKey}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('シート用CSVを書き出しました(案件管理シートの「工数実績」に貼り付け)');
 }
 
 function exportMatrixCSV() {
@@ -693,7 +784,30 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'proj-kw') openKeywordModal(btn.dataset.id);
   if (act === 'assign') openAssignModal(+btn.dataset.idx);
+  if (act === 'assign-hint') {
+    state = await window.api.assignBlock(state.todayKey, +btn.dataset.idx, btn.dataset.pid, []);
+    renderProjects(); toast('AI候補で割り当てました(学習に反映)');
+  }
   if (act === 'csv-export') exportMatrixCSV();
+  if (act === 'csv-long') exportLongCSV();
+
+  if (act === 'sync-toggle') {
+    state = await window.api.saveSync({ enabled: !state.settings.sync.enabled });
+    renderSettings();
+  }
+  if (act === 'sync-save') {
+    state = await window.api.saveSync({
+      projectId: $('#sy-pid').value.trim(), apiKey: $('#sy-key').value.trim(), teamId: $('#sy-team').value.trim()
+    });
+    renderSettings(); toast('同期設定を保存しました');
+  }
+  if (act === 'sync-now') {
+    toast('同期しています…');
+    const r = await window.api.syncNow();
+    state = r.state;
+    renderSettings();
+    toast(r.ok ? `同期完了(メンバー${r.members}人)` : `同期エラー: ${r.error}`);
+  }
 
   if (act === 'mode') { state = await window.api.updateSettings({ submitMode: btn.dataset.id }); renderSettings(); toast('提出モードを変更しました'); }
   if (act === 'autolaunch') { state = await window.api.updateSettings({ autoLaunch: !state.settings.autoLaunch }); renderSettings(); }

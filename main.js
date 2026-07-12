@@ -5,6 +5,8 @@ const fs = require('fs');
 const Store = require('./src/store');
 const engine = require('./src/engine');
 const projectsLib = require('./src/projects');
+const learnLib = require('./src/learn');
+const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
 
 let win = null;
@@ -29,6 +31,8 @@ let activeWinFn = null;
 let activeWinTried = false;
 let currentWork = null;     // {projectId, code, name, via, app} | null
 let curUnc = null;          // 進行中の未分類ブロック {s, e, tokenCounts}
+let teamStatsCache = [];    // チームメンバーの学習統計(同期で取得、メモリのみ)
+let sync = null;            // Firebase同期
 
 async function getForeground() {
   if (!activeWinTried) {
@@ -44,7 +48,7 @@ async function getForeground() {
 
 function syncUnc(day) {
   if (!curUnc) return;
-  const rec = { s: curUnc.s, e: curUnc.e, tokens: projectsLib.topTokens(curUnc.tokenCounts) };
+  const rec = { s: curUnc.s, e: curUnc.e, tokens: projectsLib.topTokens(curUnc.tokenCounts), hint: curUnc.hint || null };
   const last = day.unclassified[day.unclassified.length - 1];
   if (last && last.s === curUnc.s) day.unclassified[day.unclassified.length - 1] = rec;
   else day.unclassified.push(rec);
@@ -54,6 +58,8 @@ function flushUnclassified(day) {
   if (curUnc) { syncUnc(day); curUnc = null; }
 }
 
+let lastLearnMin = 0;
+
 function trackWork(day, now, fg) {
   const hit = projectsLib.classify({
     title: fg && fg.title, calendar: day.calendar, now, projects: store.data.projects
@@ -62,19 +68,46 @@ function trackWork(day, now, fg) {
     day.projectMin[hit.id] = (day.projectMin[hit.id] || 0) + SAMPLE_MIN;
     currentWork = { projectId: hit.id, code: hit.code, name: hit.name, via: hit.via, app: fg ? fg.app : '' };
     flushUnclassified(day);
+    // 確定判定から動向を弱く学習(1分に1回)
+    const nowMin = Math.floor(now / 60000);
+    if (fg && fg.title && nowMin !== lastLearnMin) {
+      lastLearnMin = nowMin;
+      learnLib.learn(store.data.learnStats, {
+        tokens: projectsLib.tokenize(fg.title), ts: now, projectId: hit.id, weight: 1
+      });
+    }
     return;
   }
   currentWork = { projectId: null, app: fg ? fg.app : '' };
   if (!fg || (!fg.title && !fg.app)) return; // 権限なし・取得失敗
+  const tokens = projectsLib.tokenize(fg.title);
+
+  // 動向学習による推論(個人+チーム統計、会議の余韻を加味)
+  const carryPid = learnLib.carryProject(day.calendar, now,
+    (t) => projectsLib.matchText(t, store.data.projects));
+  const guess = learnLib.infer(
+    [store.data.learnStats, ...teamStatsCache],
+    { tokens, ts: now, carryPid, projects: store.data.projects }
+  );
+  if (guess && guess.p >= learnLib.AUTO_THRESHOLD && guess.p - guess.second >= 0.3) {
+    const p = store.data.projects.find(p => p.id === guess.pid);
+    if (p) {
+      day.projectMin[p.id] = (day.projectMin[p.id] || 0) + SAMPLE_MIN;
+      currentWork = { projectId: p.id, code: p.code, name: p.name, via: 'ai', app: fg.app, pct: Math.round(guess.p * 100) };
+      flushUnclassified(day);
+      return;
+    }
+  }
+
+  // 未分類ブロックへ(AI候補があればヒントとして保持)
   if (curUnc && now - curUnc.e <= 5 * engine.MIN) {
     curUnc.e = now;
   } else {
     flushUnclassified(day);
     curUnc = { s: now, e: now, tokenCounts: {} };
   }
-  for (const t of projectsLib.tokenize(fg.title)) {
-    curUnc.tokenCounts[t] = (curUnc.tokenCounts[t] || 0) + 1;
-  }
+  for (const t of tokens) curUnc.tokenCounts[t] = (curUnc.tokenCounts[t] || 0) + 1;
+  curUnc.hint = guess ? { pid: guess.pid, pct: Math.round(guess.p * 100) } : (curUnc.hint || null);
   syncUnc(day);
 }
 
@@ -194,6 +227,52 @@ function noteSystem(msg) {
   logEvent(store.day(currentKey), msg);
 }
 
+// ---- Firebaseチーム同期 -------------------------------------------------
+function syncCfg() {
+  const s = settings().sync || {};
+  return { ...s, userName: settings().userName };
+}
+
+async function runSync() {
+  if (!sync || !sync.enabled()) return { ok: false, error: 'チーム同期が未設定です' };
+  if (runSync.busy) return { ok: false, error: '同期中です' };
+  runSync.busy = true;
+  sync.status.state = 'syncing';
+  pushUpdate();
+  try {
+    // 1) 案件マスターをマージ(キーワードはチームでユニオン)
+    for (const p of store.data.projects) p.updatedAt = p.updatedAt || p.createdAt || Date.now();
+    const merged = await sync.syncProjects(store.data.projects);
+    store.data.projects = merged.map(p => ({ keywords: [], active: true, ...p }));
+    // 2) 自分の勤怠サマリー・学習統計をpush
+    await sync.pushSummary(store.data.days);
+    await sync.pushDict(store.data.learnStats);
+    // 3) チーム全体をpull
+    const pulled = await sync.pullAll();
+    teamStatsCache = pulled.teamStats;
+    store.data.remoteTeam = { members: pulled.members, pulledAt: Date.now() };
+    // 4) 自分宛の承認/差し戻しを反映
+    for (const [k, v] of Object.entries(pulled.myReview)) {
+      if (k === 'updatedAt') continue;
+      const d = store.data.days[k];
+      if (!d) continue;
+      if (v === 'approved' && d.status === 'submitted') { d.status = 'approved'; logEvent(d, '管理者が承認しました(同期)'); }
+      if (v === 'rejected' && d.status !== 'rejected') { d.status = 'rejected'; logEvent(d, '管理者が差し戻しました(同期)'); }
+    }
+    sync.status.state = 'ok';
+    sync.status.lastSync = Date.now();
+    sync.status.error = null;
+    store.save();
+    pushUpdate();
+    return { ok: true, members: pulled.members.length };
+  } catch (e) {
+    sync.status.state = 'error';
+    sync.status.error = String(e.message || e).slice(0, 200);
+    pushUpdate();
+    return { ok: false, error: sync.status.error };
+  } finally { runSync.busy = false; }
+}
+
 // ---- 状態のシリアライズ -----------------------------------------------
 function buildState() {
   const days = {};
@@ -206,7 +285,10 @@ function buildState() {
     rules: store.data.rules,
     projects: store.data.projects,
     currentWork,
+    learnN: store.data.learnStats ? store.data.learnStats.n : 0,
     team: store.data.team,
+    remoteTeam: store.data.remoteTeam,
+    syncStatus: sync ? sync.status : null,
     recording: !!currentInterval,
     platform: process.platform
   };
@@ -315,7 +397,7 @@ function registerIpc() {
     store.save(); pushUpdate(); return buildState();
   });
 
-  // 未分類ブロックを案件に割り当て(HITL: 選んだ語句をキーワード学習)
+  // 未分類ブロックを案件に割り当て(HITL: キーワード学習+動向学習)
   ipcMain.handle('day:assign', (e, { key, idx, projectId, keywords }) => {
     const day = store.day(key);
     const b = day.unclassified[idx];
@@ -328,12 +410,32 @@ function registerIpc() {
         for (const k of (keywords || [])) {
           if (k && !p.keywords.includes(k)) p.keywords.push(k);
         }
+        p.updatedAt = Date.now();
         logEvent(day, `未分類の作業を「${p.name}」に割り当てました` +
           ((keywords || []).length ? `(キーワード学習: ${keywords.join(', ')})` : ''));
       }
+      // 手動割り当ては強い教師信号として動向学習
+      learnLib.learn(store.data.learnStats, {
+        tokens: b.tokens || [], ts: Math.round((b.s + b.e) / 2), projectId, weight: 3
+      });
       store.save();
     }
     pushUpdate(); return buildState();
+  });
+
+  // Firebaseチーム同期
+  ipcMain.handle('sync:save', (e, patch) => {
+    const s = settings();
+    s.sync = { ...s.sync, ...patch };
+    if (s.sync.enabled && !s.sync.memberId) {
+      s.sync.memberId = 'm' + Math.random().toString(36).slice(2, 10);
+    }
+    store.save(); pushUpdate();
+    return buildState();
+  });
+  ipcMain.handle('sync:now', async () => {
+    const r = await runSync();
+    return { ...r, state: buildState() };
   });
 
   // ICSインポート(カレンダー連携)
@@ -356,13 +458,21 @@ function registerIpc() {
     return { ok: true, count };
   });
 
-  // 管理者: 承認 / 差し戻し(デモメンバー + 本人)
-  ipcMain.handle('team:setStatus', (e, { memberId, dateKey, status }) => {
+  // 管理者: 承認 / 差し戻し(本人・同期メンバー・デモメンバー)
+  ipcMain.handle('team:setStatus', async (e, { memberId, dateKey, status }) => {
     if (memberId === 'self') {
       const day = store.day(dateKey);
       day.status = status;
       logEvent(day, status === 'approved' ? '管理者が承認しました' : '管理者が差し戻しました');
-    } else {
+    } else if (store.data.remoteTeam &&
+               store.data.remoteTeam.members.some(m => m.id === memberId)) {
+      // 同期メンバー: Firestoreのreviewsに書き、相手のアプリが次回pullで反映
+      const m = store.data.remoteTeam.members.find(m => m.id === memberId);
+      if (m.days[dateKey]) m.days[dateKey].status = status; // 手元の表示も即時更新
+      if (sync && sync.enabled()) {
+        try { await sync.pushReview(memberId, dateKey, status); } catch (err) { /* 次回同期で再試行可 */ }
+      }
+    } else if (store.data.team) {
       const m = store.data.team.members.find(m => m.id === memberId);
       if (m && m.days[dateKey]) m.days[dateKey].status = status;
     }
@@ -385,6 +495,9 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   startTracker();
+  sync = new Sync(syncCfg);
+  setInterval(() => { if (sync.enabled()) runSync(); }, 3 * 60 * 1000);
+  setTimeout(() => { if (sync.enabled()) runSync(); }, 10 * 1000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

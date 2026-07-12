@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('api', {
   updateProject: (id, patch) => ipcRenderer.invoke('projects:update', { id, patch }),
   deleteProject: (id) => ipcRenderer.invoke('projects:delete', id),
   assignBlock: (key, idx, projectId, keywords) => ipcRenderer.invoke('day:assign', { key, idx, projectId, keywords }),
+  saveSync: (patch) => ipcRenderer.invoke('sync:save', patch),
+  syncNow: () => ipcRenderer.invoke('sync:now'),
   importCalendar: () => ipcRenderer.invoke('calendar:import'),
   setTeamStatus: (memberId, dateKey, status) => ipcRenderer.invoke('team:setStatus', { memberId, dateKey, status }),
   reseedDemo: () => ipcRenderer.invoke('demo:reseed'),
