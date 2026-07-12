@@ -226,6 +226,16 @@ function renderProjects() {
           <div class="muted">前面ウィンドウのタイトルをメモリ上で判定に使い、原文は保存しません。残るのは「案件×分数」だけです。
           ${state.platform === 'darwin' ? 'macOSでは初回に「画面収録」権限の許可が必要です。' : ''}</div></div>
       </div>
+      ${s.trackWork && state.platform === 'darwin' && state.screenPermission !== 'granted' ? `
+      <div class="suggestion mt8" style="background:var(--amber-bg);border-color:#f3ddb0">
+        <div class="who" style="color:var(--amber)">画面収録の権限が未反映です(現在: ${esc(state.screenPermission)})</div>
+        <div>① 下のボタンからシステム設定を開き、DakokuLess を許可(一覧になければ「+」で /Applications/DakokuLess.app を追加)<br>
+        ② <b>許可後は必ずアプリを再起動</b>してください。反映されるまで計測は自動的に一時停止しています(アラートは出ません)。</div>
+        <div class="actions">
+          <button class="btn sm" data-act="perm-open">システム設定を開く</button>
+          <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
+        </div>
+      </div>` : ''}
       ${workLineHTML()}
     </div>
 
@@ -783,6 +793,8 @@ document.addEventListener('click', async (e) => {
     renderProjects(); toast('案件を削除しました');
   }
   if (act === 'proj-kw') openKeywordModal(btn.dataset.id);
+  if (act === 'perm-open') await window.api.openScreenSettings();
+  if (act === 'app-relaunch') await window.api.relaunchApp();
   if (act === 'assign') openAssignModal(+btn.dataset.idx);
   if (act === 'assign-hint') {
     state = await window.api.assignBlock(state.todayKey, +btn.dataset.idx, btn.dataset.pid, []);

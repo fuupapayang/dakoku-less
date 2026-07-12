@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('api', {
   assignBlock: (key, idx, projectId, keywords) => ipcRenderer.invoke('day:assign', { key, idx, projectId, keywords }),
   saveSync: (patch) => ipcRenderer.invoke('sync:save', patch),
   syncNow: () => ipcRenderer.invoke('sync:now'),
+  openScreenSettings: () => ipcRenderer.invoke('perm:openSettings'),
+  relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
   importCalendar: () => ipcRenderer.invoke('calendar:import'),
   setTeamStatus: (memberId, dateKey, status) => ipcRenderer.invoke('team:setStatus', { memberId, dateKey, status }),
   reseedDemo: () => ipcRenderer.invoke('demo:reseed'),

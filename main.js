@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('./src/store');
@@ -34,7 +34,14 @@ let curUnc = null;          // 進行中の未分類ブロック {s, e, tokenCou
 let teamStatsCache = [];    // チームメンバーの学習統計(同期で取得、メモリのみ)
 let sync = null;            // Firebase同期
 
+/** macOSの画面収録権限。granted以外のときはactive-winを呼ばない(権限アラート連発防止) */
+function screenPermission() {
+  if (process.platform !== 'darwin') return 'granted';
+  try { return systemPreferences.getMediaAccessStatus('screen'); } catch (e) { return 'unknown'; }
+}
+
 async function getForeground() {
+  if (screenPermission() !== 'granted') return null; // 権限未反映の間は取得しない
   if (!activeWinTried) {
     activeWinTried = true;
     try { activeWinFn = require('active-win'); } catch (e) { activeWinFn = null; }
@@ -289,6 +296,7 @@ function buildState() {
     team: store.data.team,
     remoteTeam: store.data.remoteTeam,
     syncStatus: sync ? sync.status : null,
+    screenPermission: screenPermission(),
     recording: !!currentInterval,
     platform: process.platform
   };
@@ -436,6 +444,17 @@ function registerIpc() {
   ipcMain.handle('sync:now', async () => {
     const r = await runSync();
     return { ...r, state: buildState() };
+  });
+
+  // macOS権限まわり
+  ipcMain.handle('perm:openSettings', () => {
+    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+    return true;
+  });
+  ipcMain.handle('app:relaunch', () => {
+    quitting = true;
+    app.relaunch();
+    app.exit(0);
   });
 
   // ICSインポート(カレンダー連携)
