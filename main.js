@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const Store = require('./src/store');
 const engine = require('./src/engine');
+const projectsLib = require('./src/projects');
 const { seedTeam } = require('./src/demo');
 
 let win = null;
@@ -15,10 +16,67 @@ let quitting = false;
 // powerMonitor.getSystemIdleTime() をポーリングして稼働区間を組み立てる。
 // 生のサンプルはメモリ内のみ。永続化は「稼働区間(何時〜何時)」だけ。
 const SAMPLE_MS = 15 * 1000;
+const SAMPLE_MIN = SAMPLE_MS / 60000;
 let currentKey = null;
 let currentInterval = null; // {s,e} 進行中の稼働区間
 let sampleTimer = null;
 let forcedIdle = false;     // スリープ/ロック中
+let sampling = false;
+
+// ---- 案件トラッキング(オプトイン) ------------------------------------
+// 前面ウィンドウのタイトルはメモリ上で案件判定に使うのみで、原文は保存しない。
+let activeWinFn = null;
+let activeWinTried = false;
+let currentWork = null;     // {projectId, code, name, via, app} | null
+let curUnc = null;          // 進行中の未分類ブロック {s, e, tokenCounts}
+
+async function getForeground() {
+  if (!activeWinTried) {
+    activeWinTried = true;
+    try { activeWinFn = require('active-win'); } catch (e) { activeWinFn = null; }
+  }
+  if (!activeWinFn) return null;
+  try {
+    const w = await activeWinFn();
+    return w ? { title: w.title || '', app: (w.owner && w.owner.name) || '' } : null;
+  } catch (e) { return null; }
+}
+
+function syncUnc(day) {
+  if (!curUnc) return;
+  const rec = { s: curUnc.s, e: curUnc.e, tokens: projectsLib.topTokens(curUnc.tokenCounts) };
+  const last = day.unclassified[day.unclassified.length - 1];
+  if (last && last.s === curUnc.s) day.unclassified[day.unclassified.length - 1] = rec;
+  else day.unclassified.push(rec);
+}
+
+function flushUnclassified(day) {
+  if (curUnc) { syncUnc(day); curUnc = null; }
+}
+
+function trackWork(day, now, fg) {
+  const hit = projectsLib.classify({
+    title: fg && fg.title, calendar: day.calendar, now, projects: store.data.projects
+  });
+  if (hit) {
+    day.projectMin[hit.id] = (day.projectMin[hit.id] || 0) + SAMPLE_MIN;
+    currentWork = { projectId: hit.id, code: hit.code, name: hit.name, via: hit.via, app: fg ? fg.app : '' };
+    flushUnclassified(day);
+    return;
+  }
+  currentWork = { projectId: null, app: fg ? fg.app : '' };
+  if (!fg || (!fg.title && !fg.app)) return; // 権限なし・取得失敗
+  if (curUnc && now - curUnc.e <= 5 * engine.MIN) {
+    curUnc.e = now;
+  } else {
+    flushUnclassified(day);
+    curUnc = { s: now, e: now, tokenCounts: {} };
+  }
+  for (const t of projectsLib.tokenize(fg.title)) {
+    curUnc.tokenCounts[t] = (curUnc.tokenCounts[t] || 0) + 1;
+  }
+  syncUnc(day);
+}
 
 function settings() { return store.data.settings; }
 
@@ -73,39 +131,53 @@ function submitDay(key, auto = false) {
   return { ok: true };
 }
 
-function sample() {
-  const now = Date.now();
-  const idleSec = forcedIdle ? Infinity : powerMonitor.getSystemIdleTime();
-  const active = idleSec < settings().idleThresholdSec;
-  const key = engine.dayKey(now, settings().dayStartHour);
+async function sample() {
+  if (sampling) return;
+  sampling = true;
+  try {
+    const now = Date.now();
+    const idleSec = forcedIdle ? Infinity : powerMonitor.getSystemIdleTime();
+    const active = idleSec < settings().idleThresholdSec;
+    const key = engine.dayKey(now, settings().dayStartHour);
 
-  // 日付ロールオーバー: 前日を確定して自動提出判定
-  if (currentKey && key !== currentKey) {
-    if (currentInterval) { persistInterval(store.day(currentKey)); currentInterval = null; }
-    finalizeDay(currentKey);
-  }
-  currentKey = key;
-  const day = store.day(key);
-
-  if (active) {
-    if (currentInterval && now - currentInterval.e <= settings().mergeGapMin * engine.MIN) {
-      currentInterval.e = now;
-    } else {
-      if (currentInterval) persistInterval(day);
-      currentInterval = { s: now, e: now };
-      if (day.intervals.length > 0) logEvent(day, `稼働を再検知(${engine.fmtTime(now)})`);
+    // 日付ロールオーバー: 前日を確定して自動提出判定
+    if (currentKey && key !== currentKey) {
+      const prev = store.day(currentKey);
+      if (currentInterval) { persistInterval(prev); currentInterval = null; }
+      flushUnclassified(prev);
+      finalizeDay(currentKey);
     }
-    persistInterval(day);
-  } else if (currentInterval && now - currentInterval.e > settings().mergeGapMin * engine.MIN) {
-    persistInterval(day);
-    currentInterval = null;
-    logEvent(day, `操作の空白を検知(${engine.fmtTime(now)}〜)`);
-  }
+    currentKey = key;
+    const day = store.day(key);
 
-  reestimate(key);
-  store.save();
-  pushUpdate();
-  updateTray();
+    if (active) {
+      if (currentInterval && now - currentInterval.e <= settings().mergeGapMin * engine.MIN) {
+        currentInterval.e = now;
+      } else {
+        if (currentInterval) persistInterval(day);
+        currentInterval = { s: now, e: now };
+        if (day.intervals.length > 0) logEvent(day, `稼働を再検知(${engine.fmtTime(now)})`);
+      }
+      persistInterval(day);
+    } else if (currentInterval && now - currentInterval.e > settings().mergeGapMin * engine.MIN) {
+      persistInterval(day);
+      currentInterval = null;
+      logEvent(day, `操作の空白を検知(${engine.fmtTime(now)}〜)`);
+    }
+
+    // 案件トラッキング(オプトイン時のみ前面ウィンドウを参照)
+    if (active && settings().trackWork) {
+      trackWork(day, now, await getForeground());
+    } else if (!active) {
+      flushUnclassified(day);
+      currentWork = null;
+    }
+
+    reestimate(key);
+    store.save();
+    pushUpdate();
+    updateTray();
+  } finally { sampling = false; }
 }
 
 function startTracker() {
@@ -132,6 +204,8 @@ function buildState() {
     todayKey: currentKey || engine.dayKey(Date.now(), settings().dayStartHour),
     days,
     rules: store.data.rules,
+    projects: store.data.projects,
+    currentWork,
     team: store.data.team,
     recording: !!currentInterval,
     platform: process.platform
@@ -229,6 +303,39 @@ function registerIpc() {
 
   ipcMain.handle('day:submit', (e, key) => { const r = submitDay(key); pushUpdate(); return r; });
 
+  // 案件マスター CRUD
+  ipcMain.handle('projects:add', (e, p) => { store.addProject(p); pushUpdate(); return buildState(); });
+  ipcMain.handle('projects:update', (e, { id, patch }) => {
+    const p = store.data.projects.find(p => p.id === id);
+    if (p) Object.assign(p, patch);
+    store.save(); pushUpdate(); return buildState();
+  });
+  ipcMain.handle('projects:delete', (e, id) => {
+    store.data.projects = store.data.projects.filter(p => p.id !== id);
+    store.save(); pushUpdate(); return buildState();
+  });
+
+  // 未分類ブロックを案件に割り当て(HITL: 選んだ語句をキーワード学習)
+  ipcMain.handle('day:assign', (e, { key, idx, projectId, keywords }) => {
+    const day = store.day(key);
+    const b = day.unclassified[idx];
+    if (b && projectId) {
+      day.projectMin[projectId] = (day.projectMin[projectId] || 0) + Math.round((b.e - b.s) / engine.MIN);
+      day.unclassified.splice(idx, 1);
+      if (curUnc && curUnc.s === b.s) curUnc = null;
+      const p = store.data.projects.find(p => p.id === projectId);
+      if (p) {
+        for (const k of (keywords || [])) {
+          if (k && !p.keywords.includes(k)) p.keywords.push(k);
+        }
+        logEvent(day, `未分類の作業を「${p.name}」に割り当てました` +
+          ((keywords || []).length ? `(キーワード学習: ${keywords.join(', ')})` : ''));
+      }
+      store.save();
+    }
+    pushUpdate(); return buildState();
+  });
+
   // ICSインポート(カレンダー連携)
   ipcMain.handle('calendar:import', async () => {
     const res = await dialog.showOpenDialog(win, {
@@ -289,6 +396,7 @@ app.on('before-quit', () => {
   quitting = true;
   if (sampleTimer) clearInterval(sampleTimer);
   if (currentKey && currentInterval) persistInterval(store.day(currentKey));
+  if (currentKey) flushUnclassified(store.day(currentKey));
   if (store) store.save();
 });
 

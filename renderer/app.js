@@ -110,6 +110,7 @@ function renderToday() {
         <span class="chip ${esc(conf)}">推定: ${CONF[conf]}</span>
         <span class="chip status-${esc(status)}">${STATUS[status] || status}</span>
       </div>
+      ${workLineHTML()}
       <div class="big-time">${fmtTime(est && est.start)} — ${fmtTime(est && est.end)}
         <small>／ 休憩 ${fmtDur(est ? est.breakMin : null)} ／ 実働 ${fmtDur(est ? est.workMin : null)}</small></div>
       ${day && day.correction ? '<div class="muted">✎ 手動修正が適用されています(HITL: この修正はAIの次回推定に反映されます)</div>' : ''}
@@ -162,6 +163,157 @@ function renderHistory() {
       <thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>信頼度</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="8" class="muted">まだ記録がありません</td></tr>'}</tbody>
     </table></div>`;
+}
+
+/* ---------- 案件 ---------- */
+function projName(id) {
+  const p = (state.projects || []).find(p => p.id === id);
+  return p ? `[${p.code}] ${p.name}` : '(削除済み案件)';
+}
+
+function workLineHTML() {
+  if (!state.settings.trackWork) return '';
+  const w = state.currentWork;
+  let label;
+  if (!w) label = '<span class="muted">計測待機中</span>';
+  else if (w.projectId) label = `<b>${esc(projName(w.projectId))}</b> <span class="muted">(${{ code: 'コード', keyword: 'キーワード', calendar: '会議' }[w.via] || ''}判定${w.app ? ' ・ ' + esc(w.app) : ''})</span>`;
+  else label = `<span class="muted">案件未判定${w.app ? '(' + esc(w.app) + ')' : ''}</span>`;
+  return `<div class="mt8">現在の作業: ${label}</div>`;
+}
+
+function projBarsHTML(projectMin, unclassifiedMin) {
+  const rows = Object.entries(projectMin || {})
+    .map(([id, min]) => ({ id, min: Math.round(min) }))
+    .filter(r => r.min > 0).sort((a, b) => b.min - a.min);
+  const total = rows.reduce((a, r) => a + r.min, 0) + (unclassifiedMin || 0);
+  if (total === 0) return '<div class="muted">まだ計測データがありません</div>';
+  const bar = (label, min, cls) => `
+    <div class="row" style="margin-bottom:8px">
+      <div style="width:220px;font-size:12.5px">${label}</div>
+      <div class="grow" style="background:#eef2ef;border-radius:6px;height:18px;overflow:hidden">
+        <div style="width:${Math.round(min / total * 100)}%;height:100%;border-radius:6px;background:${cls}"></div>
+      </div>
+      <div style="width:56px;text-align:right;font-variant-numeric:tabular-nums"><b>${fmtDur(min)}</b></div>
+    </div>`;
+  return rows.map(r => bar(esc(projName(r.id)), r.min, 'var(--green)')).join('') +
+    (unclassifiedMin > 0 ? bar('未分類', unclassifiedMin, 'var(--amber)') : '');
+}
+
+function renderProjects() {
+  const s = state.settings;
+  const day = state.days[state.todayKey] || {};
+  const unc = (day.unclassified || []).filter(b => b.e - b.s >= 3 * 60000);
+  const uncMin = unc.reduce((a, b) => a + Math.round((b.e - b.s) / 60000), 0);
+  const items = (state.projects || []).map(p => `
+    <div class="rule-item">
+      <div class="toggle ${p.active !== false ? 'on' : ''}" data-act="proj-toggle" data-id="${esc(p.id)}"></div>
+      <div class="grow">
+        <div><b>[${esc(p.code)}] ${esc(p.name)}</b></div>
+        <div class="meta">キーワード: ${(p.keywords || []).map(esc).join('、 ') || '(なし ― コード判定のみ)'}</div>
+      </div>
+      <button class="btn sm ghost" data-act="proj-kw" data-id="${esc(p.id)}">キーワード編集</button>
+      <button class="btn sm ghost danger" data-act="proj-del" data-id="${esc(p.id)}">削除</button>
+    </div>`).join('');
+
+  $('#tab-projects').innerHTML = `
+    <h1>案件トラッキング</h1>
+    <div class="page-sub">誰が・何の案件を・どれだけ。カレンダー → 案件コード → キーワードの順で自動判定します。</div>
+
+    <div class="card">
+      <div class="row">
+        <div class="toggle ${s.trackWork ? 'on' : ''}" data-act="track-toggle"></div>
+        <div class="grow"><b>作業内容の計測</b>
+          <div class="muted">前面ウィンドウのタイトルをメモリ上で判定に使い、原文は保存しません。残るのは「案件×分数」だけです。
+          ${state.platform === 'darwin' ? 'macOSでは初回に「画面収録」権限の許可が必要です。' : ''}</div></div>
+      </div>
+      ${workLineHTML()}
+    </div>
+
+    <div class="card">
+      <h2>今日の案件別作業時間</h2>
+      ${projBarsHTML(day.projectMin, uncMin)}
+    </div>
+
+    ${unc.length ? `<div class="card"><h2>未分類の作業 <span class="tag exclude">HITL</span></h2>
+      <p class="muted">割り当てると、そのとき検出された語句をキーワードとして学習し、次回から自動判定されます。</p>
+      ${unc.map((b, i) => `
+        <div class="rule-item">
+          <div class="grow"><b>${fmtTime(b.s)}〜${fmtTime(b.e)}</b>(${fmtDur(Math.round((b.e - b.s) / 60000))})
+            <div class="meta">検出語句: ${(b.tokens || []).map(esc).join('、 ') || 'なし'}</div></div>
+          <button class="btn sm primary" data-act="assign" data-idx="${(day.unclassified || []).indexOf(b)}">案件に割り当て</button>
+        </div>`).join('')}</div>` : ''}
+
+    <div class="card">
+      <h2>案件マスター(${(state.projects || []).length})</h2>
+      ${items || '<div class="muted">まだ案件がありません。下から追加してください。</div>'}
+      <div class="field-row mt16">
+        <label class="field">案件コード<input type="text" id="pj-code" placeholder="例: A123"></label>
+        <label class="field">案件名<input type="text" id="pj-name" placeholder="例: 山田商事 在庫管理"></label>
+        <label class="field">キーワード(読点・カンマ区切り)<input type="text" id="pj-kw" placeholder="例: 山田商事, 在庫管理"></label>
+      </div>
+      <button class="btn primary" data-act="proj-add">案件を追加</button>
+      <p class="muted mt8">運用のコツ: カレンダーの予定名に [コード] を付ける/新規フォルダ・主要ファイル名の先頭に「コード_」を付ける。それ以外はキーワード学習が吸収します。</p>
+    </div>`;
+}
+
+function openAssignModal(idx) {
+  const day = state.days[state.todayKey];
+  const b = day.unclassified[idx];
+  if (!b) return;
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h2>${fmtTime(b.s)}〜${fmtTime(b.e)} の作業を割り当て</h2>
+    <label class="field">案件<select id="as-proj">
+      ${(state.projects || []).filter(p => p.active !== false)
+        .map(p => `<option value="${esc(p.id)}">[${esc(p.code)}] ${esc(p.name)}</option>`).join('')}
+    </select></label>
+    <label class="field">キーワードとして学習する語句(次回から自動判定)</label>
+    <div id="as-tokens">${(b.tokens || []).map(t =>
+      `<label style="display:inline-flex;align-items:center;gap:4px;margin:0 10px 8px 0;font-size:13px">
+        <input type="checkbox" class="as-kw" value="${esc(t)}" checked> ${esc(t)}</label>`).join('') || '<span class="muted">候補なし</span>'}</div>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">キャンセル</button>
+      <button class="btn primary" data-act="as-save">割り当てる</button>
+    </div>
+  </div></div>`;
+  root.onclick = async (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'as-save') {
+      const pid = $('#as-proj').value;
+      if (!pid) { toast('案件を選択してください'); return; }
+      const kws = [...root.querySelectorAll('.as-kw:checked')].map(i => i.value);
+      state = await window.api.assignBlock(state.todayKey, idx, pid, kws);
+      root.innerHTML = ''; root.onclick = null;
+      renderProjects();
+      toast('割り当てました。キーワードを学習しました');
+    }
+  };
+}
+
+function openKeywordModal(pid) {
+  const p = state.projects.find(p => p.id === pid);
+  if (!p) return;
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h2>[${esc(p.code)}] ${esc(p.name)} のキーワード</h2>
+    <label class="field">読点・カンマ区切り(タイトルにこの語句が含まれるとこの案件に計上)
+      <input type="text" id="kw-input" value="${esc((p.keywords || []).join(', '))}"></label>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">キャンセル</button>
+      <button class="btn primary" data-act="kw-save">保存</button>
+    </div>
+  </div></div>`;
+  root.onclick = async (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'kw-save') {
+      const kws = $('#kw-input').value.split(/[,、]/).map(s => s.trim()).filter(Boolean);
+      state = await window.api.updateProject(pid, { keywords: kws });
+      root.innerHTML = ''; root.onclick = null;
+      renderProjects(); toast('キーワードを更新しました');
+    }
+  };
 }
 
 /* ---------- マイルール ---------- */
@@ -317,12 +469,85 @@ function renderAdmin() {
       </table>
     </div>
     <div class="card">
+      <div class="row"><h2 class="grow">案件別 工数マトリクス(直近30日)</h2>
+        <button class="btn sm" data-act="csv-export">CSV出力</button></div>
+      ${projMatrixHTML()}
+    </div>
+    <div class="card">
       <h2>乖離アラート一覧</h2>
       ${alerts.length ? `<table><thead><tr><th>日付</th><th>メンバー</th><th>提出とPCログの乖離</th></tr></thead>
         <tbody>${alerts.slice(0, 10).map(a => `<tr><td>${fmtDate(a.key)}</td><td>${esc(a.name)}</td>
         <td class="disc-warn">${a.min}分</td></tr>`).join('')}</tbody></table>`
       : '<div class="muted">乖離はありません。勤怠データに客観的な根拠が紐づいています。</div>'}
     </div>`;
+}
+
+/* ---------- 管理者: 案件マトリクス ---------- */
+function hashN(s) { let h = 7; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
+
+/** 人×案件の直近30日集計。本人は実データ、デモメンバーは決定論的な擬似配分 */
+function buildMatrix() {
+  const projects = (state.projects || []).filter(p => p.active !== false);
+  if (!projects.length) return null;
+  const cutoff = Date.now() - 30 * 86400000;
+  const rows = [];
+  // 本人(実データ)
+  const mine = { name: state.settings.userName + '(あなた)', cells: {}, unclassified: 0 };
+  for (const [k, d] of Object.entries(state.days)) {
+    if (new Date(k).getTime() < cutoff) continue;
+    for (const [pid, min] of Object.entries(d.projectMin || {}))
+      mine.cells[pid] = (mine.cells[pid] || 0) + Math.round(min);
+    mine.unclassified += (d.unclassified || []).reduce((a, b) => a + Math.round((b.e - b.s) / 60000), 0);
+  }
+  rows.push(mine);
+  // デモメンバー(実働時間を案件へ擬似配分 ― デモ表示用)
+  for (const m of (state.team ? state.team.members : [])) {
+    const r = { name: m.name + ' *', cells: {}, unclassified: 0 };
+    for (const [k, d] of Object.entries(m.days)) {
+      if (new Date(k).getTime() < cutoff || !d.workMin) continue;
+      const weights = projects.map(p => 1 + hashN(m.id + p.id) % 5);
+      const wsum = weights.reduce((a, b) => a + b, 0) + 2;
+      projects.forEach((p, i) => {
+        r.cells[p.id] = (r.cells[p.id] || 0) + Math.round(d.workMin * weights[i] / wsum);
+      });
+      r.unclassified += Math.round(d.workMin * 2 / wsum);
+    }
+    rows.push(r);
+  }
+  return { projects, rows };
+}
+
+function projMatrixHTML() {
+  const m = buildMatrix();
+  if (!m) return '<div class="muted">案件マスターが空です。「案件」タブから登録すると、ここに人×案件の工数が集計されます。</div>';
+  return `<table><thead><tr><th>メンバー</th>
+    ${m.projects.map(p => `<th>[${esc(p.code)}]<br>${esc(p.name)}</th>`).join('')}
+    <th>未分類</th><th>合計</th></tr></thead>
+    <tbody>${m.rows.map(r => {
+      const total = m.projects.reduce((a, p) => a + (r.cells[p.id] || 0), 0) + r.unclassified;
+      return `<tr><td>${esc(r.name)}</td>
+        ${m.projects.map(p => `<td>${r.cells[p.id] ? fmtDur(r.cells[p.id]) : '-'}</td>`).join('')}
+        <td>${r.unclassified ? fmtDur(r.unclassified) : '-'}</td><td><b>${fmtDur(total)}</b></td></tr>`;
+    }).join('')}</tbody></table>
+    <p class="muted mt8">* はデモデータ(擬似配分)。実データは各メンバーのアプリから収集されます。</p>`;
+}
+
+function exportMatrixCSV() {
+  const m = buildMatrix();
+  if (!m) { toast('案件がありません'); return; }
+  const head = ['メンバー', ...m.projects.map(p => `[${p.code}] ${p.name}`), '未分類', '合計(分)'];
+  const lines = [head];
+  for (const r of m.rows) {
+    const total = m.projects.reduce((a, p) => a + (r.cells[p.id] || 0), 0) + r.unclassified;
+    lines.push([r.name, ...m.projects.map(p => r.cells[p.id] || 0), r.unclassified, total]);
+  }
+  const csv = '﻿' + lines.map(l => l.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `案件工数_${state.todayKey}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('CSVを書き出しました');
 }
 
 /* ---------- 修正モーダル ---------- */
@@ -445,6 +670,31 @@ document.addEventListener('click', async (e) => {
     renderRules(); toast('ルールを追加しました');
   }
 
+  if (act === 'track-toggle') {
+    state = await window.api.updateSettings({ trackWork: !state.settings.trackWork });
+    renderProjects();
+    toast(state.settings.trackWork ? '作業内容の計測を開始しました' : '計測を停止しました');
+  }
+  if (act === 'proj-add') {
+    const code = $('#pj-code').value.trim(), name = $('#pj-name').value.trim();
+    if (!code || !name) { toast('コードと案件名を入力してください'); return; }
+    const keywords = $('#pj-kw').value.split(/[,、]/).map(s => s.trim()).filter(Boolean);
+    state = await window.api.addProject({ code, name, keywords });
+    renderProjects(); toast('案件を追加しました');
+  }
+  if (act === 'proj-toggle') {
+    const p = state.projects.find(p => p.id === btn.dataset.id);
+    state = await window.api.updateProject(btn.dataset.id, { active: !(p.active !== false) });
+    renderProjects();
+  }
+  if (act === 'proj-del') {
+    state = await window.api.deleteProject(btn.dataset.id);
+    renderProjects(); toast('案件を削除しました');
+  }
+  if (act === 'proj-kw') openKeywordModal(btn.dataset.id);
+  if (act === 'assign') openAssignModal(+btn.dataset.idx);
+  if (act === 'csv-export') exportMatrixCSV();
+
   if (act === 'mode') { state = await window.api.updateSettings({ submitMode: btn.dataset.id }); renderSettings(); toast('提出モードを変更しました'); }
   if (act === 'autolaunch') { state = await window.api.updateSettings({ autoLaunch: !state.settings.autoLaunch }); renderSettings(); }
   if (act === 'save-settings') {
@@ -483,6 +733,7 @@ $('#nav').addEventListener('click', (e) => {
 function renderTab(tab) {
   if (tab === 'today') renderToday();
   if (tab === 'history') renderHistory();
+  if (tab === 'projects') renderProjects();
   if (tab === 'rules') renderRules();
   if (tab === 'settings') renderSettings();
   if (tab === 'admin') renderAdmin();
