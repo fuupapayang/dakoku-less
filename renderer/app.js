@@ -116,7 +116,7 @@ function renderToday() {
       ${day && day.correction ? '<div class="muted">✎ 手動修正が適用されています(HITL: この修正はAIの次回推定に反映されます)</div>' : ''}
       ${timelineHTML(est)}
       <div class="row mt16">
-        <button class="btn primary" data-act="submit-today" ${canSubmit ? '' : 'disabled'}>WorkOn勤怠モジュールへ提出</button>
+        <button class="btn primary" data-act="submit-today" ${canSubmit ? '' : 'disabled'}>勤怠を確定・提出</button>
         <button class="btn" data-act="correct-today" ${est && est.start != null ? '' : 'disabled'}>修正する</button>
         <span class="grow"></span>
         <span class="muted">提出モード: ${MODES.find(m => m.id === state.settings.submitMode).name}</span>
@@ -740,7 +740,7 @@ document.addEventListener('click', async (e) => {
 
   if (act === 'submit-today') {
     const r = await window.api.submitDay(state.todayKey);
-    toast(r.ok ? 'WorkOn勤怠モジュールへ提出しました' : r.error);
+    toast(r.ok ? '勤怠を確定・提出しました' : r.error);
   }
   if (act === 'submit-day') {
     const r = await window.api.submitDay(btn.dataset.key);
