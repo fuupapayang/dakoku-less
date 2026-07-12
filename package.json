@@ -1,7 +1,7 @@
 {
   "name": "dakoku-less",
   "productName": "DakokuLess",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AIが勤務時間を自動推定する、打刻を感じさせない勤怠デスクトップアプリ",
   "main": "main.js",
   "scripts": {
@@ -20,6 +20,14 @@
     "productName": "DakokuLess",
     "files": ["main.js", "preload.js", "src/**/*", "renderer/**/*", "assets/**/*"],
     "mac": { "category": "public.app-category.productivity", "target": "dmg" },
-    "win": { "target": "nsis" }
+    "win": { "target": "nsis" },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": true,
+      "runAfterFinish": true
+    }
   }
 }
