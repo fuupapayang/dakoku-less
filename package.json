@@ -1,0 +1,25 @@
+{
+  "name": "dakoku-less",
+  "productName": "DakokuLess",
+  "version": "0.1.0",
+  "description": "AIが勤務時間を自動推定する、打刻を感じさせない勤怠デスクトップアプリ",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/engine.test.js",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "jp.example.dakokuless",
+    "productName": "DakokuLess",
+    "files": ["main.js", "preload.js", "src/**/*", "renderer/**/*", "assets/**/*"],
+    "mac": { "category": "public.app-category.productivity", "target": "dmg" },
+    "win": { "target": "nsis" }
+  }
+}
