@@ -33,16 +33,19 @@ function tokenize(title) {
     );
 }
 
+/** 案件コードの形式: 大文字英字+数字(例: F000, T123)。タイトル内では「F000_」のように _ が必須 */
+const CODE_FORMAT = /^[A-Z]+\d+$/;
+
 /** テキストが案件に一致するか。一致すれば {id, code, name, via} */
 function matchText(text, projects) {
   if (!text) return null;
-  const lower = String(text).toLowerCase();
-  // 1) 案件コード(明示): [a123] / a123_ / a123-
+  const raw = String(text);
+  const lower = raw.toLowerCase();
+  // 1) 案件コード(明示): 「F000_」形式のみ。大文字限定・アンダースコア必須(大文字小文字を区別)
   for (const p of projects) {
-    const c = String(p.code || '').toLowerCase();
+    const c = String(p.code || '').trim();
     if (!c) continue;
-    if (lower.includes(`[${c}]`) ||
-        new RegExp(`(^|[^a-z0-9])${escapeRe(c)}[_\\-]`).test(lower)) {
+    if (new RegExp(`(^|[^A-Za-z0-9])${escapeRe(c)}_`).test(raw)) {
       return { id: p.id, code: p.code, name: p.name, via: 'code' };
     }
   }
@@ -78,4 +81,4 @@ function topTokens(counts, n = 5) {
   return Object.entries(counts || {}).sort((a, b) => b[1] - a[1]).slice(0, n).map(e => e[0]);
 }
 
-module.exports = { tokenize, matchText, classify, topTokens };
+module.exports = { tokenize, matchText, classify, topTokens, CODE_FORMAT };

@@ -393,8 +393,18 @@ function registerIpc() {
 
   ipcMain.handle('day:submit', (e, key) => { const r = submitDay(key); pushUpdate(); return r; });
 
-  // 案件マスター CRUD
-  ipcMain.handle('projects:add', (e, p) => { store.addProject(p); pushUpdate(); return buildState(); });
+  // 案件マスター CRUD(コード形式: 大文字英字+数字。例 F000, T123)
+  ipcMain.handle('projects:add', (e, p) => {
+    const code = String(p.code || '').trim();
+    if (!projectsLib.CODE_FORMAT.test(code)) {
+      return { error: '案件コードは「大文字英字+数字」(例: F000, T123)で入力してください' };
+    }
+    if (store.data.projects.some(x => x.code === code)) {
+      return { error: `案件コード ${code} は既に登録されています` };
+    }
+    store.addProject({ ...p, code });
+    pushUpdate(); return buildState();
+  });
   ipcMain.handle('projects:update', (e, { id, patch }) => {
     const p = store.data.projects.find(p => p.id === id);
     if (p) Object.assign(p, patch);

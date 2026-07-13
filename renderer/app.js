@@ -259,12 +259,12 @@ function renderProjects() {
       <h2>案件マスター(${(state.projects || []).length})</h2>
       ${items || '<div class="muted">まだ案件がありません。下から追加してください。</div>'}
       <div class="field-row mt16">
-        <label class="field">案件コード<input type="text" id="pj-code" placeholder="例: A123"></label>
+        <label class="field">案件コード(大文字英字+数字)<input type="text" id="pj-code" placeholder="例: F000, T123"></label>
         <label class="field">案件名<input type="text" id="pj-name" placeholder="例: 山田商事 在庫管理"></label>
         <label class="field">キーワード(読点・カンマ区切り)<input type="text" id="pj-kw" placeholder="例: 山田商事, 在庫管理"></label>
       </div>
       <button class="btn primary" data-act="proj-add">案件を追加</button>
-      <p class="muted mt8">運用のコツ: カレンダーの予定名に [コード] を付ける/新規フォルダ・主要ファイル名の先頭に「コード_」を付ける。それ以外はキーワード学習が吸収します。</p>
+      <p class="muted mt8">運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須。例: F000_定例会議、T123_見積書.xlsx)。それ以外はキーワード学習が吸収します。</p>
     </div>`;
 }
 
@@ -777,10 +777,13 @@ document.addEventListener('click', async (e) => {
     toast(state.settings.trackWork ? '作業内容の計測を開始しました' : '計測を停止しました');
   }
   if (act === 'proj-add') {
-    const code = $('#pj-code').value.trim(), name = $('#pj-name').value.trim();
+    const code = $('#pj-code').value.trim().toUpperCase(), name = $('#pj-name').value.trim();
     if (!code || !name) { toast('コードと案件名を入力してください'); return; }
+    if (!/^[A-Z]+\d+$/.test(code)) { toast('案件コードは「大文字英字+数字」(例: F000, T123)にしてください'); return; }
     const keywords = $('#pj-kw').value.split(/[,、]/).map(s => s.trim()).filter(Boolean);
-    state = await window.api.addProject({ code, name, keywords });
+    const res = await window.api.addProject({ code, name, keywords });
+    if (res.error) { toast(res.error); return; }
+    state = res;
     renderProjects(); toast('案件を追加しました');
   }
   if (act === 'proj-toggle') {
