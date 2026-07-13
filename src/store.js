@@ -21,6 +21,8 @@ class Store {
         dayStartHour: 4,
         userName: 'あなた',
         autoLaunch: false,
+        notifications: true, // デスクトップ通知
+        hourlyRate: 5000,    // 原価単価(円/h) 収益性計算用
         trackWork: false,    // 案件トラッキング(オプトイン)
         sync: {              // Firebaseチーム同期
           enabled: false, projectId: '', apiKey: '', teamId: '', memberId: ''
@@ -53,6 +55,8 @@ class Store {
           if (!p.status) p.status = 'active';
           if (p.client == null) p.client = '';
           if (p.boxUrl == null) p.boxUrl = '';
+          if (p.budgetHours == null) p.budgetHours = 0;
+          if (p.estimateAmount == null) p.estimateAmount = 0;
         }
         // 旧バージョンのデータを補完
         for (const d of Object.values(this.data.days || {})) {
@@ -101,6 +105,7 @@ class Store {
     const proj = {
       id: 'p' + this.data.projSeq++, active: true, keywords: [],
       client: '', sales: [], makers: [], boxUrl: '', status: 'active',
+      budgetHours: 0, estimateAmount: 0, alert80: false, alert100: false,
       createdAt: Date.now(), updatedAt: Date.now(),
       ...p, code: String(p.code || '').trim(), name: String(p.name || '').trim()
     };

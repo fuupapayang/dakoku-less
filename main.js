@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('./src/store');
@@ -122,6 +122,50 @@ function trackWork(day, now, fg) {
 
 function settings() { return store.data.settings; }
 
+/** デスクトップ通知(設定でオフ可) */
+function notify(title, body) {
+  if (settings().notifications === false) return;
+  try {
+    if (Notification.isSupported()) new Notification({ title, body }).show();
+  } catch (e) { /* 通知不可環境では無視 */ }
+}
+
+/** 未提出リマインド(今日以外でpendingの日) */
+function remindPending() {
+  const n = Object.values(store.data.days).filter(d =>
+    d.date !== currentKey && d.status === 'pending' && d.estimation && d.estimation.start).length;
+  if (n > 0) notify('未提出の勤怠があります', `${n}日分が未提出です。履歴タブから確認・提出してください。`);
+}
+
+/** 予算工数アラート: 消化80% / 100%で1回ずつ通知 */
+function consumedMinOf(pid) {
+  let total = 0;
+  for (const d of Object.values(store.data.days)) total += (d.projectMin || {})[pid] || 0;
+  const myId = (settings().sync || {}).memberId;
+  const rt = store.data.remoteTeam;
+  if (rt) for (const m of rt.members || []) {
+    if (m.id === myId) continue;
+    for (const d of Object.values(m.days || {})) total += (d.projectMin || {})[pid] || 0;
+  }
+  return total;
+}
+
+function checkBudgets() {
+  let changed = false;
+  for (const p of store.data.projects) {
+    if (p.active === false || (p.status || 'active') !== 'active' || !p.budgetHours) continue;
+    const pct = consumedMinOf(p.id) / 60 / p.budgetHours;
+    if (pct >= 1 && !p.alert100) {
+      p.alert100 = true; changed = true;
+      notify('⚠ 予算工数を超過しました', `${p.code} ${p.name}: 消化率 ${Math.round(pct * 100)}%(予算 ${p.budgetHours}h)`);
+    } else if (pct >= 0.8 && !p.alert80) {
+      p.alert80 = true; changed = true;
+      notify('予算工数の消化が80%に達しました', `${p.code} ${p.name}: 消化率 ${Math.round(pct * 100)}%(予算 ${p.budgetHours}h)`);
+    }
+  }
+  if (changed) { store.save(); pushUpdate(); }
+}
+
 function logEvent(day, msg) {
   day.events.push({ t: Date.now(), msg });
   if (day.events.length > 200) day.events.shift();
@@ -165,6 +209,14 @@ function finalizeDay(key) {
     submitDay(key, true);
   }
   logEvent(day, `本日分を確定(信頼度: ${conf})`);
+  const est = day.estimation;
+  if (est && est.start) {
+    notify(
+      day.status === 'submitted' ? '勤怠を自動提出しました' : '勤怠の確認をお願いします',
+      `${key} ${engine.fmtTime(est.start)}〜${engine.fmtTime(est.end)} 実働${engine.fmtDur(est.workMin)}` +
+      (day.status === 'submitted' ? '' : `(信頼度: ${conf} — 履歴タブから提出してください)`)
+    );
+  }
 }
 
 function submitDay(key, auto = false) {
@@ -278,12 +330,19 @@ async function runSync() {
       if (k === 'updatedAt') continue;
       const d = store.data.days[k];
       if (!d) continue;
-      if (v === 'approved' && d.status === 'submitted') { d.status = 'approved'; logEvent(d, '管理者が承認しました(同期)'); }
-      if (v === 'rejected' && d.status !== 'rejected') { d.status = 'rejected'; logEvent(d, '管理者が差し戻しました(同期)'); }
+      if (v === 'approved' && d.status === 'submitted') {
+        d.status = 'approved'; logEvent(d, '管理者が承認しました(同期)');
+        notify('勤怠が承認されました', `${k} の勤怠が承認されました`);
+      }
+      if (v === 'rejected' && d.status !== 'rejected') {
+        d.status = 'rejected'; logEvent(d, '管理者が差し戻しました(同期)');
+        notify('勤怠が差し戻されました', `${k} の勤怠を確認して再提出してください`);
+      }
     }
     sync.status.state = 'ok';
     sync.status.lastSync = Date.now();
     sync.status.error = null;
+    checkBudgets();
     store.save();
     pushUpdate();
     return { ok: true, members: pulled.members.length };
@@ -570,6 +629,9 @@ app.whenReady().then(() => {
   sync = new Sync(syncCfg);
   setInterval(() => { if (sync.enabled()) runSync(); }, 3 * 60 * 1000);
   setTimeout(() => { if (sync.enabled()) runSync(); }, 10 * 1000);
+  setTimeout(remindPending, 30 * 1000);
+  setInterval(remindPending, 6 * 60 * 60 * 1000);
+  setInterval(checkBudgets, 10 * 60 * 1000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

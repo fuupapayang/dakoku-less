@@ -10,9 +10,9 @@
   let ruleSeq = 3, projSeq = 3;
 
   const projects = [
-    { id: 'p1', code: 'F000', name: '在庫管理システム刷新', client: '山田商事', sales: ['あなた', '佐藤 美咲'], makers: ['田中 蓮'], boxUrl: 'https://app.box.com/folder/000000001', status: 'active', keywords: ['山田商事', '在庫管理'], active: true, createdAt: Date.now() - 20 * 86400000 },
-    { id: 'p2', code: 'T123', name: '勤怠システム導入', client: '鈴木建設', sales: ['佐藤 美咲'], makers: ['高橋 大和'], boxUrl: 'https://app.box.com/folder/000000002', status: 'active', keywords: ['鈴木建設'], active: true, createdAt: Date.now() - 15 * 86400000 },
-    { id: 'p3', code: 'F001', name: 'ECサイト保守', client: 'ABC商店', sales: ['あなた'], makers: ['田中 蓮'], boxUrl: '', status: 'delivered', keywords: [], active: true, createdAt: Date.now() - 40 * 86400000 }
+    { id: 'p1', code: 'F000', name: '在庫管理システム刷新', client: '山田商事', sales: ['あなた', '佐藤 美咲'], makers: ['田中 蓮'], boxUrl: 'https://app.box.com/folder/000000001', status: 'active', keywords: ['山田商事', '在庫管理'], budgetHours: 45, estimateAmount: 1500000, active: true, createdAt: Date.now() - 20 * 86400000 },
+    { id: 'p2', code: 'T123', name: '勤怠システム導入', client: '鈴木建設', sales: ['佐藤 美咲'], makers: ['高橋 大和'], boxUrl: 'https://app.box.com/folder/000000002', status: 'active', keywords: ['鈴木建設'], budgetHours: 80, estimateAmount: 800000, active: true, createdAt: Date.now() - 15 * 86400000 },
+    { id: 'p3', code: 'F001', name: 'ECサイト保守', client: 'ABC商店', sales: ['あなた'], makers: ['田中 蓮'], boxUrl: '', status: 'delivered', keywords: [], budgetHours: 0, estimateAmount: 300000, active: true, createdAt: Date.now() - 40 * 86400000 }
   ];
 
   const calKey = (offset) => {
@@ -141,6 +141,7 @@
     settings: {
       submitMode: 'moderate', breakThresholdMin: 15, ambiguousMin: 8, mergeGapMin: 3,
       idleThresholdSec: 90, dayStartHour: 4, userName: 'あなた', autoLaunch: true, trackWork: true,
+      notifications: true, hourlyRate: 5000,
       sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' }
     },
     todayKey, days,

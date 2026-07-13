@@ -136,6 +136,127 @@ function renderToday() {
     </div>`;
 }
 
+/* ---------- ダッシュボード ---------- */
+function consumedMinR(pid, sinceTs = 0) {
+  let total = 0;
+  for (const [k, d] of Object.entries(state.days)) {
+    if (new Date(k).getTime() >= sinceTs) total += (d.projectMin || {})[pid] || 0;
+  }
+  const myId = (state.settings.sync || {}).memberId || '';
+  for (const m of ((state.remoteTeam && state.remoteTeam.members) || [])) {
+    if (m.id === myId) continue;
+    for (const [k, d] of Object.entries(m.days || {})) {
+      if (new Date(k).getTime() >= sinceTs) total += (d.projectMin || {})[pid] || 0;
+    }
+  }
+  return total;
+}
+
+const yen = (n) => '¥' + Math.round(n).toLocaleString('ja-JP');
+
+function barRowHTML(label, min, max, color, right) {
+  const pct = max > 0 ? Math.min(100, Math.round(min / max * 100)) : 0;
+  return `<div class="bar-row">
+    <div class="bar-label">${label}</div>
+    <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
+    <div class="bar-val">${right}</div>
+  </div>`;
+}
+
+function renderDashboard() {
+  const rate = state.settings.hourlyRate || 5000;
+  const today = state.days[state.todayKey];
+  const todayEst = effective(today);
+  const now = new Date();
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7)).getTime();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+  let weekMin = 0;
+  const daily = []; // 直近14日
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const est = effective(state.days[k]);
+    const min = est ? (est.workMin || 0) : 0;
+    daily.push({ k, min, wd: d.getDay() });
+    if (d.getTime() >= monday) weekMin += min;
+  }
+  const maxDaily = Math.max(60, ...daily.map(d => d.min));
+
+  const actives = (state.projects || []).filter(p => p.active !== false && (p.status || 'active') === 'active');
+  const withBudget = actives.filter(p => p.budgetHours > 0);
+  const alerts = withBudget.filter(p => consumedMinR(p.id) / 60 / p.budgetHours >= 0.8);
+
+  // 案件別 今月の工数
+  const monthRows = actives
+    .map(p => ({ p, min: consumedMinR(p.id, monthStart) }))
+    .filter(r => r.min > 0).sort((a, b) => b.min - a.min).slice(0, 8);
+  const maxMonth = Math.max(60, ...monthRows.map(r => r.min));
+
+  // 収益性
+  const profitRows = actives.filter(p => p.estimateAmount > 0).map(p => {
+    const h = consumedMinR(p.id) / 60;
+    const cost = h * rate;
+    const profit = p.estimateAmount - cost;
+    return { p, h, cost, profit, margin: p.estimateAmount > 0 ? profit / p.estimateAmount : 0 };
+  }).sort((a, b) => a.margin - b.margin);
+
+  $('#tab-dashboard').innerHTML = `
+    <h1>ダッシュボード</h1>
+    <div class="page-sub">今日のあなたと、チームと案件のいま。${state.settings.sync.enabled ? 'チーム同期の実データを含みます。' : ''}</div>
+
+    <div class="kpis">
+      <div class="kpi accent"><div class="num">${fmtDur(todayEst ? todayEst.workMin : 0)}</div><div class="lbl">今日の実働</div></div>
+      <div class="kpi"><div class="num">${fmtDur(weekMin)}</div><div class="lbl">今週の実働</div></div>
+      <div class="kpi"><div class="num">${actives.length}</div><div class="lbl">稼働中の案件</div></div>
+      <div class="kpi"><div class="num" style="color:${alerts.length ? 'var(--red)' : 'inherit'}">${alerts.length}</div><div class="lbl">予算アラート(80%超)</div></div>
+    </div>
+
+    <div class="card">
+      <h2>直近14日の実働</h2>
+      <div class="spark">
+        ${daily.map(d => `<div class="spark-col" title="${d.k} ${fmtDur(d.min)}">
+          <div class="spark-bar ${d.wd === 0 || d.wd === 6 ? 'wknd' : ''}" style="height:${Math.round(d.min / maxDaily * 100)}%"></div>
+          <div class="spark-lbl">${+d.k.split('-')[2]}</div>
+        </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>今月の案件別工数${state.settings.sync.enabled ? '(チーム計)' : ''}</h2>
+      ${monthRows.map(r => barRowHTML(
+        `<b>${esc(r.p.code)}</b> ${esc(r.p.name)}`, r.min, maxMonth, 'var(--green)', fmtDur(r.min)
+      )).join('') || '<div class="muted">今月の計測データがまだありません。案件タブで計測をONにしてください。</div>'}
+    </div>
+
+    ${withBudget.length ? `<div class="card">
+      <h2>予算消化状況</h2>
+      ${withBudget.map(p => {
+        const used = consumedMinR(p.id) / 60;
+        const pct = used / p.budgetHours;
+        const color = pct >= 1 ? 'var(--red)' : pct >= 0.8 ? 'var(--amber)' : 'var(--green)';
+        return barRowHTML(`<b>${esc(p.code)}</b> ${esc(p.name)}`, used, p.budgetHours, color,
+          `${used.toFixed(1)}h / ${p.budgetHours}h(${Math.round(pct * 100)}%)${pct >= 1 ? ' ⚠超過' : ''}`);
+      }).join('')}
+    </div>` : ''}
+
+    <div class="card">
+      <h2>収益性(見積金額 − 実績工数 × 原価単価 ${yen(rate)}/h)</h2>
+      ${profitRows.length ? `<table>
+        <thead><tr><th>案件</th><th>見積金額</th><th>実績工数</th><th>原価</th><th>粗利</th><th>粗利率</th></tr></thead>
+        <tbody>${profitRows.map(r => `<tr>
+          <td><b>${esc(r.p.code)}</b> ${esc(r.p.name)}</td>
+          <td>${yen(r.p.estimateAmount)}</td>
+          <td>${r.h.toFixed(1)}h</td>
+          <td>${yen(r.cost)}</td>
+          <td style="color:${r.profit < 0 ? 'var(--red)' : 'var(--green-dark)'};font-weight:700">${yen(r.profit)}</td>
+          <td><span class="chip ${r.margin < 0 ? 'LOW' : r.margin < 0.3 ? 'UNSURE' : 'STABLE'}">${Math.round(r.margin * 100)}%</span></td>
+        </tr>`).join('')}</tbody>
+      </table>` : '<div class="muted">見積金額が入力された案件がありません。案件追加時に見積金額と予算工数を入力すると、ここに粗利が表示されます。</div>'}
+      <p class="muted mt8">原価単価は設定タブで変更できます。</p>
+    </div>`;
+}
+
 /* ---------- 履歴 ---------- */
 function renderHistory() {
   const keys = Object.keys(state.days).sort().reverse();
@@ -215,6 +336,13 @@ function nextEventLabel(pid) {
   return `${m}/${d} ${hm(ev.sMin)} ${esc(ev.title)}`;
 }
 
+function budgetBadge(p) {
+  if (!p.budgetHours) return '';
+  const pct = consumedMinR(p.id) / 60 / p.budgetHours;
+  if (pct < 0.8) return '';
+  return ` <span class="tag" style="background:${pct >= 1 ? 'var(--red-bg)' : 'var(--amber-bg)'};color:${pct >= 1 ? 'var(--red)' : 'var(--amber)'}">予算${Math.round(pct * 100)}%</span>`;
+}
+
 function projListCardHTML() {
   const f = renderProjects.filter || 'all';
   const sort = renderProjects.sort || { key: 'code', dir: 1 };
@@ -228,7 +356,7 @@ function projListCardHTML() {
   const rows = list.map(p => `
     <tr>
       <td><b>${esc(p.code)}</b></td>
-      <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}</td>
+      <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}${budgetBadge(p)}</td>
       <td>${esc(p.client || '-')}</td>
       <td>${(p.sales || []).map(esc).join('、') || '-'}</td>
       <td>${(p.makers || []).map(esc).join('、') || '-'}</td>
@@ -330,6 +458,10 @@ function renderProjects() {
       <div class="field-row">
         <label class="field">制作データ(Box URL)<input type="text" id="pj-box" placeholder="https://app.box.com/folder/..."></label>
         <label class="field">キーワード(読点・カンマ区切り)<input type="text" id="pj-kw" placeholder="例: 山田商事, 在庫管理"></label>
+      </div>
+      <div class="field-row">
+        <label class="field">見積金額(円)<input type="number" id="pj-est" placeholder="例: 1500000" min="0"></label>
+        <label class="field">予算工数(h) ― 80%消化で自動アラート<input type="number" id="pj-budget" placeholder="例: 120" min="0"></label>
       </div>
       <button class="btn primary" data-act="proj-add">案件を追加</button>
       <p class="muted mt8">運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須。例: F000_定例会議、T123_見積書.xlsx)。それ以外はキーワード学習が吸収します。チーム同期が有効なら、案件リストとカレンダーは自動でチーム共有されます。</p>
@@ -561,6 +693,17 @@ function renderSettings() {
         <span>ログイン時に自動起動(打刻を意識しないために推奨)</span>
       </div>
       <button class="btn primary mt16" data-act="save-settings">保存</button>
+    </div>
+    <div class="card">
+      <h2>通知・収益性</h2>
+      <div class="row">
+        <div class="toggle ${s.notifications !== false ? 'on' : ''}" data-act="notif-toggle"></div>
+        <span>デスクトップ通知(勤怠確定・未提出リマインド・承認/差し戻し・予算アラート)</span>
+      </div>
+      <div class="field-row mt8">
+        <label class="field">原価単価(円/時) ― ダッシュボードの粗利計算に使用
+          <input type="number" id="st-rate" value="${s.hourlyRate || 5000}" min="0" step="100"></label>
+      </div>
     </div>
     <div class="card">
       <h2>チーム同期(Firebase)</h2>
@@ -953,7 +1096,9 @@ document.addEventListener('click', async (e) => {
       sales: split($('#pj-sales').value),
       makers: split($('#pj-makers').value),
       boxUrl: $('#pj-box').value.trim(),
-      keywords: split($('#pj-kw').value)
+      keywords: split($('#pj-kw').value),
+      estimateAmount: +$('#pj-est').value || 0,
+      budgetHours: +$('#pj-budget').value || 0
     });
     if (res.error) { toast(res.error); return; }
     state = res;
@@ -1026,9 +1171,14 @@ document.addEventListener('click', async (e) => {
   if (act === 'save-settings') {
     state = await window.api.updateSettings({
       idleThresholdSec: +$('#st-idle').value, breakThresholdMin: +$('#st-break').value,
-      dayStartHour: +$('#st-daystart').value, userName: $('#st-name').value || 'あなた'
+      dayStartHour: +$('#st-daystart').value, userName: $('#st-name').value || 'あなた',
+      hourlyRate: +($('#st-rate') ? $('#st-rate').value : 5000) || 5000
     });
     toast('設定を保存しました');
+  }
+  if (act === 'notif-toggle') {
+    state = await window.api.updateSettings({ notifications: state.settings.notifications === false });
+    renderSettings();
   }
   if (act === 'import-ics') {
     const r = await window.api.importCalendar();
@@ -1058,6 +1208,7 @@ $('#nav').addEventListener('click', (e) => {
 
 function renderTab(tab) {
   if (tab === 'today') renderToday();
+  if (tab === 'dashboard') renderDashboard();
   if (tab === 'history') renderHistory();
   if (tab === 'projects') renderProjects();
   if (tab === 'calendar') renderCalendarTab();
@@ -1070,7 +1221,7 @@ function renderAll() { renderTab(activeTab); }
 window.api.onUpdate((s) => {
   state = s;
   // 入力中のフォームを壊さないよう、閲覧系タブのみ自動更新
-  if (['today', 'history', 'admin'].includes(activeTab) && !$('#modal-root').innerHTML) renderTab(activeTab);
+  if (['today', 'dashboard', 'history', 'admin', 'calendar'].includes(activeTab) && !$('#modal-root').innerHTML) renderTab(activeTab);
 });
 
 (async () => { state = await window.api.getState(); renderAll(); })();

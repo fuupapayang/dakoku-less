@@ -54,7 +54,32 @@ class Sync {
   /** @param cfg () => ({projectId, apiKey, teamId, memberId, userName, enabled}) */
   constructor(cfg) {
     this.cfg = cfg;
-    this.status = { state: 'idle', lastSync: null, error: null, members: 0 };
+    this.status = { state: 'idle', lastSync: null, error: null, members: 0, auth: 'none' };
+    this._tok = null;
+    this._tokExp = 0;
+  }
+
+  /**
+   * 匿名認証トークン(Firebase Authentication)。
+   * コンソールで「匿名」プロバイダを有効にすると本番ルールで運用できる。
+   * 無効な場合はnullを返し、未認証で続行(テストモード運用)。
+   */
+  async token() {
+    const c = this.cfg();
+    if (!c || !c.apiKey) return null;
+    if (this._tok && Date.now() < this._tokExp - 5 * 60000) return this._tok;
+    try {
+      const res = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${c.apiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true }) }
+      );
+      if (!res.ok) { this._tok = null; this.status.auth = 'disabled'; return null; }
+      const j = await res.json();
+      this._tok = j.idToken;
+      this._tokExp = Date.now() + Number(j.expiresIn || 3600) * 1000;
+      this.status.auth = 'anonymous';
+      return this._tok;
+    } catch (e) { this.status.auth = 'error'; return null; }
   }
 
   enabled() {
@@ -70,12 +95,14 @@ class Sync {
   async req(method, path, body, extraQuery = '') {
     const c = this.cfg();
     const u = `${BASE(c.projectId)}/teams/${encodeURIComponent(c.teamId)}/${path}?key=${c.apiKey}${extraQuery}`;
-    const res = await fetch(u, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined
-    });
+    const headers = { 'Content-Type': 'application/json' };
+    const tok = await this.token();
+    if (tok) headers['Authorization'] = `Bearer ${tok}`;
+    const res = await fetch(u, { method, headers, body: body ? JSON.stringify(body) : undefined });
     if (res.status === 404) return null;
+    if (res.status === 403 || res.status === 401) {
+      throw new Error(`アクセス拒否(HTTP ${res.status})。Firestoreルールが本番用の場合は、Firebaseコンソール → Authentication → ログイン方法 で「匿名」を有効にしてください`);
+    }
     if (!res.ok) throw new Error(`Firestore ${method} ${path}: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
     return res.json();
   }
