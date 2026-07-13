@@ -199,25 +199,86 @@ function projBarsHTML(projectMin, unclassifiedMin) {
     (unclassifiedMin > 0 ? bar('未分類', unclassifiedMin, 'var(--amber)') : '');
 }
 
+/* ---- 案件リスト(共有・フィルタ・ソート) ---- */
+function isMyProject(p) {
+  const me = state.settings.userName;
+  return [...(p.sales || []), ...(p.makers || [])].includes(me);
+}
+
+function nextEventLabel(pid) {
+  const list = (state.calEvents || [])
+    .filter(ev => ev.projectId === pid && ev.date >= state.todayKey)
+    .sort((a, b) => a.date === b.date ? a.sMin - b.sMin : a.date.localeCompare(b.date));
+  const ev = list[0];
+  if (!ev) return '<span class="muted">-</span>';
+  const [, m, d] = ev.date.split('-').map(Number);
+  return `${m}/${d} ${hm(ev.sMin)} ${esc(ev.title)}`;
+}
+
+function projListCardHTML() {
+  const f = renderProjects.filter || 'all';
+  const sort = renderProjects.sort || { key: 'code', dir: 1 };
+  const showDone = !!renderProjects.showDone;
+  let list = (state.projects || []).filter(p => p.active !== false);
+  if (!showDone) list = list.filter(p => (p.status || 'active') === 'active');
+  if (f === 'mine') list = list.filter(isMyProject);
+  if (f === 'team') list = list.filter(p => !isMyProject(p));
+  list.sort((a, b) => String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''), 'ja') * sort.dir);
+  const arrow = (k) => sort.key === k ? (sort.dir === 1 ? ' ▲' : ' ▼') : '';
+  const rows = list.map(p => `
+    <tr>
+      <td><b>${esc(p.code)}</b></td>
+      <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}</td>
+      <td>${esc(p.client || '-')}</td>
+      <td>${(p.sales || []).map(esc).join('、') || '-'}</td>
+      <td>${(p.makers || []).map(esc).join('、') || '-'}</td>
+      <td>${nextEventLabel(p.id)}</td>
+      <td>${p.boxUrl ? `<button class="btn sm" data-act="box-open" data-url="${esc(p.boxUrl)}">Box</button>` : '-'}</td>
+      <td>
+        ${(p.status || 'active') === 'active'
+          ? `<button class="btn sm" data-act="proj-done" data-id="${esc(p.id)}">納品完了</button>`
+          : `<button class="btn sm" data-act="proj-reopen" data-id="${esc(p.id)}">再開</button>`}
+        <button class="btn sm ghost" data-act="proj-kw" data-id="${esc(p.id)}">キーワード</button>
+        <button class="btn sm ghost danger" data-act="proj-del" data-id="${esc(p.id)}">削除</button>
+      </td>
+    </tr>`).join('');
+  return `<div class="card">
+    <div class="row">
+      <h2 class="grow">案件リスト(納品完了までの稼働中案件)${state.settings.sync.enabled ? ' <span class="tag work">チーム共有</span>' : ''}</h2>
+      <div class="filter-chips">
+        <button class="fchip ${f === 'all' ? 'on' : ''}" data-act="plist-filter" data-f="all">すべて表示</button>
+        <button class="fchip ${f === 'mine' ? 'on' : ''}" data-act="plist-filter" data-f="mine">自分の案件</button>
+        <button class="fchip ${f === 'team' ? 'on' : ''}" data-act="plist-filter" data-f="team">チーム案件</button>
+      </div>
+    </div>
+    <table class="mt8">
+      <thead><tr>
+        <th class="sortable" data-act="plist-sort" data-k="code">コード${arrow('code')}</th>
+        <th class="sortable" data-act="plist-sort" data-k="name">案件名${arrow('name')}</th>
+        <th class="sortable" data-act="plist-sort" data-k="client">顧客${arrow('client')}</th>
+        <th>担当営業</th><th>制作</th><th>次の予定</th><th>データ</th><th></th>
+      </tr></thead>
+      <tbody>${rows || `<tr><td colspan="8" class="muted">${f === 'mine' ? '担当に自分(' + esc(state.settings.userName) + ')が含まれる案件がありません' : '該当する案件がありません'}</td></tr>`}</tbody>
+    </table>
+    <div class="row mt8">
+      <span class="muted">「自分の案件」= 担当営業/制作に自分の表示名を含む案件。</span>
+      <span class="grow"></span>
+      <button class="btn sm ghost" data-act="plist-done">${showDone ? '納品完了を隠す' : '納品完了も表示'}</button>
+    </div>
+  </div>`;
+}
+
 function renderProjects() {
   const s = state.settings;
   const day = state.days[state.todayKey] || {};
   const unc = (day.unclassified || []).filter(b => b.e - b.s >= 3 * 60000);
   const uncMin = unc.reduce((a, b) => a + Math.round((b.e - b.s) / 60000), 0);
-  const items = (state.projects || []).map(p => `
-    <div class="rule-item">
-      <div class="toggle ${p.active !== false ? 'on' : ''}" data-act="proj-toggle" data-id="${esc(p.id)}"></div>
-      <div class="grow">
-        <div><b>[${esc(p.code)}] ${esc(p.name)}</b></div>
-        <div class="meta">キーワード: ${(p.keywords || []).map(esc).join('、 ') || '(なし ― コード判定のみ)'}</div>
-      </div>
-      <button class="btn sm ghost" data-act="proj-kw" data-id="${esc(p.id)}">キーワード編集</button>
-      <button class="btn sm ghost danger" data-act="proj-del" data-id="${esc(p.id)}">削除</button>
-    </div>`).join('');
 
   $('#tab-projects').innerHTML = `
     <h1>案件トラッキング</h1>
     <div class="page-sub">誰が・何の案件を・どれだけ。カレンダー → 案件コード → キーワードの順で自動判定します。</div>
+
+    ${projListCardHTML()}
 
     <div class="card">
       <div class="row">
@@ -256,16 +317,121 @@ function renderProjects() {
         </div>`).join('')}</div>` : ''}
 
     <div class="card">
-      <h2>案件マスター(${(state.projects || []).length})</h2>
-      ${items || '<div class="muted">まだ案件がありません。下から追加してください。</div>'}
-      <div class="field-row mt16">
+      <h2>案件を追加</h2>
+      <div class="field-row">
         <label class="field">案件コード(大文字英字+数字)<input type="text" id="pj-code" placeholder="例: F000, T123"></label>
-        <label class="field">案件名<input type="text" id="pj-name" placeholder="例: 山田商事 在庫管理"></label>
+        <label class="field">案件名<input type="text" id="pj-name" placeholder="例: 在庫管理システム刷新"></label>
+        <label class="field">顧客<input type="text" id="pj-client" placeholder="例: 山田商事"></label>
+      </div>
+      <div class="field-row">
+        <label class="field">担当営業(複数はカンマ区切り)<input type="text" id="pj-sales" placeholder="例: 佐藤, 鈴木"></label>
+        <label class="field">制作(複数はカンマ区切り)<input type="text" id="pj-makers" placeholder="例: 田中, 高橋"></label>
+      </div>
+      <div class="field-row">
+        <label class="field">制作データ(Box URL)<input type="text" id="pj-box" placeholder="https://app.box.com/folder/..."></label>
         <label class="field">キーワード(読点・カンマ区切り)<input type="text" id="pj-kw" placeholder="例: 山田商事, 在庫管理"></label>
       </div>
       <button class="btn primary" data-act="proj-add">案件を追加</button>
-      <p class="muted mt8">運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須。例: F000_定例会議、T123_見積書.xlsx)。それ以外はキーワード学習が吸収します。</p>
+      <p class="muted mt8">運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須。例: F000_定例会議、T123_見積書.xlsx)。それ以外はキーワード学習が吸収します。チーム同期が有効なら、案件リストとカレンダーは自動でチーム共有されます。</p>
     </div>`;
+}
+
+/* ---------- カレンダー ---------- */
+function renderCalendarTab() {
+  const st = renderCalendarTab.ym || (() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; })();
+  renderCalendarTab.ym = st;
+  const first = new Date(st.y, st.m, 1);
+  const start = new Date(st.y, st.m, 1 - first.getDay());
+  const evByDate = {};
+  for (const ev of state.calEvents || []) (evByDate[ev.date] = evByDate[ev.date] || []).push(ev);
+  const byId = Object.fromEntries((state.projects || []).map(p => [p.id, p]));
+
+  let cells = '';
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const evs = (evByDate[k] || []).sort((a, b) => a.sMin - b.sMin);
+    const shown = evs.slice(0, 3).map(ev => {
+      const p = ev.projectId ? byId[ev.projectId] : null;
+      return `<div class="cal-ev ${p ? '' : 'noproj'}" title="${esc((p ? p.code + '_' : '') + ev.title)}">${hm(ev.sMin)} ${esc(p ? p.code : '')}${p ? '_' : ''}${esc(ev.title)}</div>`;
+    }).join('');
+    cells += `<div class="cal-cell ${d.getMonth() !== st.m ? 'other' : ''} ${k === state.todayKey ? 'today-cell' : ''}"
+      data-act="cal-day" data-date="${k}">
+      <div class="dnum">${d.getDate()}</div>${shown}
+      ${evs.length > 3 ? `<div class="cal-ev noproj">+${evs.length - 3}件</div>` : ''}
+    </div>`;
+  }
+
+  $('#tab-calendar').innerHTML = `
+    <h1>カレンダー${state.settings.sync.enabled ? ' <span class="tag work">チーム共有</span>' : ''}</h1>
+    <div class="page-sub">案件の予定を書き込めます。予定は勤怠推定にも反映されます(会議中の無操作=稼働扱い、コード付き予定は案件工数に自動計上)。</div>
+    <div class="card">
+      <div class="cal-nav">
+        <button class="btn sm" data-act="cal-prev">‹ 前月</button>
+        <h2 class="grow" style="text-align:center">${st.y}年 ${st.m + 1}月</h2>
+        <button class="btn sm" data-act="cal-next">翌月 ›</button>
+      </div>
+      <div class="cal-grid mt8">
+        ${WD.map(w => `<div class="cal-head">${w}</div>`).join('')}
+        ${cells}
+      </div>
+      <p class="muted mt8">日付をクリックすると予定の確認・追加ができます。${state.settings.sync.enabled ? '' : 'チーム同期(設定タブ)を有効にすると、チーム全員のアプリに共有されます。'}</p>
+    </div>`;
+}
+
+function openDayModal(dateKey) {
+  const byId = Object.fromEntries((state.projects || []).map(p => [p.id, p]));
+  const evs = (state.calEvents || []).filter(ev => ev.date === dateKey).sort((a, b) => a.sMin - b.sMin);
+  const root = $('#modal-root');
+  const actives = (state.projects || []).filter(p => p.active !== false && (p.status || 'active') === 'active');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h2>${fmtDate(dateKey)} の予定</h2>
+    ${evs.map(ev => {
+      const p = ev.projectId ? byId[ev.projectId] : null;
+      return `<div class="rule-item">
+        <div class="grow"><b>${hm(ev.sMin)}〜${hm(ev.eMin)}</b> ${p ? `<span class="tag work">${esc(p.code)}</span>` : ''} ${esc(ev.title)}
+          <div class="meta">${ev.members && ev.members.length ? '参加: ' + ev.members.map(esc).join('、') : '全員'} ／ 作成: ${esc(ev.createdBy || '-')}</div></div>
+        <button class="btn sm ghost danger" data-act="cal-del" data-id="${esc(ev.id)}">削除</button>
+      </div>`;
+    }).join('') || '<div class="muted">予定はありません</div>'}
+    <h2 class="mt16">予定を追加</h2>
+    <div class="field-row">
+      <label class="field">開始<input type="time" id="ce-from" value="10:00"></label>
+      <label class="field">終了<input type="time" id="ce-to" value="11:00"></label>
+    </div>
+    <div class="field-row">
+      <label class="field">タイトル<input type="text" id="ce-title" placeholder="例: 定例会議、納品、先方訪問"></label>
+      <label class="field">案件<select id="ce-proj"><option value="">(案件なし)</option>
+        ${actives.map(p => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join('')}</select></label>
+    </div>
+    <label class="field">参加メンバー(カンマ区切り・空欄=チーム全員)<input type="text" id="ce-members" placeholder="例: 佐藤, 田中"></label>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">閉じる</button>
+      <button class="btn primary" data-act="ce-save">予定を追加</button>
+    </div>
+  </div></div>`;
+  root.onclick = async (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'cal-del') {
+      state = await window.api.deleteCalEvent(e.target.dataset.id);
+      root.innerHTML = ''; root.onclick = null;
+      renderCalendarTab(); toast('予定を削除しました');
+    }
+    if (act === 'ce-save') {
+      const toMin = (v) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
+      const sMin = toMin($('#ce-from').value), eMin = toMin($('#ce-to').value);
+      const title = $('#ce-title').value.trim();
+      if (!title) { toast('タイトルを入力してください'); return; }
+      if (eMin <= sMin) { toast('終了は開始より後にしてください'); return; }
+      const members = $('#ce-members').value.split(/[,、]/).map(s => s.trim()).filter(Boolean);
+      state = await window.api.addCalEvent({
+        date: dateKey, sMin, eMin, title, projectId: $('#ce-proj').value || null, members
+      });
+      root.innerHTML = ''; root.onclick = null;
+      renderCalendarTab(); toast('予定を追加しました');
+    }
+  };
 }
 
 function openAssignModal(idx) {
@@ -780,12 +946,43 @@ document.addEventListener('click', async (e) => {
     const code = $('#pj-code').value.trim().toUpperCase(), name = $('#pj-name').value.trim();
     if (!code || !name) { toast('コードと案件名を入力してください'); return; }
     if (!/^[A-Z]+\d+$/.test(code)) { toast('案件コードは「大文字英字+数字」(例: F000, T123)にしてください'); return; }
-    const keywords = $('#pj-kw').value.split(/[,、]/).map(s => s.trim()).filter(Boolean);
-    const res = await window.api.addProject({ code, name, keywords });
+    const split = (v) => v.split(/[,、]/).map(s => s.trim()).filter(Boolean);
+    const res = await window.api.addProject({
+      code, name,
+      client: $('#pj-client').value.trim(),
+      sales: split($('#pj-sales').value),
+      makers: split($('#pj-makers').value),
+      boxUrl: $('#pj-box').value.trim(),
+      keywords: split($('#pj-kw').value)
+    });
     if (res.error) { toast(res.error); return; }
     state = res;
     renderProjects(); toast('案件を追加しました');
   }
+  if (act === 'plist-filter') { renderProjects.filter = btn.dataset.f; renderProjects(); }
+  if (act === 'plist-sort') {
+    const cur = renderProjects.sort || { key: 'code', dir: 1 };
+    renderProjects.sort = { key: btn.dataset.k, dir: cur.key === btn.dataset.k ? -cur.dir : 1 };
+    renderProjects();
+  }
+  if (act === 'plist-done') { renderProjects.showDone = !renderProjects.showDone; renderProjects(); }
+  if (act === 'proj-done') {
+    state = await window.api.updateProject(btn.dataset.id, { status: 'delivered' });
+    renderProjects(); toast('納品完了にしました(リストから外れます)');
+  }
+  if (act === 'proj-reopen') {
+    state = await window.api.updateProject(btn.dataset.id, { status: 'active' });
+    renderProjects(); toast('稼働中に戻しました');
+  }
+  if (act === 'box-open') await window.api.openUrl(btn.dataset.url);
+  if (act === 'cal-prev' || act === 'cal-next') {
+    const st = renderCalendarTab.ym;
+    st.m += act === 'cal-next' ? 1 : -1;
+    if (st.m < 0) { st.m = 11; st.y--; }
+    if (st.m > 11) { st.m = 0; st.y++; }
+    renderCalendarTab();
+  }
+  if (act === 'cal-day') openDayModal(btn.dataset.date);
   if (act === 'proj-toggle') {
     const p = state.projects.find(p => p.id === btn.dataset.id);
     state = await window.api.updateProject(btn.dataset.id, { active: !(p.active !== false) });
@@ -863,6 +1060,7 @@ function renderTab(tab) {
   if (tab === 'today') renderToday();
   if (tab === 'history') renderHistory();
   if (tab === 'projects') renderProjects();
+  if (tab === 'calendar') renderCalendarTab();
   if (tab === 'rules') renderRules();
   if (tab === 'settings') renderSettings();
   if (tab === 'admin') renderAdmin();

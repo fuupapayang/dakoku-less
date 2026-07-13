@@ -28,7 +28,8 @@ class Store {
       },
       days: {},        // { 'YYYY-MM-DD': dayRecord }
       rules: [],       // マイルール
-      projects: [],    // 案件マスター [{id,code,name,keywords,active}]
+      projects: [],    // 案件マスター [{id,code,name,client,sales[],makers[],boxUrl,status,keywords,active}]
+      calEvents: [],   // 共有カレンダー [{id,date,sMin,eMin,title,projectId,members,createdBy,updatedAt,deleted}]
       learnStats: { tokens: {}, slots: {}, totals: {}, n: 0 }, // 動向学習(語句・時間帯→案件回数のみ)
       remoteTeam: null, // Firebase同期で取得したチームの実データ
       team: null,      // 管理者ビュー用デモデータ
@@ -45,6 +46,14 @@ class Store {
         this.data = { ...this.data, ...raw, settings: { ...this.data.settings, ...(raw.settings || {}) } };
         if (!this.data.settings.sync) this.data.settings.sync = { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: '' };
         if (!this.data.learnStats) this.data.learnStats = { tokens: {}, slots: {}, totals: {}, n: 0 };
+        if (!this.data.calEvents) this.data.calEvents = [];
+        for (const p of this.data.projects || []) {
+          if (!p.sales) p.sales = [];
+          if (!p.makers) p.makers = [];
+          if (!p.status) p.status = 'active';
+          if (p.client == null) p.client = '';
+          if (p.boxUrl == null) p.boxUrl = '';
+        }
         // 旧バージョンのデータを補完
         for (const d of Object.values(this.data.days || {})) {
           if (!d.projectMin) d.projectMin = {};
@@ -90,7 +99,9 @@ class Store {
 
   addProject(p) {
     const proj = {
-      id: 'p' + this.data.projSeq++, active: true, keywords: [], createdAt: Date.now(),
+      id: 'p' + this.data.projSeq++, active: true, keywords: [],
+      client: '', sales: [], makers: [], boxUrl: '', status: 'active',
+      createdAt: Date.now(), updatedAt: Date.now(),
       ...p, code: String(p.code || '').trim(), name: String(p.name || '').trim()
     };
     this.data.projects.push(proj);

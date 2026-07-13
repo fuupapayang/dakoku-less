@@ -6,6 +6,7 @@ const Store = require('./src/store');
 const engine = require('./src/engine');
 const projectsLib = require('./src/projects');
 const learnLib = require('./src/learn');
+const calendarLib = require('./src/calendar');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
 
@@ -68,8 +69,9 @@ function flushUnclassified(day) {
 let lastLearnMin = 0;
 
 function trackWork(day, now, fg) {
+  const combinedCal = dayCalendar(day, day.date);
   const hit = projectsLib.classify({
-    title: fg && fg.title, calendar: day.calendar, now, projects: store.data.projects
+    title: fg && fg.title, calendar: combinedCal, now, projects: store.data.projects
   });
   if (hit) {
     day.projectMin[hit.id] = (day.projectMin[hit.id] || 0) + SAMPLE_MIN;
@@ -90,7 +92,7 @@ function trackWork(day, now, fg) {
   const tokens = projectsLib.tokenize(fg.title);
 
   // 動向学習による推論(個人+チーム統計、会議の余韻を加味)
-  const carryPid = learnLib.carryProject(day.calendar, now,
+  const carryPid = learnLib.carryProject(combinedCal, now,
     (t) => projectsLib.matchText(t, store.data.projects));
   const guess = learnLib.infer(
     [store.data.learnStats, ...teamStatsCache],
@@ -132,10 +134,19 @@ function persistInterval(day) {
   else day.intervals.push({ ...currentInterval });
 }
 
+/** ICSインポート分 + 共有カレンダー(自分に関係する予定)を結合 */
+function dayCalendar(day, key) {
+  return [
+    ...(day.calendar || []),
+    ...calendarLib.eventsForEngine(store.data.calEvents, key, settings().userName, store.data.projects)
+  ];
+}
+
 function reestimate(key) {
   const day = store.day(key);
   const prev = day.estimation;
-  day.estimation = engine.estimate(day, store.data.rules, settings());
+  day.estimation = engine.estimate(
+    { ...day, calendar: dayCalendar(day, key) }, store.data.rules, settings());
   if (!prev && day.estimation.start) logEvent(day, `始業を検知(${engine.fmtTime(day.estimation.start)} PC稼働)`);
   return day.estimation;
 }
@@ -251,7 +262,11 @@ async function runSync() {
     for (const p of store.data.projects) p.updatedAt = p.updatedAt || p.createdAt || Date.now();
     const merged = await sync.syncProjects(store.data.projects);
     store.data.projects = merged.map(p => ({ keywords: [], active: true, ...p }));
-    // 2) 自分の勤怠サマリー・学習統計をpush
+    // 2) 共有カレンダーをマージ
+    const remoteCal = (await sync.getDoc('meta/calendar')) || { events: [] };
+    store.data.calEvents = calendarLib.mergeEvents(store.data.calEvents, remoteCal.events || []);
+    await sync.setDoc('meta/calendar', { events: store.data.calEvents, updatedAt: Date.now() });
+    // 3) 自分の勤怠サマリー・学習統計をpush
     await sync.pushSummary(store.data.days);
     await sync.pushDict(store.data.learnStats);
     // 3) チーム全体をpull
@@ -291,6 +306,7 @@ function buildState() {
     days,
     rules: store.data.rules,
     projects: store.data.projects,
+    calEvents: (store.data.calEvents || []).filter(ev => !ev.deleted),
     currentWork,
     learnN: store.data.learnStats ? store.data.learnStats.n : 0,
     team: store.data.team,
@@ -407,7 +423,7 @@ function registerIpc() {
   });
   ipcMain.handle('projects:update', (e, { id, patch }) => {
     const p = store.data.projects.find(p => p.id === id);
-    if (p) Object.assign(p, patch);
+    if (p) { Object.assign(p, patch); p.updatedAt = Date.now(); }
     store.save(); pushUpdate(); return buildState();
   });
   ipcMain.handle('projects:delete', (e, id) => {
@@ -454,6 +470,33 @@ function registerIpc() {
   ipcMain.handle('sync:now', async () => {
     const r = await runSync();
     return { ...r, state: buildState() };
+  });
+
+  // 共有カレンダー
+  ipcMain.handle('cal:add', (e, ev) => {
+    store.data.calEvents.push({
+      id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      date: ev.date, sMin: ev.sMin, eMin: ev.eMin,
+      title: String(ev.title || '予定').slice(0, 80),
+      projectId: ev.projectId || null,
+      members: ev.members || [],
+      createdBy: settings().userName,
+      updatedAt: Date.now(), deleted: false
+    });
+    if (currentKey) reestimate(currentKey);
+    store.save(); pushUpdate();
+    return buildState();
+  });
+  ipcMain.handle('cal:delete', (e, id) => {
+    const ev = store.data.calEvents.find(ev => ev.id === id);
+    if (ev) { ev.deleted = true; ev.updatedAt = Date.now(); }
+    if (currentKey) reestimate(currentKey);
+    store.save(); pushUpdate();
+    return buildState();
+  });
+  ipcMain.handle('misc:openUrl', (e, url) => {
+    if (/^https?:\/\//.test(String(url))) shell.openExternal(url);
+    return true;
   });
 
   // macOS権限まわり

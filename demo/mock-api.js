@@ -10,8 +10,20 @@
   let ruleSeq = 3, projSeq = 3;
 
   const projects = [
-    { id: 'p1', code: 'F000', name: '山田商事 在庫管理システム', keywords: ['山田商事', '在庫管理'], active: true, createdAt: Date.now() - 20 * 86400000 },
-    { id: 'p2', code: 'T123', name: '鈴木建設 勤怠システム導入', keywords: ['鈴木建設'], active: true, createdAt: Date.now() - 15 * 86400000 }
+    { id: 'p1', code: 'F000', name: '在庫管理システム刷新', client: '山田商事', sales: ['あなた', '佐藤 美咲'], makers: ['田中 蓮'], boxUrl: 'https://app.box.com/folder/000000001', status: 'active', keywords: ['山田商事', '在庫管理'], active: true, createdAt: Date.now() - 20 * 86400000 },
+    { id: 'p2', code: 'T123', name: '勤怠システム導入', client: '鈴木建設', sales: ['佐藤 美咲'], makers: ['高橋 大和'], boxUrl: 'https://app.box.com/folder/000000002', status: 'active', keywords: ['鈴木建設'], active: true, createdAt: Date.now() - 15 * 86400000 },
+    { id: 'p3', code: 'F001', name: 'ECサイト保守', client: 'ABC商店', sales: ['あなた'], makers: ['田中 蓮'], boxUrl: '', status: 'delivered', keywords: [], active: true, createdAt: Date.now() - 40 * 86400000 }
+  ];
+
+  const calKey = (offset) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+    return key(d);
+  };
+  let calSeq = 4;
+  const calEvents = [
+    { id: 'c1', date: calKey(0), sMin: 840, eMin: 870, title: '定例会議', projectId: 'p1', members: [], createdBy: '佐藤 美咲', updatedAt: 1 },
+    { id: 'c2', date: calKey(1), sMin: 600, eMin: 660, title: '先方訪問', projectId: 'p2', members: ['佐藤 美咲', '高橋 大和'], createdBy: '佐藤 美咲', updatedAt: 1 },
+    { id: 'c3', date: calKey(3), sMin: 900, eMin: 960, title: '納品', projectId: 'p1', members: [], createdBy: 'あなた', updatedAt: 1 }
   ];
 
   function makeToday() {
@@ -136,7 +148,7 @@
       { id: 'r1', label: '移動時間', treatAs: 'exclude', fromMin: 630, toMin: 660, weekday: 2, enabled: true, createdAt: Date.now() - 5 * 86400000 },
       { id: 'r2', label: '昼休憩(遅め)', treatAs: 'break', fromMin: 780, toMin: 840, weekday: null, enabled: true, createdAt: Date.now() - 3 * 86400000 }
     ],
-    projects, learnN: 42,
+    projects, calEvents, learnN: 42,
     currentWork: { projectId: 'p1', code: 'F000', name: '山田商事 在庫管理システム', via: 'keyword', app: 'Excel' },
     team: seedTeam(), remoteTeam: null,
     syncStatus: { state: 'idle', lastSync: null, error: null, members: 0 },
@@ -178,9 +190,15 @@
     addProject: async (p) => {
       if (!/^[A-Z]+\d+$/.test(p.code)) return { error: '案件コードは「大文字英字+数字」(例: F000, T123)で入力してください' };
       if (state.projects.some(x => x.code === p.code)) return { error: `案件コード ${p.code} は既に登録されています` };
-      state.projects.push({ id: 'p' + ++projSeq, active: true, keywords: [], createdAt: Date.now(), ...p });
+      state.projects.push({ id: 'p' + ++projSeq, active: true, keywords: [], client: '', sales: [], makers: [], boxUrl: '', status: 'active', createdAt: Date.now(), ...p });
       return S();
     },
+    addCalEvent: async (ev) => {
+      state.calEvents.push({ id: 'c' + ++calSeq, createdBy: state.settings.userName, updatedAt: Date.now(), deleted: false, ...ev });
+      return S();
+    },
+    deleteCalEvent: async (id) => { state.calEvents = state.calEvents.filter(ev => ev.id !== id); return S(); },
+    openUrl: async (url) => { window.open(url, '_blank'); return true; },
     updateProject: async (id, patch) => { const p = state.projects.find(p => p.id === id); if (p) Object.assign(p, patch); return S(); },
     deleteProject: async (id) => { state.projects = state.projects.filter(p => p.id !== id); return S(); },
     assignBlock: async (k, idx, pid, kws) => {

@@ -155,6 +155,27 @@ input:focus, select:focus { outline: 2px solid var(--green-bg); border-color: va
 .break-edit { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .break-edit input { margin-top: 0; }
 
+/* filter chips */
+.filter-chips { display: flex; gap: 6px; }
+.fchip { border: 1px solid var(--line); background: #fff; color: var(--sub); font-size: 12px; font-weight: 700; padding: 5px 14px; border-radius: 99px; cursor: pointer; }
+.fchip.on { background: var(--green); border-color: var(--green); color: #fff; }
+th.sortable { cursor: pointer; }
+th.sortable:hover { color: var(--green-dark); }
+
+/* calendar */
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
+.cal-head { background: #eef2ef; font-size: 11px; font-weight: 700; color: var(--sub); text-align: center; padding: 6px 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.cal-cell { min-height: 86px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 4px 5px; cursor: pointer; background: #fff; }
+.cal-cell:hover { background: var(--green-bg); }
+.cal-cell.other { background: #fafbfa; color: #b7c2ba; }
+.cal-cell.today-cell { outline: 2px solid var(--green); outline-offset: -2px; }
+.cal-cell .dnum { font-size: 11px; font-weight: 700; color: var(--sub); }
+.cal-cell.other .dnum { color: #c3cdc6; }
+.cal-ev { font-size: 10.5px; background: var(--green-bg); color: var(--green-dark); border-radius: 5px; padding: 1px 5px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-ev.noproj { background: #eef1ef; color: var(--sub); }
+.cal-nav { display: flex; align-items: center; gap: 12px; }
+.cal-nav h2 { margin: 0; }
+
 /* toast */
 #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #17251b; color: #fff; padding: 10px 20px; border-radius: 99px; font-size: 13px; opacity: 0; pointer-events: none; transition: .25s; z-index: 99; }
 #toast.show { opacity: 1; }
