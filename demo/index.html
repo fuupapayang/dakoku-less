@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DakokuLess — ブラウザデモ</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.demo-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+  background: #f0a92e; color: #fff; font-size: 12px; font-weight: 700;
+  text-align: center; padding: 5px 8px;
+  font-family: "Hiragino Sans", "Yu Gothic UI", sans-serif;
+}
+.app { padding-top: 26px; }
+</style>
+</head>
+<body>
+<div class="demo-banner">ブラウザデモ — 画面構成の確認用サンプルデータです(保存されません)。実際のPC稼働検知・チーム同期はデスクトップ版でのみ動作します</div>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="dot"></span> DakokuLess</div>
+    <nav id="nav">
+      <button class="nav-btn active" data-tab="today">今日の勤務</button>
+      <button class="nav-btn" data-tab="history">履歴</button>
+      <button class="nav-btn" data-tab="projects">案件</button>
+      <button class="nav-btn" data-tab="rules">マイルール</button>
+      <button class="nav-btn" data-tab="settings">設定</button>
+      <div class="nav-sep">ADMIN</div>
+      <button class="nav-btn" data-tab="admin">管理者ビュー</button>
+    </nav>
+    <div class="privacy-note">
+      🔒 ログはメモリ上で推論後、即時削除。残るのは「何時から何時まで働いたか」だけです。
+    </div>
+  </aside>
+
+  <main class="main">
+    <section id="tab-today" class="tab active"></section>
+    <section id="tab-history" class="tab"></section>
+    <section id="tab-projects" class="tab"></section>
+    <section id="tab-rules" class="tab"></section>
+    <section id="tab-settings" class="tab"></section>
+    <section id="tab-admin" class="tab"></section>
+  </main>
+</div>
+<div id="modal-root"></div>
+<div id="toast"></div>
+<script src="mock-api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
