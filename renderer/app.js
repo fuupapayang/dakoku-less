@@ -817,7 +817,18 @@ function renderAdmin() {
       </table>
     </div>
     <div class="card">
-      <div class="row"><h2 class="grow">案件別 工数マトリクス(直近30日)</h2>
+      <div class="row"><h2 class="grow">工数レポート ― 誰が・どの案件を・どれだけ(${reportRange().label})</h2>
+        <select id="rep-preset" style="width:130px;margin:0">
+          <option value="30d" ${reportRange().preset === '30d' ? 'selected' : ''}>直近30日</option>
+          <option value="90d" ${reportRange().preset === '90d' ? 'selected' : ''}>直近90日</option>
+          <option value="thisMonth" ${reportRange().preset === 'thisMonth' ? 'selected' : ''}>今月</option>
+          <option value="lastMonth" ${reportRange().preset === 'lastMonth' ? 'selected' : ''}>先月</option>
+          <option value="custom" ${reportRange().preset === 'custom' ? 'selected' : ''}>期間指定</option>
+        </select>
+        ${reportRange().preset === 'custom' ? `
+          <input type="date" id="rep-from" value="${esc(renderAdmin.range.from || '')}" style="width:150px;margin:0">
+          <span class="muted">〜</span>
+          <input type="date" id="rep-to" value="${esc(renderAdmin.range.to || '')}" style="width:150px;margin:0">` : ''}
         <button class="btn sm" data-act="csv-long">シート用CSV出力</button>
         <button class="btn sm" data-act="csv-export">CSV出力</button></div>
       ${projMatrixHTML()}
@@ -844,16 +855,43 @@ function syncStatusHTML() {
 /* ---------- 管理者: 案件マトリクス ---------- */
 function hashN(s) { let h = 7; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
 
-/** 人×案件の直近30日集計。本人は実データ、デモメンバーは決定論的な擬似配分 */
+/** 集計期間の状態と解決。preset: 30d | 90d | thisMonth | lastMonth | custom */
+function reportRange() {
+  const r = renderAdmin.range || { preset: '30d', from: '', to: '' };
+  renderAdmin.range = r;
+  const now = new Date();
+  const day = (y, m, d) => new Date(y, m, d).getTime();
+  let fromTs, toTs, label;
+  switch (r.preset) {
+    case 'thisMonth':
+      fromTs = day(now.getFullYear(), now.getMonth(), 1);
+      toTs = Date.now(); label = '今月'; break;
+    case 'lastMonth':
+      fromTs = day(now.getFullYear(), now.getMonth() - 1, 1);
+      toTs = day(now.getFullYear(), now.getMonth(), 1) - 1; label = '先月'; break;
+    case '90d':
+      fromTs = Date.now() - 90 * 86400000; toTs = Date.now(); label = '直近90日'; break;
+    case 'custom':
+      fromTs = r.from ? new Date(r.from).getTime() : 0;
+      toTs = r.to ? new Date(r.to).getTime() + 86399999 : Date.now();
+      label = `${r.from || '…'}〜${r.to || '…'}`; break;
+    default:
+      fromTs = Date.now() - 30 * 86400000; toTs = Date.now(); label = '直近30日';
+  }
+  return { fromTs, toTs, label, preset: r.preset };
+}
+
+/** 人×案件の期間集計(誰が・どの案件を・どれだけ)。本人+同期メンバーは実データ */
 function buildMatrix() {
   const projects = (state.projects || []).filter(p => p.active !== false);
   if (!projects.length) return null;
-  const cutoff = Date.now() - 30 * 86400000;
+  const { fromTs, toTs } = reportRange();
+  const inRange = (k) => { const t = new Date(k).getTime(); return t >= fromTs && t <= toTs; };
   const rows = [];
   // 本人(実データ)
   const mine = { name: state.settings.userName + '(あなた)', cells: {}, unclassified: 0 };
   for (const [k, d] of Object.entries(state.days)) {
-    if (new Date(k).getTime() < cutoff) continue;
+    if (!inRange(k)) continue;
     for (const [pid, min] of Object.entries(d.projectMin || {}))
       mine.cells[pid] = (mine.cells[pid] || 0) + Math.round(min);
     mine.unclassified += (d.unclassified || []).reduce((a, b) => a + Math.round((b.e - b.s) / 60000), 0);
@@ -867,7 +905,7 @@ function buildMatrix() {
     for (const m of remote) {
       const r = { name: m.name, cells: {}, unclassified: 0 };
       for (const [k, d] of Object.entries(m.days || {})) {
-        if (new Date(k).getTime() < cutoff) continue;
+        if (!inRange(k)) continue;
         let assigned = 0;
         for (const [pid, min] of Object.entries(d.projectMin || {})) {
           r.cells[pid] = (r.cells[pid] || 0) + Math.round(min);
@@ -882,7 +920,7 @@ function buildMatrix() {
     for (const m of (state.team ? state.team.members : [])) {
       const r = { name: m.name + ' *', cells: {}, unclassified: 0 };
       for (const [k, d] of Object.entries(m.days)) {
-        if (new Date(k).getTime() < cutoff || !d.workMin) continue;
+        if (!inRange(k) || !d.workMin) continue;
         const weights = projects.map(p => 1 + hashN(m.id + p.id) % 5);
         const wsum = weights.reduce((a, b) => a + b, 0) + 2;
         projects.forEach((p, i) => {
@@ -911,15 +949,16 @@ function projMatrixHTML() {
     <p class="muted mt8">${m.remote ? 'チーム同期による実データです。' : '* はデモデータ(擬似配分)。チーム同期を有効にすると実データに置き換わります。'}</p>`;
 }
 
-/** シート用CSV(縦持ち): 日付,メンバー,案件コード,案件名,分 */
+/** シート用CSV(縦持ち): 日付,メンバー,案件コード,案件名,分 ― 選択期間 */
 function exportLongCSV() {
   const projects = state.projects || [];
   const byId = Object.fromEntries(projects.map(p => [p.id, p]));
-  const cutoff = Date.now() - 30 * 86400000;
+  const { fromTs, toTs } = reportRange();
   const lines = [['日付', 'メンバー', '案件コード', '案件名', '分']];
   const pushDays = (name, days, projectMinGetter) => {
     for (const [k, d] of Object.entries(days)) {
-      if (new Date(k).getTime() < cutoff) continue;
+      const t = new Date(k).getTime();
+      if (t < fromTs || t > toTs) continue;
       for (const [pid, min] of Object.entries(projectMinGetter(d) || {})) {
         const p = byId[pid];
         if (Math.round(min) > 0) lines.push([k, name, p ? p.code : pid, p ? p.name : '(削除済み)', Math.round(min)]);
@@ -1194,6 +1233,9 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', (e) => {
   if (e.target.id === 'adm-date') { renderAdmin.date = e.target.value; renderAdmin(); }
+  if (e.target.id === 'rep-preset') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
+  if (e.target.id === 'rep-from') { renderAdmin.range.from = e.target.value; renderAdmin(); }
+  if (e.target.id === 'rep-to') { renderAdmin.range.to = e.target.value; renderAdmin(); }
 });
 
 /* ---------- ナビ / 描画 ---------- */
