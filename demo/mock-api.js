@@ -141,7 +141,7 @@
     settings: {
       submitMode: 'moderate', breakThresholdMin: 15, ambiguousMin: 8, mergeGapMin: 3,
       idleThresholdSec: 90, dayStartHour: 4, userName: 'あなた', autoLaunch: true, trackWork: true,
-      notifications: true, hourlyRate: 5000,
+      notifications: true, hourlyRate: 5000, watchRoots: [],
       sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' }
     },
     todayKey, days,
@@ -201,8 +201,8 @@
     deleteCalEvent: async (id) => { state.calEvents = state.calEvents.filter(ev => ev.id !== id); return S(); },
     openUrl: async (url) => { window.open(url, '_blank'); return true; },
     importFolderProjects: async () => ({ ok: false, error: 'ブラウザデモでは利用できません(デスクトップ版の機能です)' }),
-    requestAx: async () => false,
-    disableFolderDetect: async () => { state.settings.folderDetect = false; return S(); },
+    addWatchRoot: async () => ({ ok: false, canceled: true }),
+    removeWatchRoot: async () => S(),
     updateProject: async (id, patch) => { const p = state.projects.find(p => p.id === id); if (p) Object.assign(p, patch); return S(); },
     deleteProject: async (id) => { state.projects = state.projects.filter(p => p.id !== id); return S(); },
     assignBlock: async (k, idx, pid, kws) => {

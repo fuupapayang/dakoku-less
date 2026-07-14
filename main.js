@@ -2,12 +2,12 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
 const Store = require('./src/store');
 const engine = require('./src/engine');
 const projectsLib = require('./src/projects');
 const learnLib = require('./src/learn');
 const calendarLib = require('./src/calendar');
+const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
 
@@ -35,48 +35,13 @@ let currentWork = null;     // {projectId, code, name, via, app} | null
 let curUnc = null;          // 進行中の未分類ブロック {s, e, tokenCounts}
 let teamStatsCache = [];    // チームメンバーの学習統計(同期で取得、メモリのみ)
 let sync = null;            // Firebase同期
+let watcher = null;         // フォルダ監視
+let recentFolderHit = null; // { folder, pid, ts } 直近のファイル更新による案件検知
 
 /** macOSの画面収録権限。granted以外のときはactive-winを呼ばない(権限アラート連発防止) */
 function screenPermission() {
   if (process.platform !== 'darwin') return 'granted';
   try { return systemPreferences.getMediaAccessStatus('screen'); } catch (e) { return 'unknown'; }
-}
-
-/**
- * 前面アプリで開いている書類のフルパス(macOSのみ)。
- * F599_xxx フォルダ内のファイルを開いていれば、パスに含まれるフォルダ名で案件判定できる。
- * アクセシビリティ権限が必要。失敗時は10分間リトライしない(プロンプト連発防止)。
- */
-let axFailUntil = 0;
-function axTrustedNow() {
-  if (process.platform !== 'darwin') return false;
-  try { return systemPreferences.isTrustedAccessibilityClient(false); } catch (e) { return false; }
-}
-function getDocPath() {
-  return new Promise((resolve) => {
-    // フォルダ判定が明示的にONで、かつ権限が許可済みのときだけ実行(既定では一切呼ばない)
-    if (settings().folderDetect !== true) return resolve(null);
-    if (process.platform !== 'darwin' || !axTrustedNow() || Date.now() < axFailUntil) return resolve(null);
-    execFile('osascript', ['-e',
-      'tell application "System Events" to tell (first application process whose frontmost is true) to get value of attribute "AXDocument" of front window'
-    ], { timeout: 3000 }, (err, stdout) => {
-      if (err) {
-        // 権限が通らない場合はフォルダ判定を自動オフにして二度と試みない(ダイアログ連発の根絶)
-        axFailUntil = Date.now() + 60 * 60 * 1000;
-        if (settings().folderDetect) {
-          settings().folderDetect = false;
-          store.save();
-          notify('フォルダ判定を自動でオフにしました', 'アクセシビリティ権限が確認できなかったため無効化しました。他の判定(タイトル・キーワード)は通常どおり動作します。');
-          pushUpdate();
-        }
-        return resolve(null);
-      }
-      const out = String(stdout || '').trim();
-      if (!out || out === 'missing value') return resolve(null);
-      try { resolve(decodeURIComponent(out.replace(/^file:\/\//, ''))); }
-      catch (e) { resolve(out); }
-    });
-  });
 }
 
 async function getForeground() {
@@ -89,9 +54,21 @@ async function getForeground() {
   try {
     const w = await activeWinFn();
     if (!w) return null;
-    const docPath = await getDocPath();
-    return { title: w.title || '', app: (w.owner && w.owner.name) || '', docPath };
+    return { title: w.title || '', app: (w.owner && w.owner.name) || '' };
   } catch (e) { return null; }
+}
+
+/** フォルダ監視: 案件フォルダ内のファイル更新を検知して案件を対応づける */
+function onFolderHit(folder) {
+  const hit = projectsLib.matchText(folder, store.data.projects);
+  if (hit) recentFolderHit = { folder, pid: hit.id, ts: Date.now() };
+}
+
+function startWatcher() {
+  if (watcher) watcher.stop();
+  watcher = new Watcher(onFolderHit);
+  const roots = (settings().watchRoots || []).filter(Boolean);
+  if (roots.length) watcher.start(roots);
 }
 
 function syncUnc(day) {
@@ -110,21 +87,27 @@ let lastLearnMin = 0;
 
 function trackWork(day, now, fg) {
   const combinedCal = dayCalendar(day, day.date);
-  // タイトル+書類パスを判定対象に(パスに F599_xxx フォルダが含まれれば案件判定される)
-  const text = [fg && fg.title, fg && fg.docPath].filter(Boolean).join(' ');
-  const hit = projectsLib.classify({
+  const text = (fg && fg.title) || '';
+  let hit = projectsLib.classify({
     title: text, calendar: combinedCal, now, projects: store.data.projects
   });
+  // タイトルで判定できない場合、直近45秒以内に案件フォルダ内のファイルが
+  // 更新されていれば、その案件を作業中とみなす(フォルダ監視方式)
+  let viaFolder = false;
+  if (!hit && recentFolderHit && now - recentFolderHit.ts <= 45000) {
+    const p = store.data.projects.find(p => p.id === recentFolderHit.pid);
+    if (p && p.active !== false) { hit = { id: p.id, code: p.code, name: p.name, via: 'folder' }; viaFolder = true; }
+  }
   if (hit) {
     day.projectMin[hit.id] = (day.projectMin[hit.id] || 0) + SAMPLE_MIN;
     currentWork = { projectId: hit.id, code: hit.code, name: hit.name, via: hit.via, app: fg ? fg.app : '' };
     flushUnclassified(day);
-    // 確定判定から動向を弱く学習(1分に1回)
+    // 確定判定から動向を弱く学習(1分に1回)。フォルダ判定時はタイトル語句を学習して精度向上
     const nowMin = Math.floor(now / 60000);
     if (fg && text && nowMin !== lastLearnMin) {
       lastLearnMin = nowMin;
       learnLib.learn(store.data.learnStats, {
-        tokens: projectsLib.tokenize(text), ts: now, projectId: hit.id, weight: 1
+        tokens: projectsLib.tokenize(text), ts: now, projectId: hit.id, weight: viaFolder ? 2 : 1
       });
     }
     return;
@@ -414,9 +397,7 @@ function buildState() {
     remoteTeam: store.data.remoteTeam,
     syncStatus: sync ? sync.status : null,
     screenPermission: screenPermission(),
-    axTrusted: process.platform === 'darwin'
-      ? (() => { try { return systemPreferences.isTrustedAccessibilityClient(false); } catch (e) { return false; } })()
-      : true,
+    watchRoots: settings().watchRoots || [],
     recording: !!currentInterval,
     platform: process.platform
   };
@@ -472,10 +453,30 @@ function registerIpc() {
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
     }
-    // 注: アクセシビリティ許可のダイアログは自動では出さない。
-    // 案件タブの「フォルダ判定を有効にする」ボタン(perm:requestAx)からのみ表示する。
+    if ('watchRoots' in patch) startWatcher();
     if (currentKey) reestimate(currentKey);
     store.save();
+    return buildState();
+  });
+
+  // フォルダ監視の対象フォルダを選択(署名不要・アクセシビリティ不要)
+  ipcMain.handle('watch:addRoot', async () => {
+    const res = await dialog.showOpenDialog(win, {
+      title: '案件フォルダが並んでいる親フォルダを選択',
+      properties: ['openDirectory']
+    });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, canceled: true };
+    const roots = new Set(settings().watchRoots || []);
+    roots.add(res.filePaths[0]);
+    settings().watchRoots = [...roots];
+    startWatcher();
+    store.save(); pushUpdate();
+    return { ok: true, state: buildState() };
+  });
+  ipcMain.handle('watch:removeRoot', (e, root) => {
+    settings().watchRoots = (settings().watchRoots || []).filter(r => r !== root);
+    startWatcher();
+    store.save(); pushUpdate();
     return buildState();
   });
 
@@ -628,18 +629,7 @@ function registerIpc() {
     return { ok: true, added, skipped };
   });
 
-  // macOS権限まわり
-  ipcMain.handle('perm:requestAx', () => {
-    axFailUntil = 0;
-    settings().folderDetect = true; // ボタン押下で明示的にオプトイン
-    store.save();
-    try { return systemPreferences.isTrustedAccessibilityClient(true); } catch (e) { return false; }
-  });
-  ipcMain.handle('perm:disableFolder', () => {
-    settings().folderDetect = false;
-    store.save(); pushUpdate();
-    return buildState();
-  });
+  // macOS権限まわり(画面収録のみ。アクセシビリティは使用しません)
   ipcMain.handle('perm:openSettings', (e, pane) => {
     shell.openExternal('x-apple.systempreferences:com.apple.preference.security?' + (pane || 'Privacy_ScreenCapture'));
     return true;
@@ -707,6 +697,7 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   startTracker();
+  startWatcher();
   sync = new Sync(syncCfg);
   setInterval(() => { if (sync.enabled()) runSync(); }, 3 * 60 * 1000);
   setTimeout(() => { if (sync.enabled()) runSync(); }, 10 * 1000);
@@ -723,6 +714,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   quitting = true;
   if (sampleTimer) clearInterval(sampleTimer);
+  if (watcher) watcher.stop();
   if (currentKey && currentInterval) persistInterval(store.day(currentKey));
   if (currentKey) flushUnclassified(store.day(currentKey));
   if (store) store.save();

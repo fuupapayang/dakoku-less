@@ -297,7 +297,7 @@ function workLineHTML() {
   const w = state.currentWork;
   let label;
   if (!w) label = '<span class="muted">計測待機中</span>';
-  else if (w.projectId) label = `<b>${esc(projName(w.projectId))}</b> <span class="muted">(${{ code: 'コード', keyword: 'キーワード', calendar: '会議' }[w.via] || ''}判定${w.app ? ' ・ ' + esc(w.app) : ''})</span>`;
+  else if (w.projectId) label = `<b>${esc(projName(w.projectId))}</b> <span class="muted">(${{ code: 'コード', keyword: 'キーワード', calendar: '会議', folder: 'フォルダ', ai: 'AI' }[w.via] || ''}判定${w.app ? ' ・ ' + esc(w.app) : ''})</span>`;
   else label = `<span class="muted">案件未判定${w.app ? '(' + esc(w.app) + ')' : ''}</span>`;
   return `<div class="mt8">現在の作業: ${label}</div>`;
 }
@@ -425,24 +425,20 @@ function renderProjects() {
           <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
         </div>
       </div>` : ''}
-      ${s.trackWork && state.platform === 'darwin' ? (
-        !s.folderDetect ? `
-        <div class="mt8 muted">フォルダ判定(任意): オフです。F599_案件名 フォルダ内のファイルをファイル名を問わず判定したい場合のみ、下のボタンで有効化してください(アクセシビリティ許可が必要)。
-          <button class="btn sm" data-act="folder-enable" style="margin-left:8px">フォルダ判定を有効にする</button></div>`
-        : state.axTrusted === false ? `
-        <div class="suggestion mt8" style="background:var(--amber-bg);border-color:#f3ddb0">
-          <div class="who" style="color:var(--amber)">フォルダ判定: アクセシビリティが未許可です</div>
-          <div>システム設定 → プライバシーとセキュリティ → アクセシビリティで、一覧に本アプリがあれば一度「−」で削除 → 「+」で /Applications/全自動勤怠管理くん.app を追加してON → アプリを再起動してください。うまくいかない場合は無効に戻せます。</div>
-          <div class="actions">
-            <button class="btn sm" data-act="perm-open-ax">システム設定を開く</button>
-            <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
-            <button class="btn sm ghost" data-act="folder-disable">フォルダ判定を無効に戻す</button>
-          </div>
-        </div>`
-        : `<div class="mt8 muted">フォルダ判定: 有効(書類パスから案件を自動判定しています)。
-          <button class="btn sm ghost" data-act="folder-disable" style="margin-left:8px">無効にする</button></div>`
-      ) : ''}
       ${workLineHTML()}
+    </div>
+
+    <div class="card">
+      <h2>フォルダ監視(案件フォルダ内の作業を自動計上)</h2>
+      <p class="muted">案件フォルダが並んでいる親フォルダを登録すると、F599_案件名 フォルダ内のファイルを
+      保存・更新したときに、その時間をF599の作業として自動計上します。
+      <b>アクセシビリティ等の特別な許可は不要</b>で、権限ダイアログも出ません(ファイルの中身は読みません)。</p>
+      ${(state.watchRoots || []).length ? `<div class="mt8">
+        ${(state.watchRoots || []).map(r => `<div class="rule-item">
+          <div class="grow"><b>監視中</b> <span class="meta">${esc(r)}</span></div>
+          <button class="btn sm ghost danger" data-act="watch-remove" data-root="${esc(r)}">解除</button>
+        </div>`).join('')}</div>` : '<div class="muted mt8">まだ監視フォルダはありません。</div>'}
+      <button class="btn primary mt8" data-act="watch-add">📁 監視フォルダを追加</button>
     </div>
 
     <div class="card">
@@ -1200,19 +1196,19 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'proj-kw') openKeywordModal(btn.dataset.id);
   if (act === 'perm-open') await window.api.openScreenSettings();
-  if (act === 'perm-open-ax') await window.api.openScreenSettings('Privacy_Accessibility');
-  if (act === 'folder-enable') {
-    const ok = await window.api.requestAx();
-    state = await window.api.getState();
-    renderProjects();
-    toast(ok ? 'フォルダ判定を有効にしました' : 'システム設定でアクセシビリティを許可 → アプリを再起動してください');
-  }
-  if (act === 'folder-disable') {
-    state = await window.api.disableFolderDetect();
-    renderProjects();
-    toast('フォルダ判定を無効にしました');
-  }
   if (act === 'app-relaunch') await window.api.relaunchApp();
+  if (act === 'watch-add') {
+    const r = await window.api.addWatchRoot();
+    if (r.canceled) return;
+    state = r.state || await window.api.getState();
+    renderProjects();
+    toast('監視フォルダを追加しました');
+  }
+  if (act === 'watch-remove') {
+    state = await window.api.removeWatchRoot(btn.dataset.root);
+    renderProjects();
+    toast('監視を解除しました');
+  }
   if (act === 'proj-import') {
     const r = await window.api.importFolderProjects();
     if (r.canceled) return;

@@ -1,12 +1,12 @@
 {
   "name": "dakoku-less",
   "productName": "全自動勤怠管理くん",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "AIが勤務時間を自動推定する、打刻を感じさせない勤怠デスクトップアプリ",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/engine.test.js && node test/projects.test.js && node test/learn.test.js && node test/calendar.test.js",
+    "test": "node test/engine.test.js && node test/projects.test.js && node test/learn.test.js && node test/calendar.test.js && node test/watcher.test.js",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win"
