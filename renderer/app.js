@@ -1,5 +1,5 @@
 'use strict';
-/* DakokuLess renderer */
+/* 全自動勤怠管理くん renderer */
 let state = null;
 let activeTab = 'today';
 
@@ -79,7 +79,7 @@ function timelineHTML(est) {
 
 function suggestionHTML(sug, key, idx) {
   return `<div class="suggestion" data-key="${esc(key)}" data-idx="${idx}">
-    <div class="who">DakokuLess AI</div>
+    <div class="who">全自動勤怠管理くん AI</div>
     <div>${esc(sug.text)}</div>
     <div class="actions">
       <button class="btn primary sm" data-act="sug-add">マイルールに追加</button>
@@ -418,7 +418,7 @@ function renderProjects() {
       ${s.trackWork && state.platform === 'darwin' && state.screenPermission !== 'granted' ? `
       <div class="suggestion mt8" style="background:var(--amber-bg);border-color:#f3ddb0">
         <div class="who" style="color:var(--amber)">画面収録の権限が未反映です(現在: ${esc(state.screenPermission)})</div>
-        <div>① 下のボタンからシステム設定を開き、DakokuLess を許可(一覧になければ「+」で /Applications/DakokuLess.app を追加)<br>
+        <div>① 下のボタンからシステム設定を開き、全自動勤怠管理くんを許可(一覧になければ「+」で /Applications/全自動勤怠管理くん.app を追加)<br>
         ② <b>許可後は必ずアプリを再起動</b>してください。反映されるまで計測は自動的に一時停止しています(アラートは出ません)。</div>
         <div class="actions">
           <button class="btn sm" data-act="perm-open">システム設定を開く</button>
@@ -1059,7 +1059,7 @@ function openProposalModal(proposals) {
   root.innerHTML = `<div class="overlay"><div class="modal">
     <h2>AIからの提案 — マイルール化しますか？</h2>
     ${proposals.map((p, i) => `<div class="suggestion" data-i="${i}">
-      <div class="who">DakokuLess AI</div><div>${esc(p.text)}</div>
+      <div class="who">全自動勤怠管理くん AI</div><div>${esc(p.text)}</div>
       <div class="actions">
         <button class="btn primary sm" data-act="prop-add" data-i="${i}">マイルールに追加</button>
         <button class="btn sm" data-act="prop-skip" data-i="${i}">今回だけ</button>

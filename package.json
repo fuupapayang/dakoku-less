@@ -1,7 +1,7 @@
 {
   "name": "dakoku-less",
-  "productName": "DakokuLess",
-  "version": "0.5.1",
+  "productName": "全自動勤怠管理くん",
+  "version": "0.5.2",
   "description": "AIが勤務時間を自動推定する、打刻を感じさせない勤怠デスクトップアプリ",
   "main": "main.js",
   "scripts": {
@@ -20,7 +20,7 @@
   },
   "build": {
     "appId": "jp.example.dakokuless",
-    "productName": "DakokuLess",
+    "productName": "全自動勤怠管理くん",
     "files": ["main.js", "preload.js", "src/**/*", "renderer/**/*", "assets/**/*"],
     "mac": { "category": "public.app-category.productivity", "target": "dmg" },
     "win": { "target": "nsis" },

@@ -381,7 +381,7 @@ function buildState() {
 function createWindow() {
   win = new BrowserWindow({
     width: 1180, height: 780, minWidth: 900, minHeight: 600,
-    title: 'DakokuLess',
+    title: '全自動勤怠管理くん',
     backgroundColor: '#f5f7f6',
     icon: path.join(__dirname, 'assets/icon.png'),
     webPreferences: {
@@ -400,14 +400,14 @@ function updateTray() {
   const day = currentKey ? store.day(currentKey) : null;
   const est = day && day.estimation;
   const status = currentInterval ? '記録中' : '待機中';
-  tray.setToolTip(`DakokuLess ${status}` + (est && est.start ? ` | ${engine.fmtTime(est.start)}〜 稼働 ${engine.fmtDur(est.workMin)}` : ''));
+  tray.setToolTip(`全自動勤怠管理くん ${status}` + (est && est.start ? ` | ${engine.fmtTime(est.start)}〜 稼働 ${engine.fmtDur(est.workMin)}` : ''));
 }
 
 function createTray() {
   const img = nativeImage.createFromPath(path.join(__dirname, 'assets/tray.png'));
   tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img.resize({ width: 16, height: 16 }));
   const menu = Menu.buildFromTemplate([
-    { label: 'DakokuLess を開く', click: () => { win.show(); win.focus(); } },
+    { label: '全自動勤怠管理くんを開く', click: () => { win.show(); win.focus(); } },
     { type: 'separator' },
     { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
     { type: 'separator' },
