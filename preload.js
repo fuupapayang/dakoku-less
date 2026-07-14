@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteCalEvent: (id) => ipcRenderer.invoke('cal:delete', id),
   openUrl: (url) => ipcRenderer.invoke('misc:openUrl', url),
   openScreenSettings: (pane) => ipcRenderer.invoke('perm:openSettings', pane),
+  requestAx: () => ipcRenderer.invoke('perm:requestAx'),
   importFolderProjects: () => ipcRenderer.invoke('projects:importFolder'),
   relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
   importCalendar: () => ipcRenderer.invoke('calendar:import'),

@@ -48,9 +48,14 @@ function screenPermission() {
  * アクセシビリティ権限が必要。失敗時は10分間リトライしない(プロンプト連発防止)。
  */
 let axFailUntil = 0;
+function axTrustedNow() {
+  if (process.platform !== 'darwin') return false;
+  try { return systemPreferences.isTrustedAccessibilityClient(false); } catch (e) { return false; }
+}
 function getDocPath() {
   return new Promise((resolve) => {
-    if (process.platform !== 'darwin' || Date.now() < axFailUntil) return resolve(null);
+    // 権限が「許可済み」と確認できるまでは一切試みない(ダイアログ再表示の防止)
+    if (process.platform !== 'darwin' || !axTrustedNow() || Date.now() < axFailUntil) return resolve(null);
     execFile('osascript', ['-e',
       'tell application "System Events" to tell (first application process whose frontmost is true) to get value of attribute "AXDocument" of front window'
     ], { timeout: 3000 }, (err, stdout) => {
@@ -456,11 +461,8 @@ function registerIpc() {
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
     }
-    if (patch.trackWork === true && process.platform === 'darwin') {
-      // フォルダ判定用のアクセシビリティ許可を促す(初回のみOSダイアログ表示)
-      try { systemPreferences.isTrustedAccessibilityClient(true); } catch (_) {}
-      axFailUntil = 0;
-    }
+    // 注: アクセシビリティ許可のダイアログは自動では出さない。
+    // 案件タブの「フォルダ判定を有効にする」ボタン(perm:requestAx)からのみ表示する。
     if (currentKey) reestimate(currentKey);
     store.save();
     return buildState();
@@ -616,6 +618,10 @@ function registerIpc() {
   });
 
   // macOS権限まわり
+  ipcMain.handle('perm:requestAx', () => {
+    axFailUntil = 0;
+    try { return systemPreferences.isTrustedAccessibilityClient(true); } catch (e) { return false; }
+  });
   ipcMain.handle('perm:openSettings', (e, pane) => {
     shell.openExternal('x-apple.systempreferences:com.apple.preference.security?' + (pane || 'Privacy_ScreenCapture'));
     return true;
