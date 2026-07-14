@@ -425,19 +425,23 @@ function renderProjects() {
           <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
         </div>
       </div>` : ''}
-      ${s.trackWork && state.platform === 'darwin' && state.screenPermission === 'granted' && state.axTrusted === false ? `
-      <div class="suggestion mt8">
-        <div class="who">フォルダ判定(任意・未許可のあいだは無効)</div>
-        <div>「アクセシビリティ」を許可すると、開いている書類のパスから判定できるようになり、
-        <b>F599_案件名 フォルダ内のファイルはファイル名を問わず自動でその案件に計上</b>されます。
-        許可しなくても他の機能はすべて動作し、ダイアログが繰り返し出ることはありません。<br>
-        手順: ①「システム設定を開く」→ アクセシビリティ一覧に本アプリがあれば一度「−」で削除 → 「+」で /Applications/全自動勤怠管理くん.app を追加してON → ②アプリを再起動。</div>
-        <div class="actions">
-          <button class="btn sm" data-act="perm-open-ax">システム設定を開く</button>
-          <button class="btn sm" data-act="perm-req-ax">許可ダイアログを表示</button>
-          <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
-        </div>
-      </div>` : ''}
+      ${s.trackWork && state.platform === 'darwin' ? (
+        !s.folderDetect ? `
+        <div class="mt8 muted">フォルダ判定(任意): オフです。F599_案件名 フォルダ内のファイルをファイル名を問わず判定したい場合のみ、下のボタンで有効化してください(アクセシビリティ許可が必要)。
+          <button class="btn sm" data-act="folder-enable" style="margin-left:8px">フォルダ判定を有効にする</button></div>`
+        : state.axTrusted === false ? `
+        <div class="suggestion mt8" style="background:var(--amber-bg);border-color:#f3ddb0">
+          <div class="who" style="color:var(--amber)">フォルダ判定: アクセシビリティが未許可です</div>
+          <div>システム設定 → プライバシーとセキュリティ → アクセシビリティで、一覧に本アプリがあれば一度「−」で削除 → 「+」で /Applications/全自動勤怠管理くん.app を追加してON → アプリを再起動してください。うまくいかない場合は無効に戻せます。</div>
+          <div class="actions">
+            <button class="btn sm" data-act="perm-open-ax">システム設定を開く</button>
+            <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
+            <button class="btn sm ghost" data-act="folder-disable">フォルダ判定を無効に戻す</button>
+          </div>
+        </div>`
+        : `<div class="mt8 muted">フォルダ判定: 有効(書類パスから案件を自動判定しています)。
+          <button class="btn sm ghost" data-act="folder-disable" style="margin-left:8px">無効にする</button></div>`
+      ) : ''}
       ${workLineHTML()}
     </div>
 
@@ -1197,9 +1201,16 @@ document.addEventListener('click', async (e) => {
   if (act === 'proj-kw') openKeywordModal(btn.dataset.id);
   if (act === 'perm-open') await window.api.openScreenSettings();
   if (act === 'perm-open-ax') await window.api.openScreenSettings('Privacy_Accessibility');
-  if (act === 'perm-req-ax') {
+  if (act === 'folder-enable') {
     const ok = await window.api.requestAx();
-    toast(ok ? '許可済みです。フォルダ判定が有効になりました' : 'システム設定で許可後、アプリを再起動してください');
+    state = await window.api.getState();
+    renderProjects();
+    toast(ok ? 'フォルダ判定を有効にしました' : 'システム設定でアクセシビリティを許可 → アプリを再起動してください');
+  }
+  if (act === 'folder-disable') {
+    state = await window.api.disableFolderDetect();
+    renderProjects();
+    toast('フォルダ判定を無効にしました');
   }
   if (act === 'app-relaunch') await window.api.relaunchApp();
   if (act === 'proj-import') {

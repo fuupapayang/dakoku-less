@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   openUrl: (url) => ipcRenderer.invoke('misc:openUrl', url),
   openScreenSettings: (pane) => ipcRenderer.invoke('perm:openSettings', pane),
   requestAx: () => ipcRenderer.invoke('perm:requestAx'),
+  disableFolderDetect: () => ipcRenderer.invoke('perm:disableFolder'),
   importFolderProjects: () => ipcRenderer.invoke('projects:importFolder'),
   relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
   importCalendar: () => ipcRenderer.invoke('calendar:import'),

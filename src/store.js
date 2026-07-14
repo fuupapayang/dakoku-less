@@ -24,6 +24,7 @@ class Store {
         notifications: true, // デスクトップ通知
         hourlyRate: 5000,    // 原価単価(円/h) 収益性計算用
         trackWork: false,    // 案件トラッキング(オプトイン)
+        folderDetect: false, // フォルダ判定(macOSアクセシビリティ・完全オプトイン)
         sync: {              // Firebaseチーム同期
           enabled: false, projectId: '', apiKey: '', teamId: '', memberId: ''
         }

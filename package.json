@@ -1,7 +1,7 @@
 {
   "name": "dakoku-less",
   "productName": "全自動勤怠管理くん",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "AIが勤務時間を自動推定する、打刻を感じさせない勤怠デスクトップアプリ",
   "main": "main.js",
   "scripts": {

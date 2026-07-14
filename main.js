@@ -54,7 +54,8 @@ function axTrustedNow() {
 }
 function getDocPath() {
   return new Promise((resolve) => {
-    // 権限が「許可済み」と確認できるまでは一切試みない(ダイアログ再表示の防止)
+    // フォルダ判定が明示的にONで、かつ権限が許可済みのときだけ実行(既定では一切呼ばない)
+    if (settings().folderDetect !== true) return resolve(null);
     if (process.platform !== 'darwin' || !axTrustedNow() || Date.now() < axFailUntil) return resolve(null);
     execFile('osascript', ['-e',
       'tell application "System Events" to tell (first application process whose frontmost is true) to get value of attribute "AXDocument" of front window'
@@ -620,7 +621,14 @@ function registerIpc() {
   // macOS権限まわり
   ipcMain.handle('perm:requestAx', () => {
     axFailUntil = 0;
+    settings().folderDetect = true; // ボタン押下で明示的にオプトイン
+    store.save();
     try { return systemPreferences.isTrustedAccessibilityClient(true); } catch (e) { return false; }
+  });
+  ipcMain.handle('perm:disableFolder', () => {
+    settings().folderDetect = false;
+    store.save(); pushUpdate();
+    return buildState();
   });
   ipcMain.handle('perm:openSettings', (e, pane) => {
     shell.openExternal('x-apple.systempreferences:com.apple.preference.security?' + (pane || 'Privacy_ScreenCapture'));
