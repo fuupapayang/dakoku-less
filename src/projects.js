@@ -13,7 +13,10 @@ const STOP = new Set([
   'pdf', 'docx', 'xlsx', 'pptx', 'txt', 'csv', 'html', 'app',
   'www', 'http', 'https', 'com', 'co', 'jp', 'ne', 'or',
   '新規', '無題', 'untitled', 'document', 'presentation', 'book', 'sheet',
-  'file', 'ファイル', 'ページ', 'タブ', 'ホーム', 'home', 'new', 'tab', 'window'
+  'file', 'ファイル', 'ページ', 'タブ', 'ホーム', 'home', 'new', 'tab', 'window',
+  // ファイルパス由来の一般語(ドキュメントパス判定用)
+  'users', 'user', 'applications', 'desktop', 'documents', 'downloads',
+  'volumes', 'library', 'shared', 'work', 'data', 'projects', 'デスクトップ', '書類'
 ]);
 
 function escapeRe(s) {

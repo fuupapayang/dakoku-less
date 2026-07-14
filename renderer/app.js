@@ -425,6 +425,17 @@ function renderProjects() {
           <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
         </div>
       </div>` : ''}
+      ${s.trackWork && state.platform === 'darwin' && state.screenPermission === 'granted' && state.axTrusted === false ? `
+      <div class="suggestion mt8">
+        <div class="who">フォルダ判定を有効にできます(任意)</div>
+        <div>「アクセシビリティ」を許可すると、開いている書類のパスから判定できるようになり、
+        <b>F599_案件名 フォルダ内のファイルはファイル名を問わず自動でその案件に計上</b>されます。<br>
+        システム設定 → プライバシーとセキュリティ → アクセシビリティ で 全自動勤怠管理くん を許可 → アプリを再起動。</div>
+        <div class="actions">
+          <button class="btn sm" data-act="perm-open-ax">システム設定を開く</button>
+          <button class="btn sm primary" data-act="app-relaunch">アプリを再起動</button>
+        </div>
+      </div>` : ''}
       ${workLineHTML()}
     </div>
 
@@ -463,8 +474,13 @@ function renderProjects() {
         <label class="field">見積金額(円)<input type="number" id="pj-est" placeholder="例: 1500000" min="0"></label>
         <label class="field">予算工数(h) ― 80%消化で自動アラート<input type="number" id="pj-budget" placeholder="例: 120" min="0"></label>
       </div>
-      <button class="btn primary" data-act="proj-add">案件を追加</button>
-      <p class="muted mt8">運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須。例: F000_定例会議、T123_見積書.xlsx)。それ以外はキーワード学習が吸収します。チーム同期が有効なら、案件リストとカレンダーは自動でチーム共有されます。</p>
+      <div class="row">
+        <button class="btn primary" data-act="proj-add">案件を追加</button>
+        <button class="btn" data-act="proj-import">📁 フォルダから一括インポート</button>
+      </div>
+      <p class="muted mt8">一括インポート: 「F599_D&Dホールディングス」のような案件フォルダが並ぶ親フォルダを選ぶと、
+      コード=F599、案件名・キーワード=D&Dホールディングス として自動登録します(登録済みコードはスキップ)。<br>
+      運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須)。macOSでアクセシビリティを許可すると、案件フォルダ内のファイルはファイル名を問わず自動判定されます。</p>
     </div>`;
 }
 
@@ -1178,7 +1194,16 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'proj-kw') openKeywordModal(btn.dataset.id);
   if (act === 'perm-open') await window.api.openScreenSettings();
+  if (act === 'perm-open-ax') await window.api.openScreenSettings('Privacy_Accessibility');
   if (act === 'app-relaunch') await window.api.relaunchApp();
+  if (act === 'proj-import') {
+    const r = await window.api.importFolderProjects();
+    if (r.canceled) return;
+    if (!r.ok) { toast(r.error || 'インポートできませんでした'); return; }
+    state = await window.api.getState();
+    renderProjects();
+    toast(`${r.added}件の案件を登録しました` + (r.skipped ? `(既存${r.skipped}件はスキップ)` : ''));
+  }
   if (act === 'assign') openAssignModal(+btn.dataset.idx);
   if (act === 'assign-hint') {
     state = await window.api.assignBlock(state.todayKey, +btn.dataset.idx, btn.dataset.pid, []);

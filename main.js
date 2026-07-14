@@ -2,6 +2,7 @@
 const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
 const Store = require('./src/store');
 const engine = require('./src/engine');
 const projectsLib = require('./src/projects');
@@ -41,6 +42,27 @@ function screenPermission() {
   try { return systemPreferences.getMediaAccessStatus('screen'); } catch (e) { return 'unknown'; }
 }
 
+/**
+ * 前面アプリで開いている書類のフルパス(macOSのみ)。
+ * F599_xxx フォルダ内のファイルを開いていれば、パスに含まれるフォルダ名で案件判定できる。
+ * アクセシビリティ権限が必要。失敗時は10分間リトライしない(プロンプト連発防止)。
+ */
+let axFailUntil = 0;
+function getDocPath() {
+  return new Promise((resolve) => {
+    if (process.platform !== 'darwin' || Date.now() < axFailUntil) return resolve(null);
+    execFile('osascript', ['-e',
+      'tell application "System Events" to tell (first application process whose frontmost is true) to get value of attribute "AXDocument" of front window'
+    ], { timeout: 3000 }, (err, stdout) => {
+      if (err) { axFailUntil = Date.now() + 10 * 60 * 1000; return resolve(null); }
+      const out = String(stdout || '').trim();
+      if (!out || out === 'missing value') return resolve(null);
+      try { resolve(decodeURIComponent(out.replace(/^file:\/\//, ''))); }
+      catch (e) { resolve(out); }
+    });
+  });
+}
+
 async function getForeground() {
   if (screenPermission() !== 'granted') return null; // 権限未反映の間は取得しない
   if (!activeWinTried) {
@@ -50,7 +72,9 @@ async function getForeground() {
   if (!activeWinFn) return null;
   try {
     const w = await activeWinFn();
-    return w ? { title: w.title || '', app: (w.owner && w.owner.name) || '' } : null;
+    if (!w) return null;
+    const docPath = await getDocPath();
+    return { title: w.title || '', app: (w.owner && w.owner.name) || '', docPath };
   } catch (e) { return null; }
 }
 
@@ -70,8 +94,10 @@ let lastLearnMin = 0;
 
 function trackWork(day, now, fg) {
   const combinedCal = dayCalendar(day, day.date);
+  // タイトル+書類パスを判定対象に(パスに F599_xxx フォルダが含まれれば案件判定される)
+  const text = [fg && fg.title, fg && fg.docPath].filter(Boolean).join(' ');
   const hit = projectsLib.classify({
-    title: fg && fg.title, calendar: combinedCal, now, projects: store.data.projects
+    title: text, calendar: combinedCal, now, projects: store.data.projects
   });
   if (hit) {
     day.projectMin[hit.id] = (day.projectMin[hit.id] || 0) + SAMPLE_MIN;
@@ -79,17 +105,17 @@ function trackWork(day, now, fg) {
     flushUnclassified(day);
     // 確定判定から動向を弱く学習(1分に1回)
     const nowMin = Math.floor(now / 60000);
-    if (fg && fg.title && nowMin !== lastLearnMin) {
+    if (fg && text && nowMin !== lastLearnMin) {
       lastLearnMin = nowMin;
       learnLib.learn(store.data.learnStats, {
-        tokens: projectsLib.tokenize(fg.title), ts: now, projectId: hit.id, weight: 1
+        tokens: projectsLib.tokenize(text), ts: now, projectId: hit.id, weight: 1
       });
     }
     return;
   }
   currentWork = { projectId: null, app: fg ? fg.app : '' };
   if (!fg || (!fg.title && !fg.app)) return; // 権限なし・取得失敗
-  const tokens = projectsLib.tokenize(fg.title);
+  const tokens = projectsLib.tokenize(text);
 
   // 動向学習による推論(個人+チーム統計、会議の余韻を加味)
   const carryPid = learnLib.carryProject(combinedCal, now,
@@ -372,6 +398,9 @@ function buildState() {
     remoteTeam: store.data.remoteTeam,
     syncStatus: sync ? sync.status : null,
     screenPermission: screenPermission(),
+    axTrusted: process.platform === 'darwin'
+      ? (() => { try { return systemPreferences.isTrustedAccessibilityClient(false); } catch (e) { return false; } })()
+      : true,
     recording: !!currentInterval,
     platform: process.platform
   };
@@ -426,6 +455,11 @@ function registerIpc() {
     Object.assign(store.data.settings, patch);
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
+    }
+    if (patch.trackWork === true && process.platform === 'darwin') {
+      // フォルダ判定用のアクセシビリティ許可を促す(初回のみOSダイアログ表示)
+      try { systemPreferences.isTrustedAccessibilityClient(true); } catch (_) {}
+      axFailUntil = 0;
     }
     if (currentKey) reestimate(currentKey);
     store.save();
@@ -558,9 +592,32 @@ function registerIpc() {
     return true;
   });
 
+  // フォルダから案件マスターを一括インポート(F599_案件名 形式のフォルダ名を読み取り)
+  ipcMain.handle('projects:importFolder', async () => {
+    const res = await dialog.showOpenDialog(win, {
+      title: '案件フォルダが並んでいる親フォルダを選択',
+      properties: ['openDirectory']
+    });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, canceled: true };
+    let added = 0, skipped = 0;
+    try {
+      for (const ent of fs.readdirSync(res.filePaths[0], { withFileTypes: true })) {
+        if (!ent.isDirectory()) continue;
+        const m = ent.name.match(/^([A-Z]+\d+)_(.+)$/);
+        if (!m) continue;
+        const code = m[1], name = m[2].trim();
+        if (store.data.projects.some(p => p.code === code)) { skipped++; continue; }
+        store.addProject({ code, name, keywords: [name] });
+        added++;
+      }
+    } catch (e) { return { ok: false, error: String(e.message || e) }; }
+    store.save(); pushUpdate();
+    return { ok: true, added, skipped };
+  });
+
   // macOS権限まわり
-  ipcMain.handle('perm:openSettings', () => {
-    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+  ipcMain.handle('perm:openSettings', (e, pane) => {
+    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?' + (pane || 'Privacy_ScreenCapture'));
     return true;
   });
   ipcMain.handle('app:relaunch', () => {
