@@ -60,7 +60,17 @@ function getDocPath() {
     execFile('osascript', ['-e',
       'tell application "System Events" to tell (first application process whose frontmost is true) to get value of attribute "AXDocument" of front window'
     ], { timeout: 3000 }, (err, stdout) => {
-      if (err) { axFailUntil = Date.now() + 10 * 60 * 1000; return resolve(null); }
+      if (err) {
+        // 権限が通らない場合はフォルダ判定を自動オフにして二度と試みない(ダイアログ連発の根絶)
+        axFailUntil = Date.now() + 60 * 60 * 1000;
+        if (settings().folderDetect) {
+          settings().folderDetect = false;
+          store.save();
+          notify('フォルダ判定を自動でオフにしました', 'アクセシビリティ権限が確認できなかったため無効化しました。他の判定(タイトル・キーワード)は通常どおり動作します。');
+          pushUpdate();
+        }
+        return resolve(null);
+      }
       const out = String(stdout || '').trim();
       if (!out || out === 'missing value') return resolve(null);
       try { resolve(decodeURIComponent(out.replace(/^file:\/\//, ''))); }
