@@ -61,7 +61,17 @@ async function getForeground() {
 /** フォルダ監視: 案件フォルダ内のファイル更新を検知して案件を対応づける */
 function onFolderHit(folder) {
   const hit = projectsLib.matchText(folder, store.data.projects);
-  if (hit) recentFolderHit = { folder, pid: hit.id, ts: Date.now() };
+  if (hit) {
+    recentFolderHit = { folder, pid: hit.id, ts: Date.now() };
+  } else {
+    // フォルダは検知したが未登録の案件コード → 案内(頻度を抑えて1時間に1回)
+    const now = Date.now();
+    if (now - (onFolderHit.lastWarn || 0) > 3600000) {
+      onFolderHit.lastWarn = now;
+      const code = (folder.match(/^([A-Z]+\d+)_/) || [])[1];
+      if (code) notify('未登録の案件フォルダを検知', `${folder} を検知しましたが、案件コード ${code} が未登録です。案件タブで登録すると計上されます。`);
+    }
+  }
 }
 
 function startWatcher() {
@@ -398,6 +408,7 @@ function buildState() {
     syncStatus: sync ? sync.status : null,
     screenPermission: screenPermission(),
     watchRoots: settings().watchRoots || [],
+    watchStatus: watcher ? watcher.status() : { mode: 'idle', roots: 0, lastHitAt: 0 },
     recording: !!currentInterval,
     platform: process.platform
   };

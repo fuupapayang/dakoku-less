@@ -430,15 +430,25 @@ function renderProjects() {
 
     <div class="card">
       <h2>フォルダ監視(案件フォルダ内の作業を自動計上)</h2>
-      <p class="muted">案件フォルダが並んでいる親フォルダを登録すると、F599_案件名 フォルダ内のファイルを
+      <p class="muted">案件フォルダが並んでいる親フォルダ(または案件フォルダ自体)を登録すると、F599_案件名 内のファイルを
       保存・更新したときに、その時間をF599の作業として自動計上します。
-      <b>アクセシビリティ等の特別な許可は不要</b>で、権限ダイアログも出ません(ファイルの中身は読みません)。</p>
+      <b>特別な許可は不要</b>で権限ダイアログも出ません(ファイルの中身は読みません)。
+      NAS・共有サーバー・クラウド同期(Dropbox/Box/Drive)にも対応(定期スキャン併用)。</p>
+      ${(() => {
+        const ws = state.watchStatus || {};
+        if (!(state.watchRoots || []).length) return '';
+        const mode = { 'watch+poll': '監視中(即時+定期スキャン)', 'poll': '監視中(定期スキャン)', 'idle': '停止中' }[ws.mode] || ws.mode;
+        const last = ws.lastHitAt ? `最終検知 ${fmtTime(ws.lastHitAt)}` : 'まだ検知なし';
+        const warn = !s.trackWork ? '<div class="disc-warn mt8">⚠ 「作業内容の計測」がオフです。上部のトグルをオンにしてください(オフだと監視結果は計上されません)。</div>' : '';
+        return `<div class="row mt8"><span class="chip ${ws.lastHitAt ? 'STABLE' : 'UNSURE'}">${mode} ／ ${last}</span></div>${warn}`;
+      })()}
       ${(state.watchRoots || []).length ? `<div class="mt8">
         ${(state.watchRoots || []).map(r => `<div class="rule-item">
           <div class="grow"><b>監視中</b> <span class="meta">${esc(r)}</span></div>
           <button class="btn sm ghost danger" data-act="watch-remove" data-root="${esc(r)}">解除</button>
         </div>`).join('')}</div>` : '<div class="muted mt8">まだ監視フォルダはありません。</div>'}
       <button class="btn primary mt8" data-act="watch-add">📁 監視フォルダを追加</button>
+      <p class="muted mt8">動かない時のチェック: ①「作業内容の計測」がオン ②案件コード(F599等)が案件マスターに登録済み ③対象フォルダ名が「F599_名称」形式(大文字+アンダースコア)。試しに対象フォルダ内のファイルを保存し、上の「最終検知」が更新されるか確認してください。</p>
     </div>
 
     <div class="card">

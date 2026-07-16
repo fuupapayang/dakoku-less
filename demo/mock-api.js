@@ -153,6 +153,7 @@
     currentWork: { projectId: 'p1', code: 'F000', name: '山田商事 在庫管理システム', via: 'keyword', app: 'Excel' },
     team: seedTeam(), remoteTeam: null,
     syncStatus: { state: 'idle', lastSync: null, error: null, members: 0 },
+    watchRoots: [], watchStatus: { mode: 'idle', roots: 0, lastHitAt: 0 },
     screenPermission: 'granted', recording: true, platform: 'demo'
   };
 
