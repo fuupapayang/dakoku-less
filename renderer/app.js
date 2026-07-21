@@ -171,17 +171,21 @@ function renderDashboard() {
   const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7)).getTime();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
+  const STD_MIN = 420; // 標準労働 7時間
   let weekMin = 0;
-  const daily = []; // 直近14日
+  const daily = []; // 直近14日: 実働(規定内+超過)と休憩
   for (let i = 13; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
     const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const est = effective(state.days[k]);
-    const min = est ? (est.workMin || 0) : 0;
-    daily.push({ k, min, wd: d.getDay() });
-    if (d.getTime() >= monday) weekMin += min;
+    const work = est ? (est.workMin || 0) : 0;
+    const brk = est ? (est.breakMin || 0) : 0;
+    const reg = Math.min(work, STD_MIN);
+    const over = Math.max(0, work - STD_MIN);
+    daily.push({ k, wd: d.getDay(), work, brk, reg, over });
+    if (d.getTime() >= monday) weekMin += work;
   }
-  const maxDaily = Math.max(60, ...daily.map(d => d.min));
+  const maxDaily = Math.max(STD_MIN, ...daily.map(d => d.work + d.brk));
 
   const actives = (state.projects || []).filter(p => p.active !== false && (p.status || 'active') === 'active');
   const withBudget = actives.filter(p => p.budgetHours > 0);
@@ -213,12 +217,26 @@ function renderDashboard() {
     </div>
 
     <div class="card">
-      <h2>直近14日の実働</h2>
-      <div class="spark">
-        ${daily.map(d => `<div class="spark-col" title="${d.k} ${fmtDur(d.min)}">
-          <div class="spark-bar ${d.wd === 0 || d.wd === 6 ? 'wknd' : ''}" style="height:${Math.round(d.min / maxDaily * 100)}%"></div>
-          <div class="spark-lbl">${+d.k.split('-')[2]}</div>
-        </div>`).join('')}
+      <div class="row"><h2 class="grow">直近14日の実働(1日=7時間基準)</h2>
+        <span class="legend" style="margin:0">
+          <span><i style="background:#3577d4"></i>実労働</span>
+          <span><i style="background:var(--amber)"></i>超過(7h超)</span>
+          <span><i style="background:var(--green)"></i>休憩</span>
+        </span>
+      </div>
+      <div class="spark mt8">
+        ${daily.map(d => {
+          const h = (v) => Math.round(v / maxDaily * 100);
+          const t = `${d.k} 実働${fmtDur(d.work)}` + (d.over ? `(内 超過${fmtDur(d.over)})` : '') + ` / 休憩${fmtDur(d.brk)}`;
+          return `<div class="spark-col" title="${t}">
+            <div class="spark-stack">
+              <div class="seg brk" style="height:${h(d.brk)}%"></div>
+              <div class="seg over" style="height:${h(d.over)}%"></div>
+              <div class="seg reg" style="height:${h(d.reg)}%"></div>
+            </div>
+            <div class="spark-lbl ${d.wd === 0 || d.wd === 6 ? 'wknd-lbl' : ''}">${+d.k.split('-')[2]}</div>
+          </div>`;
+        }).join('')}
       </div>
     </div>
 
