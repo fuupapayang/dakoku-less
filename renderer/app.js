@@ -52,9 +52,25 @@ function segmentsFromCorrection(c) {
   return segs;
 }
 
+/** est.segments が無い/空でも、start・end・breaks から帯を再構成する */
+function timelineSegs(est) {
+  if (est.segments && est.segments.length) return est.segments;
+  const brs = [...(est.breaks || [])].filter(b => b.e > b.s).sort((a, b) => a.s - b.s);
+  const segs = [];
+  let cur = est.start;
+  for (const b of brs) {
+    if (b.s > cur) segs.push({ s: cur, e: b.s, kind: 'work', label: '稼働' });
+    const kind = b.kind === 'exclude' ? 'exclude' : 'break';
+    segs.push({ s: Math.max(b.s, cur), e: b.e, kind, label: kind === 'exclude' ? '対象外' : '休憩' });
+    cur = Math.max(cur, b.e);
+  }
+  if (est.end > cur) segs.push({ s: cur, e: est.end, kind: 'work', label: '稼働' });
+  return segs;
+}
+
 function timelineHTML(est) {
   if (!est || est.start == null) return '<div class="muted">まだ稼働が検知されていません</div>';
-  const segs = est.segments || segmentsFromCorrection(est);
+  const segs = timelineSegs(est);
   const d0 = new Date(est.start);
   const base = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime();
   const fromH = Math.min(8, d0.getHours());
