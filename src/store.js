@@ -26,6 +26,7 @@ class Store {
         trackWork: false,    // 案件トラッキング(オプトイン)
         titleDetect: false,  // ウィンドウタイトル判定(active-win使用・macOSは権限要求)。既定オフ
         folderDetect: false, // 【廃止】旧アクセシビリティ方式。互換のため残置(常にfalse)
+        folderStickyMin: 30, // フォルダ監視の継続時間(分): 最後のファイル更新からこの間は同じ案件に継続計上
         watchRoots: [],      // フォルダ監視の親ディレクトリ(署名不要・権限ダイアログなし)
         sync: {              // Firebaseチーム同期
           enabled: false, projectId: '', apiKey: '', teamId: '', memberId: ''
@@ -52,6 +53,7 @@ class Store {
         if (!this.data.settings.sync) this.data.settings.sync = { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: '' };
         if (!this.data.settings.watchRoots) this.data.settings.watchRoots = [];
         if (this.data.settings.titleDetect == null) this.data.settings.titleDetect = false;
+        if (this.data.settings.folderStickyMin == null) this.data.settings.folderStickyMin = 30;
         this.data.settings.folderDetect = false; // 旧方式は完全無効化
         if (!this.data.learnStats) this.data.learnStats = { tokens: {}, slots: {}, totals: {}, n: 0 };
         if (!this.data.calEvents) this.data.calEvents = [];

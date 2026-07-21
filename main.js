@@ -103,10 +103,12 @@ function trackWork(day, now, fg) {
   let hit = projectsLib.classify({
     title: text, calendar: combinedCal, now, projects: store.data.projects
   });
-  // タイトルで判定できない場合、直近45秒以内に案件フォルダ内のファイルが
-  // 更新されていれば、その案件を作業中とみなす(フォルダ監視方式)
+  // タイトルで判定できない場合、直近のファイル更新で検知した案件を「継続」計上する。
+  // 最後のファイル更新から stickyMin 分以内は同じ案件とみなし、別案件のファイルが
+  // 更新されると自動で切り替わる(フォルダ監視の継続方式)。
+  const stickyMs = (settings().folderStickyMin || 30) * 60000;
   let viaFolder = false;
-  if (!hit && recentFolderHit && now - recentFolderHit.ts <= 45000) {
+  if (!hit && recentFolderHit && now - recentFolderHit.ts <= stickyMs) {
     const p = store.data.projects.find(p => p.id === recentFolderHit.pid);
     if (p && p.active !== false) { hit = { id: p.id, code: p.code, name: p.name, via: 'folder' }; viaFolder = true; }
   }

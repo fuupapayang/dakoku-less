@@ -448,7 +448,14 @@ function renderProjects() {
           <button class="btn sm ghost danger" data-act="watch-remove" data-root="${esc(r)}">解除</button>
         </div>`).join('')}</div>` : '<div class="muted mt8">まだ監視フォルダはありません。</div>'}
       <button class="btn primary mt8" data-act="watch-add">📁 監視フォルダを追加</button>
-      <p class="muted mt8">動かない時のチェック: ①「作業内容の計測」がオン ②案件コード(F599等)が案件マスターに登録済み ③対象フォルダ名が「F599_名称」形式(大文字+アンダースコア)。試しに対象フォルダ内のファイルを保存し、上の「最終検知」が更新されるか確認してください。</p>
+      <div class="field-row mt16">
+        <label class="field">継続計上する時間(分) ― 最後のファイル更新からこの間は同じ案件に計上し続けます
+          <input type="number" id="wt-sticky" value="${s.folderStickyMin || 30}" min="1" max="240"></label>
+        <div style="flex:1"></div>
+      </div>
+      <button class="btn" data-act="sticky-save">継続時間を保存</button>
+      <p class="muted mt8">継続方式: F599のファイルを保存すると、その後は別案件のファイルを更新するか、${s.folderStickyMin || 30}分ファイル更新が途切れるまで、稼働時間をF599に継続計上します。デザイン作業のように長時間保存しない場合でも取りこぼしません。<br>
+      動かない時のチェック: ①「作業内容の計測」がオン ②案件コード(F599等)が案件マスターに登録済み ③対象フォルダ名が「F599_名称」形式。試しに対象フォルダ内のファイルを保存し、上の「最終検知」が更新されるか確認してください。</p>
     </div>
 
     <div class="card">
@@ -1236,6 +1243,12 @@ document.addEventListener('click', async (e) => {
     state = await window.api.removeWatchRoot(btn.dataset.root);
     renderProjects();
     toast('監視を解除しました');
+  }
+  if (act === 'sticky-save') {
+    const v = Math.max(1, Math.min(240, +$('#wt-sticky').value || 30));
+    state = await window.api.updateSettings({ folderStickyMin: v });
+    renderProjects();
+    toast(`継続時間を${v}分に設定しました`);
   }
   if (act === 'proj-import') {
     const r = await window.api.importFolderProjects();
