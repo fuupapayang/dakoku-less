@@ -983,17 +983,32 @@ function buildMatrix() {
 
 function projMatrixHTML() {
   const m = buildMatrix();
-  if (!m) return '<div class="muted">案件マスターが空です。「案件」タブから登録すると、ここに人×案件の工数が集計されます。</div>';
-  return `<table><thead><tr><th>メンバー</th>
-    ${m.projects.map(p => `<th>[${esc(p.code)}]<br>${esc(p.name)}</th>`).join('')}
-    <th>未分類</th><th>合計</th></tr></thead>
-    <tbody>${m.rows.map(r => {
-      const total = m.projects.reduce((a, p) => a + (r.cells[p.id] || 0), 0) + r.unclassified;
-      return `<tr><td>${esc(r.name)}</td>
-        ${m.projects.map(p => `<td>${r.cells[p.id] ? fmtDur(r.cells[p.id]) : '-'}</td>`).join('')}
-        <td>${r.unclassified ? fmtDur(r.unclassified) : '-'}</td><td><b>${fmtDur(total)}</b></td></tr>`;
-    }).join('')}</tbody></table>
-    <p class="muted mt8">${m.remote ? 'チーム同期による実データです。' : '* はデモデータ(擬似配分)。チーム同期を有効にすると実データに置き換わります。'}</p>`;
+  if (!m) return '<div class="muted">案件マスターが空です。「案件」タブから登録すると、ここに案件×人の工数が集計されます。</div>';
+  const staff = m.rows; // 列 = スタッフ
+  // 行 = 案件。期間内に工数がある案件のみ、合計の多い順に表示
+  const projRows = m.projects
+    .map(p => ({ p, total: staff.reduce((a, s) => a + (s.cells[p.id] || 0), 0) }))
+    .filter(r => r.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const staffTotal = (s) => m.projects.reduce((a, p) => a + (s.cells[p.id] || 0), 0) + s.unclassified;
+  const uncTotal = staff.reduce((a, s) => a + s.unclassified, 0);
+  if (!projRows.length && !uncTotal) return '<div class="muted">この期間の工数データがありません。</div>';
+  return `<table><thead><tr><th>案件</th>
+    ${staff.map(s => `<th>${esc(s.name)}</th>`).join('')}
+    <th>合計</th></tr></thead>
+    <tbody>
+    ${projRows.map(({ p, total }) => `<tr>
+      <td><b>${esc(p.code)}</b> ${esc(p.name)}</td>
+      ${staff.map(s => `<td>${s.cells[p.id] ? fmtDur(s.cells[p.id]) : '-'}</td>`).join('')}
+      <td><b>${fmtDur(total)}</b></td></tr>`).join('')}
+    ${uncTotal ? `<tr><td>未分類</td>
+      ${staff.map(s => `<td>${s.unclassified ? fmtDur(s.unclassified) : '-'}</td>`).join('')}
+      <td><b>${fmtDur(uncTotal)}</b></td></tr>` : ''}
+    <tr style="border-top:2px solid var(--line)"><td><b>合計</b></td>
+      ${staff.map(s => `<td><b>${fmtDur(staffTotal(s))}</b></td>`).join('')}
+      <td></td></tr>
+    </tbody></table>
+    <p class="muted mt8">案件を行、スタッフを列に表示しています(工数のある案件のみ・多い順)。${m.remote ? 'チーム同期による実データです。' : '列にデモデータを含みます。チーム同期を有効にすると全員の実データに置き換わります。'}</p>`;
 }
 
 /** シート用CSV(縦持ち): 日付,メンバー,案件コード,案件名,分 ― 選択期間 */
@@ -1031,12 +1046,18 @@ function exportLongCSV() {
 function exportMatrixCSV() {
   const m = buildMatrix();
   if (!m) { toast('案件がありません'); return; }
-  const head = ['メンバー', ...m.projects.map(p => `[${p.code}] ${p.name}`), '未分類', '合計(分)'];
+  const staff = m.rows; // 列 = スタッフ
+  const projRows = m.projects
+    .map(p => ({ p, total: staff.reduce((a, s) => a + (s.cells[p.id] || 0), 0) }))
+    .filter(r => r.total > 0).sort((a, b) => b.total - a.total);
+  // 行 = 案件、列 = スタッフ
+  const head = ['案件コード', '案件名', ...staff.map(s => s.name), '合計(分)'];
   const lines = [head];
-  for (const r of m.rows) {
-    const total = m.projects.reduce((a, p) => a + (r.cells[p.id] || 0), 0) + r.unclassified;
-    lines.push([r.name, ...m.projects.map(p => r.cells[p.id] || 0), r.unclassified, total]);
+  for (const { p, total } of projRows) {
+    lines.push([p.code, p.name, ...staff.map(s => s.cells[p.id] || 0), total]);
   }
+  lines.push(['', '未分類', ...staff.map(s => s.unclassified || 0), staff.reduce((a, s) => a + s.unclassified, 0)]);
+  lines.push(['', '合計', ...staff.map(s => m.projects.reduce((a, p) => a + (s.cells[p.id] || 0), 0) + s.unclassified), '']);
   const csv = '﻿' + lines.map(l => l.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
