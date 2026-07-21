@@ -141,7 +141,7 @@
     settings: {
       submitMode: 'moderate', breakThresholdMin: 15, ambiguousMin: 8, mergeGapMin: 3,
       idleThresholdSec: 90, dayStartHour: 4, userName: 'あなた', autoLaunch: true, trackWork: true,
-      notifications: true, hourlyRate: 5000, watchRoots: [],
+      notifications: true, hourlyRate: 5000, watchRoots: [], titleDetect: false,
       sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' }
     },
     todayKey, days,

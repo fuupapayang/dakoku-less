@@ -452,6 +452,18 @@ function renderProjects() {
     </div>
 
     <div class="card">
+      <h2>ウィンドウタイトル判定(任意)</h2>
+      <div class="row">
+        <div class="toggle ${s.titleDetect ? 'on' : ''}" data-act="title-toggle"></div>
+        <div class="grow"><b>ウィンドウのタイトルからも判定する</b>
+          <div class="muted">Figmaのタブ名やファイル名からも案件を判定します。オンにすると
+          ${state.platform === 'darwin' ? 'macOSでは「画面収録/アクセシビリティ」の許可ダイアログが出ます' : '追加の許可が必要な場合があります'}。
+          <b>オフのままでもフォルダ監視だけで案件計測は動作します</b>(こちらは許可不要・ダイアログなし)。</div></div>
+      </div>
+      ${!s.titleDetect ? '<div class="muted mt8">現在は「フォルダ監視のみ」で計測中です(権限ダイアログは出ません)。Figma中心の方など、タブ名からも取りたい場合だけオンにしてください。</div>' : ''}
+    </div>
+
+    <div class="card">
       <h2>今日の案件別作業時間</h2>
       ${projBarsHTML(day.projectMin, uncMin)}
     </div>
@@ -1151,6 +1163,12 @@ document.addEventListener('click', async (e) => {
     state = await window.api.updateSettings({ trackWork: !state.settings.trackWork });
     renderProjects();
     toast(state.settings.trackWork ? '作業内容の計測を開始しました' : '計測を停止しました');
+  }
+  if (act === 'title-toggle') {
+    const next = !state.settings.titleDetect;
+    state = await window.api.updateSettings({ titleDetect: next });
+    renderProjects();
+    toast(next ? 'タイトル判定をオンにしました(許可ダイアログが出た場合は許可→再起動)' : 'タイトル判定をオフにしました(フォルダ監視のみで計測)');
   }
   if (act === 'proj-add') {
     const code = $('#pj-code').value.trim().toUpperCase(), name = $('#pj-name').value.trim();

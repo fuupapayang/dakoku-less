@@ -24,6 +24,7 @@ class Store {
         notifications: true, // デスクトップ通知
         hourlyRate: 5000,    // 原価単価(円/h) 収益性計算用
         trackWork: false,    // 案件トラッキング(オプトイン)
+        titleDetect: false,  // ウィンドウタイトル判定(active-win使用・macOSは権限要求)。既定オフ
         folderDetect: false, // 【廃止】旧アクセシビリティ方式。互換のため残置(常にfalse)
         watchRoots: [],      // フォルダ監視の親ディレクトリ(署名不要・権限ダイアログなし)
         sync: {              // Firebaseチーム同期
@@ -50,6 +51,7 @@ class Store {
         this.data = { ...this.data, ...raw, settings: { ...this.data.settings, ...(raw.settings || {}) } };
         if (!this.data.settings.sync) this.data.settings.sync = { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: '' };
         if (!this.data.settings.watchRoots) this.data.settings.watchRoots = [];
+        if (this.data.settings.titleDetect == null) this.data.settings.titleDetect = false;
         this.data.settings.folderDetect = false; // 旧方式は完全無効化
         if (!this.data.learnStats) this.data.learnStats = { tokens: {}, slots: {}, totals: {}, n: 0 };
         if (!this.data.calEvents) this.data.calEvents = [];

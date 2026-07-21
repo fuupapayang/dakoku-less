@@ -45,6 +45,8 @@ function screenPermission() {
 }
 
 async function getForeground() {
+  // タイトル判定がオフの場合、active-winを一切呼ばない(権限ダイアログを出さない)
+  if (settings().titleDetect !== true) return null;
   if (screenPermission() !== 'granted') return null; // 権限未反映の間は取得しない
   if (!activeWinTried) {
     activeWinTried = true;
