@@ -2,11 +2,11 @@ name: Build & Release
 
 on:
   push:
-    tags: ['v*']        # 例: v0.1.0 のタグを push すると実行
-  workflow_dispatch:     # 手動実行も可(Actionsタブから)
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
-  contents: write        # Releaseへのアップロードに必要
+  contents: write
 
 jobs:
   build:
@@ -20,8 +20,6 @@ jobs:
             script: dist:win
             artifact: 'dist/*.exe'
     runs-on: ${{ matrix.os }}
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # コード署名なしでビルド(無料運用)
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +35,17 @@ jobs:
 
       - name: Build installer
         run: npm run ${{ matrix.script }} -- --publish never
+        env:
+          # macOS 署名(Developer ID)。GitHub Secrets に登録すると自動で署名される。
+          # 未登録なら空 → 従来どおり未署名ビルド(ビルド自体は成功)。
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # CSC_LINK が無いときはキーチェーン探索を無効化して未署名ビルドを通す
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' && 'true' || 'false' }}
+          # macOS 公証(notarization)。3つ揃うと build/notarize.js が実行される。
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
