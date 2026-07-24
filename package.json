@@ -1,7 +1,7 @@
 {
   "name": "dakoku-less",
   "productName": "全自動勤怠管理くん",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "AIが勤務時間を自動推定する、打刻を感じさせない勤怠デスクトップアプリ",
   "main": "main.js",
   "scripts": {
@@ -16,13 +16,11 @@
   },
   "devDependencies": {
     "electron": "^31.0.0",
-    "electron-builder": "^24.13.3",
-    "@electron/notarize": "^2.5.0"
+    "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "jp.example.dakokuless",
     "productName": "全自動勤怠管理くん",
-    "afterSign": "build/notarize.js",
     "files": ["main.js", "preload.js", "src/**/*", "renderer/**/*", "assets/**/*"],
     "mac": {
       "category": "public.app-category.productivity",
@@ -30,7 +28,8 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": { "teamId": "PDAC4867M2" }
     },
     "win": { "target": "nsis" },
     "nsis": {
