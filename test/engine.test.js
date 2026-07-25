@@ -39,13 +39,29 @@ r = e.estimate({
 assert.strictEqual(r.breakMin, 0);
 assert.strictEqual(r.workMin, 540);
 
-// 6) カレンダー: 「移動」予定 → 対象外 + ルール提案
+// 6) カレンダー: 「移動」予定 → travelAsWork(既定)で稼働扱い
 r = e.estimate({
   intervals: [{ s: D(9), e: D(10, 30) }, { s: D(11), e: D(18) }],
   calendar: [{ s: D(10, 30), e: D(11), summary: '移動' }]
-});
+}, [], { travelAsWork: true });
+assert.strictEqual(r.breakMin, 0);          // 移動は休憩ではなく稼働
+assert.strictEqual(r.workMin, 540);
+
+// 6b) travelAsWork=false なら移動は対象外
+r = e.estimate({
+  intervals: [{ s: D(9), e: D(10, 30) }, { s: D(11), e: D(18) }],
+  calendar: [{ s: D(10, 30), e: D(11), summary: '移動' }]
+}, [], { travelAsWork: false });
 assert.strictEqual(r.suggestions.length, 1);
 assert.strictEqual(r.suggestions[0].treatAs, 'exclude');
+
+// 6c) 「通院」は travelAsWork でも対象外
+r = e.estimate({
+  intervals: [{ s: D(9), e: D(10, 30) }, { s: D(11), e: D(18) }],
+  calendar: [{ s: D(10, 30), e: D(11), summary: '通院' }]
+}, [], { travelAsWork: true });
+assert.strictEqual(r.breaks.length, 1);
+assert.strictEqual(r.breaks[0].kind, 'exclude');
 
 // 7) 修正差分 → ルール候補(HITL)
 const est = e.estimate({ intervals: [{ s: D(9), e: D(18) }] });
@@ -78,4 +94,4 @@ assert.strictEqual(evs[0].summary, '移動');
 // 10) dayKey: 深夜2時は前日扱い(dayStartHour=4)
 assert.strictEqual(e.dayKey(new Date(2026, 6, 11, 2).getTime(), 4), '2026-07-10');
 
-console.log('✓ all 10 engine tests passed');
+console.log('✓ all engine tests passed');

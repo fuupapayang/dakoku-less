@@ -110,19 +110,25 @@ function estimate(day, rules = [], settings = {}) {
     // 2) カレンダー予定との突合(会議中の無操作は稼働扱い)
     const ev = calendar.find(ev => ev.s < gapE && ev.e > gapS);
     if (ev) {
-      const isTravel = /移動|外出|通院|私用/.test(ev.summary || '');
-      if (isTravel) {
-        breaks.push({ s: gapS, e: gapE, kind: 'exclude', source: `予定: ${ev.summary}` });
-        segments.push({ s: gapS, e: gapE, kind: 'exclude', label: ev.summary });
+      const summary = ev.summary || '';
+      const isTravel = /移動|外出|直行|直帰|出張/.test(summary);
+      const isExcluded = /通院|私用|中抜け|離席/.test(summary);
+      if (isTravel && settings.travelAsWork !== false) {
+        // 移動・外出は稼働として計上(打ち合わせのための移動時間)
+        segments.push({ s: gapS, e: gapE, kind: 'work', label: `移動: ${summary}` });
+        notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} 「${summary}」を移動(稼働)として計上`);
+      } else if (isTravel || isExcluded) {
+        breaks.push({ s: gapS, e: gapE, kind: 'exclude', source: `予定: ${summary}` });
+        segments.push({ s: gapS, e: gapE, kind: 'exclude', label: summary });
         suggestions.push({
           type: 'rule', treatAs: 'exclude',
           fromMin: minutesOfDay(gapS), toMin: minutesOfDay(gapE), weekday,
-          label: ev.summary || '移動時間',
-          text: `${fmtTime(gapS)}〜${fmtTime(gapE)} は「${ev.summary}」かもしれません。稼働に含めず申請しますか？`
+          label: summary || '対象外',
+          text: `${fmtTime(gapS)}〜${fmtTime(gapE)} は「${summary}」かもしれません。稼働に含めず申請しますか？`
         });
       } else {
-        segments.push({ s: gapS, e: gapE, kind: 'work', label: `会議: ${ev.summary}` });
-        notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} カレンダー予定「${ev.summary}」により稼働扱い`);
+        segments.push({ s: gapS, e: gapE, kind: 'work', label: `会議: ${summary}` });
+        notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} カレンダー予定「${summary}」により稼働扱い`);
       }
       continue;
     }

@@ -59,7 +59,7 @@
         { t: b2, msg: '稼働を再検知(13:05)' },
         { t: dayMs(now, 14, 0), msg: 'カレンダー予定「F000_定例会議」を稼働に反映' }
       ],
-      projectMin: { p1: 190, p2: 85 },
+      projectMin: { p1: 190, p2: 85 }, meetingMin: 65,
       unclassified: [{
         s: dayMs(now, 13, 5), e: dayMs(now, 13, 50),
         tokens: ['請求書2026', '山田商事', '7月分'], hint: { pid: 'p1', pct: 78 }
@@ -142,6 +142,7 @@
       submitMode: 'moderate', breakThresholdMin: 15, ambiguousMin: 8, mergeGapMin: 3,
       idleThresholdSec: 90, dayStartHour: 4, userName: 'あなた', autoLaunch: true, trackWork: true,
       notifications: true, hourlyRate: 5000, watchRoots: [], titleDetect: false, folderStickyMin: 30,
+      travelAsWork: true, detectMeetings: true, recoruUserId: '',
       sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' }
     },
     todayKey, days,

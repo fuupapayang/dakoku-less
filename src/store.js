@@ -23,6 +23,9 @@ class Store {
         autoLaunch: false,
         notifications: true, // デスクトップ通知
         hourlyRate: 5000,    // 原価単価(円/h) 収益性計算用
+        travelAsWork: true,  // カレンダーの「移動・外出」予定を稼働として計上
+        detectMeetings: true,// オンライン会議(Teams/Zoom/Meet等)を会議として記録
+        recoruUserId: '',    // レコルCSV用のユーザID(空なら表示名)
         trackWork: false,    // 案件トラッキング(オプトイン)
         titleDetect: false,  // ウィンドウタイトル判定(active-win使用・macOSは権限要求)。既定オフ
         folderDetect: false, // 【廃止】旧アクセシビリティ方式。互換のため残置(常にfalse)
@@ -70,7 +73,11 @@ class Store {
         for (const d of Object.values(this.data.days || {})) {
           if (!d.projectMin) d.projectMin = {};
           if (!d.unclassified) d.unclassified = [];
+          if (d.meetingMin == null) d.meetingMin = 0;
         }
+        if (this.data.settings.travelAsWork == null) this.data.settings.travelAsWork = true;
+        if (this.data.settings.detectMeetings == null) this.data.settings.detectMeetings = true;
+        if (this.data.settings.recoruUserId == null) this.data.settings.recoruUserId = '';
       }
     } catch (e) { console.error('store load error', e); }
   }
@@ -96,6 +103,7 @@ class Store {
         submittedAt: null,
         events: [],          // 監査ログ [{t,msg}] 例: 始業検知など
         projectMin: {},      // 案件別の作業分数 {projectId: min}
+        meetingMin: 0,       // オンライン会議の分数
         unclassified: []     // 未分類ブロック [{s,e,tokens}] tokensは候補語上位のみ
       };
     }

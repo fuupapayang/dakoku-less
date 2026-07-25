@@ -128,7 +128,7 @@ function renderToday() {
       </div>
       ${workLineHTML()}
       <div class="big-time">${fmtTime(est && est.start)} — ${fmtTime(est && est.end)}
-        <small>／ 休憩 ${fmtDur(est ? est.breakMin : null)} ／ 実働 ${fmtDur(est ? est.workMin : null)}</small></div>
+        <small>／ 休憩 ${fmtDur(est ? est.breakMin : null)} ／ 実働 ${fmtDur(est ? est.workMin : null)}${day && day.meetingMin ? ` ／ <span style="color:#3577d4">会議 ${fmtDur(day.meetingMin)}</span>` : ''}</small></div>
       ${day && day.correction ? '<div class="muted">✎ 手動修正が適用されています(HITL: この修正はAIの次回推定に反映されます)</div>' : ''}
       ${timelineHTML(est)}
       <div class="row mt16">
@@ -768,6 +768,7 @@ function renderSettings() {
       </div>
       <div class="field-row">
         <label class="field">表示名<input type="text" id="st-name" value="${esc(s.userName)}"></label>
+        <label class="field">レコル用ユーザID(社員番号など・空なら表示名)<input type="text" id="st-recoru" value="${esc(s.recoruUserId || '')}" placeholder="例: 1001"></label>
       </div>
       <div class="row">
         <div class="toggle ${s.autoLaunch ? 'on' : ''}" data-act="autolaunch"></div>
@@ -784,6 +785,19 @@ function renderSettings() {
       <div class="field-row mt8">
         <label class="field">原価単価(円/時) ― ダッシュボードの粗利計算に使用
           <input type="number" id="st-rate" value="${s.hourlyRate || 5000}" min="0" step="100"></label>
+      </div>
+    </div>
+    <div class="card">
+      <h2>会議・移動の扱い</h2>
+      <div class="row">
+        <div class="toggle ${s.detectMeetings !== false ? 'on' : ''}" data-act="meeting-toggle"></div>
+        <div class="grow"><b>オンライン会議を記録する</b>
+          <div class="muted">Teams / Zoom / Google Meet 等が前面にある時間、またはカレンダーの会議予定を「会議」として集計します(タイトル判定を使うため、精度重視ならウィンドウタイトル判定もオンに)。</div></div>
+      </div>
+      <div class="row mt8">
+        <div class="toggle ${s.travelAsWork !== false ? 'on' : ''}" data-act="travel-toggle"></div>
+        <div class="grow"><b>移動・外出を稼働として計上する</b>
+          <div class="muted">カレンダーに「移動」「外出」「直行」「直帰」「出張」を含む予定を入れると、その時間を稼働に含めます(打ち合わせのための移動時間)。「通院」「私用」「中抜け」は対象外のままです。休憩の微調整は「今日の勤務 → 修正する」で行えます。</div></div>
       </div>
     </div>
     <div class="card">
@@ -915,12 +929,63 @@ function renderAdmin() {
       ${projMatrixHTML()}
     </div>
     <div class="card">
+      <div class="row"><h2 class="grow">勤怠エクスポート(レコル取込用)</h2>
+        <select id="rep-preset2" style="width:130px;margin:0">
+          <option value="30d" ${reportRange().preset === '30d' ? 'selected' : ''}>直近30日</option>
+          <option value="thisMonth" ${reportRange().preset === 'thisMonth' ? 'selected' : ''}>今月</option>
+          <option value="lastMonth" ${reportRange().preset === 'lastMonth' ? 'selected' : ''}>先月</option>
+        </select>
+        <button class="btn sm primary" data-act="csv-recoru">レコル向けCSV出力</button></div>
+      <p class="muted mt8">出力列: ユーザID / 日付 / 出勤時刻 / 退勤時刻 / 休憩時間(HH:MM)。提出済み・確定済みの勤怠を対象期間ぶん書き出します。管理者がレコルの「打刻データCSVインポート」に取り込んでください。</p>
+      <div class="row mt8">
+        <label style="display:flex;align-items:center;gap:8px" title="準備中の機能です">
+          <input type="checkbox" data-act="recoru-send-dummy" disabled> レコルへ自動送信(準備中)
+        </label>
+        <span class="muted">※ レコルは外部からの書き込みAPIが無いため、現状はCSVインポート運用です。列仕様が分かり次第、出力形式を最適化します。</span>
+      </div>
+    </div>
+    <div class="card">
       <h2>乖離アラート一覧</h2>
       ${alerts.length ? `<table><thead><tr><th>日付</th><th>メンバー</th><th>提出とPCログの乖離</th></tr></thead>
         <tbody>${alerts.slice(0, 10).map(a => `<tr><td>${fmtDate(a.key)}</td><td>${esc(a.name)}</td>
         <td class="disc-warn">${a.min}分</td></tr>`).join('')}</tbody></table>`
       : '<div class="muted">乖離はありません。勤怠データに客観的な根拠が紐づいています。</div>'}
     </div>`;
+}
+
+/** レコル取込用CSV: ユーザID,日付,出勤時刻,退勤時刻,休憩時間(HH:MM) */
+function exportRecoruCSV() {
+  const { fromTs, toTs } = reportRange();
+  const inRange = (k) => { const t = new Date(k).getTime(); return t >= fromTs && t <= toTs; };
+  const hhmm = (ts) => ts == null ? '' : fmtTime(ts);
+  const durHHMM = (min) => `${String(Math.floor((min || 0) / 60)).padStart(2, '0')}:${String(Math.round((min || 0) % 60)).padStart(2, '0')}`;
+  const lines = [['ユーザID', '日付', '出勤時刻', '退勤時刻', '休憩時間']];
+  const myUid = (state.settings.recoruUserId || '').trim() || state.settings.userName;
+  const pushMember = (uid, days) => {
+    for (const k of Object.keys(days).sort()) {
+      if (!inRange(k)) continue;
+      const d = days[k];
+      const est = d.submitted || d.correction || d.estimation;
+      if (!est || est.start == null) continue;
+      // 提出/承認済みのみ対象(未提出は除外)
+      if (d.status && !['submitted', 'approved'].includes(d.status)) continue;
+      lines.push([uid, k, hhmm(est.start), hhmm(est.end), durHHMM(est.breakMin)]);
+    }
+  };
+  pushMember(myUid, state.days);
+  const meId = (state.settings.sync && state.settings.sync.memberId) || '';
+  for (const m of ((state.remoteTeam && state.remoteTeam.members) || [])) {
+    if (m.id === meId) continue;
+    pushMember(m.name, m.days || {});
+  }
+  if (lines.length === 1) { toast('対象期間に提出済みの勤怠がありません'); return; }
+  const csv = '﻿' + lines.map(l => l.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `レコル勤怠_${state.todayKey}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('レコル向けCSVを書き出しました');
 }
 
 function syncStatusHTML() {
@@ -1345,7 +1410,8 @@ document.addEventListener('click', async (e) => {
     state = await window.api.updateSettings({
       idleThresholdSec: +$('#st-idle').value, breakThresholdMin: +$('#st-break').value,
       dayStartHour: +$('#st-daystart').value, userName: $('#st-name').value || 'あなた',
-      hourlyRate: +($('#st-rate') ? $('#st-rate').value : 5000) || 5000
+      hourlyRate: +($('#st-rate') ? $('#st-rate').value : 5000) || 5000,
+      recoruUserId: ($('#st-recoru') ? $('#st-recoru').value : '').trim()
     });
     toast('設定を保存しました');
   }
@@ -1353,6 +1419,19 @@ document.addEventListener('click', async (e) => {
     state = await window.api.updateSettings({ notifications: state.settings.notifications === false });
     renderSettings();
   }
+  if (act === 'meeting-toggle') {
+    state = await window.api.updateSettings({ detectMeetings: state.settings.detectMeetings === false });
+    renderSettings();
+  }
+  if (act === 'travel-toggle') {
+    state = await window.api.updateSettings({ travelAsWork: state.settings.travelAsWork === false });
+    renderSettings();
+    toast('設定を更新しました(移動の扱い)');
+  }
+  if (act === 'recoru-send-dummy') {
+    toast('レコル自動送信は準備中です。当面は「レコル向けCSV出力」をご利用ください');
+  }
+  if (act === 'csv-recoru') exportRecoruCSV();
   if (act === 'import-ics') {
     const r = await window.api.importCalendar();
     if (r.ok) toast(`予定を ${r.count} 件取り込みました`);
@@ -1368,6 +1447,7 @@ document.addEventListener('click', async (e) => {
 document.addEventListener('change', (e) => {
   if (e.target.id === 'adm-date') { renderAdmin.date = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-preset') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
+  if (e.target.id === 'rep-preset2') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-from') { renderAdmin.range.from = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-to') { renderAdmin.range.to = e.target.value; renderAdmin(); }
 });

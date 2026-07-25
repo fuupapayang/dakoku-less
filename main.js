@@ -95,10 +95,33 @@ function flushUnclassified(day) {
   if (curUnc) { syncUnc(day); curUnc = null; }
 }
 
+// オンライン会議の判定(アプリ名 or タイトル)
+const MEETING_APP = /\b(zoom|teams|webex|around|whereby|discord)\b/i;
+const MEETING_TITLE = /(google meet|meet\.google|zoom meeting|microsoft teams|オンライン会議|ビデオ会議|ウェビナー|webinar|会議中|ミーティング|打ち合わせ|打合せ|定例|mtg\b)/i;
+function isMeetingFg(fg) {
+  if (!fg) return false;
+  return MEETING_APP.test(fg.app || '') || MEETING_TITLE.test(fg.title || '');
+}
+function isMeetingCal(combinedCal, now) {
+  return (combinedCal || []).some(ev => ev.s <= now && now < ev.e &&
+    /(会議|ミーティング|mtg|打ち合わせ|打合せ|定例|meeting|オンライン)/i.test(ev.summary || ''));
+}
+
 let lastLearnMin = 0;
+let lastMeetingLog = 0;
 
 function trackWork(day, now, fg) {
   const combinedCal = dayCalendar(day, day.date);
+
+  // オンライン会議の記録(実働=タイトル検知を優先、カレンダー予定を補足)
+  if (settings().detectMeetings !== false && (isMeetingFg(fg) || isMeetingCal(combinedCal, now))) {
+    day.meetingMin = (day.meetingMin || 0) + SAMPLE_MIN;
+    if (now - lastMeetingLog > 10 * 60000) {
+      lastMeetingLog = now;
+      logEvent(day, `オンライン会議を検知(${engine.fmtTime(now)})`);
+    }
+  }
+
   const text = (fg && fg.title) || '';
   let hit = projectsLib.classify({
     title: text, calendar: combinedCal, now, projects: store.data.projects
