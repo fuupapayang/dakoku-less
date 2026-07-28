@@ -132,21 +132,33 @@ class Sync {
 
   /* ---- push ---- */
 
-  /** 案件マスター: リモートとマージ(キーワードはユニオン、名前等は新しい方) */
+  /**
+   * 案件マスター: リモートとマージ。
+   * ★重要: 端末ごとに採番されるid(p1,p2..)は衝突するため、案件コードを一意キーにして統合する。
+   * これによりメンバー間・端末間で案件が消えなくなる。コードが無い案件のみidで区別。
+   * 同一コードはリモート側のidを正(canonical)として揃え、キーワードはユニオンする。
+   */
   async syncProjects(localProjects) {
     const remote = (await this.getDoc('meta/projects')) || { projects: [] };
-    const byId = new Map();
-    for (const p of remote.projects || []) byId.set(p.id, p);
-    for (const p of localProjects) {
-      const r = byId.get(p.id);
-      if (!r) { byId.set(p.id, { ...p }); continue; }
-      const newer = (p.updatedAt || p.createdAt || 0) >= (r.updatedAt || r.createdAt || 0) ? p : r;
-      byId.set(p.id, {
+    const byKey = new Map();
+    const keyOf = (p) => {
+      const code = String(p.code || '').trim().toUpperCase();
+      return code ? 'C:' + code : 'I:' + p.id;
+    };
+    const add = (p) => {
+      const key = keyOf(p);
+      const cur = byKey.get(key);
+      if (!cur) { byKey.set(key, { ...p }); return; }
+      const newer = (p.updatedAt || p.createdAt || 0) >= (cur.updatedAt || cur.createdAt || 0) ? p : cur;
+      byKey.set(key, {
         ...newer,
-        keywords: [...new Set([...(r.keywords || []), ...(p.keywords || [])])]
+        id: cur.id, // 先に入った側(リモート優先)のidを正とする
+        keywords: [...new Set([...(cur.keywords || []), ...(p.keywords || [])])]
       });
-    }
-    const merged = [...byId.values()];
+    };
+    for (const p of remote.projects || []) add(p);   // 先にリモート → idの基準
+    for (const p of localProjects) add(p);            // ローカルを統合
+    const merged = [...byKey.values()];
     await this.setDoc('meta/projects', { projects: merged, updatedAt: Date.now() });
     return merged;
   }

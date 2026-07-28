@@ -118,8 +118,9 @@ class Store {
   }
 
   addProject(p) {
+    // 端末をまたいで衝突しないグローバル一意ID(旧: 連番p1,p2は衝突の原因だった)
     const proj = {
-      id: 'p' + this.data.projSeq++, active: true, keywords: [],
+      id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), active: true, keywords: [],
       client: '', sales: [], makers: [], boxUrl: '', status: 'active',
       budgetHours: 0, estimateAmount: 0, alert80: false, alert100: false,
       createdAt: Date.now(), updatedAt: Date.now(),

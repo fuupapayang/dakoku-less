@@ -372,9 +372,39 @@ async function runSync() {
   sync.status.state = 'syncing';
   pushUpdate();
   try {
-    // 1) 案件マスターをマージ(キーワードはチームでユニオン)
+    // 1) 案件マスターをマージ(コード基準でユニオン。idはチームで統一される)
     for (const p of store.data.projects) p.updatedAt = p.updatedAt || p.createdAt || Date.now();
+    const localByCode = {};
+    for (const p of store.data.projects) {
+      const c = String(p.code || '').trim().toUpperCase();
+      if (c) localByCode[c] = p.id;
+    }
     const merged = await sync.syncProjects(store.data.projects);
+    // コード同一でidが変わった案件は、工数/予定/学習の参照を新idへ付け替え(データ保全)
+    const remap = {};
+    for (const m of merged) {
+      const c = String(m.code || '').trim().toUpperCase();
+      const oldId = c ? localByCode[c] : null;
+      if (oldId && oldId !== m.id) remap[oldId] = m.id;
+    }
+    if (Object.keys(remap).length) {
+      for (const d of Object.values(store.data.days)) {
+        if (!d.projectMin) continue;
+        for (const [oid, nid] of Object.entries(remap)) {
+          if (d.projectMin[oid] != null) {
+            d.projectMin[nid] = (d.projectMin[nid] || 0) + d.projectMin[oid];
+            delete d.projectMin[oid];
+          }
+        }
+      }
+      for (const ev of store.data.calEvents || []) {
+        if (ev.projectId && remap[ev.projectId]) ev.projectId = remap[ev.projectId];
+      }
+      const ls = store.data.learnStats;
+      if (ls && ls.totals) for (const [oid, nid] of Object.entries(remap)) {
+        if (ls.totals[oid] != null) { ls.totals[nid] = (ls.totals[nid] || 0) + ls.totals[oid]; delete ls.totals[oid]; }
+      }
+    }
     store.data.projects = merged.map(p => ({ keywords: [], active: true, ...p }));
     // 2) 共有カレンダーをマージ
     const remoteCal = (await sync.getDoc('meta/calendar')) || { events: [] };
