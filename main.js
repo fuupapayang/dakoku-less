@@ -359,10 +359,50 @@ function noteSystem(msg) {
   logEvent(store.day(currentKey), msg);
 }
 
-// ---- Firebaseチーム同期 -------------------------------------------------
+// ---- Firebaseチーム同期(複数チーム対応) --------------------------------
+function activeProfile() {
+  const s = settings();
+  return (s.teamProfiles || []).find(t => t.id === s.activeTeamId) || null;
+}
+
+/** アクティブなチームプロファイルを settings.sync に反映(同期モジュールはsyncを参照) */
+function applyActiveProfile() {
+  const s = settings();
+  const p = activeProfile();
+  s.sync = p
+    ? { enabled: true, projectId: p.projectId, apiKey: p.apiKey, teamId: p.teamId, memberId: p.memberId }
+    : { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: '' };
+}
+
 function syncCfg() {
   const s = settings().sync || {};
   return { ...s, userName: settings().userName };
+}
+
+/** 招待コード(base64のJSON)を作成/解析 */
+function makeInvite(p) {
+  const payload = { v: 1, label: p.label, projectId: p.projectId, apiKey: p.apiKey, teamId: p.teamId };
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+}
+function parseInvite(code) {
+  try {
+    const o = JSON.parse(Buffer.from(String(code).trim(), 'base64').toString('utf8'));
+    if (!o.projectId || !o.apiKey || !o.teamId) return null;
+    return { label: o.label || o.teamId, projectId: o.projectId, apiKey: o.apiKey, teamId: o.teamId };
+  } catch (e) { return null; }
+}
+
+/** チームを切り替え(前チームのリモート情報を破棄して再同期) */
+async function switchTeam(id) {
+  settings().activeTeamId = id || '';
+  applyActiveProfile();
+  store.data.remoteTeam = null;
+  teamStatsCache = [];
+  if (sync) { sync._tok = null; sync.status = { state: 'idle', lastSync: null, error: null, members: 0, auth: 'none' }; }
+  store.save();
+  pushUpdate();
+  if (sync && sync.enabled()) return runSync();
+  return { ok: true };
 }
 
 async function runSync() {
@@ -463,6 +503,8 @@ function buildState() {
     team: store.data.team,
     remoteTeam: store.data.remoteTeam,
     syncStatus: sync ? sync.status : null,
+    teamProfiles: (settings().teamProfiles || []).map(t => ({ id: t.id, label: t.label, teamId: t.teamId, projectId: t.projectId })),
+    activeTeamId: settings().activeTeamId || '',
     screenPermission: screenPermission(),
     watchRoots: settings().watchRoots || [],
     watchStatus: watcher ? watcher.status() : { mode: 'idle', roots: 0, lastHitAt: 0 },
@@ -633,18 +675,68 @@ function registerIpc() {
   });
 
   // Firebaseチーム同期
-  ipcMain.handle('sync:save', (e, patch) => {
-    const s = settings();
-    s.sync = { ...s.sync, ...patch };
-    if (s.sync.enabled && !s.sync.memberId) {
-      s.sync.memberId = 'm' + Math.random().toString(36).slice(2, 10);
-    }
-    store.save(); pushUpdate();
-    return buildState();
-  });
   ipcMain.handle('sync:now', async () => {
     const r = await runSync();
     return { ...r, state: buildState() };
+  });
+
+  // 複数チーム管理
+  ipcMain.handle('team:add', (e, { label, projectId, apiKey, teamId, activate }) => {
+    if (!projectId || !apiKey || !teamId) return { ok: false, error: 'Project ID / API Key / チームID を入力してください' };
+    const s = settings();
+    const prof = {
+      id: 'tp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+      label: (label || teamId).trim(),
+      projectId: projectId.trim(), apiKey: apiKey.trim(), teamId: teamId.trim(),
+      memberId: 'm' + Math.random().toString(36).slice(2, 10)
+    };
+    s.teamProfiles.push(prof);
+    store.save();
+    if (activate !== false) { switchTeam(prof.id); }
+    else { pushUpdate(); }
+    return { ok: true, id: prof.id, state: buildState() };
+  });
+
+  ipcMain.handle('team:join', (e, code) => {
+    const inv = parseInvite(code);
+    if (!inv) return { ok: false, error: '招待コードが正しくありません' };
+    const s = settings();
+    // 同じ projectId+teamId の重複参加は既存を有効化
+    const dup = s.teamProfiles.find(t => t.projectId === inv.projectId && t.teamId === inv.teamId);
+    if (dup) { switchTeam(dup.id); return { ok: true, id: dup.id, dup: true, state: buildState() }; }
+    const prof = {
+      id: 'tp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+      label: inv.label, projectId: inv.projectId, apiKey: inv.apiKey, teamId: inv.teamId,
+      memberId: 'm' + Math.random().toString(36).slice(2, 10)
+    };
+    s.teamProfiles.push(prof);
+    store.save();
+    switchTeam(prof.id);
+    return { ok: true, id: prof.id, state: buildState() };
+  });
+
+  ipcMain.handle('team:switch', async (e, id) => {
+    const r = await switchTeam(id);
+    return { ...r, state: buildState() };
+  });
+
+  ipcMain.handle('team:remove', (e, id) => {
+    const s = settings();
+    s.teamProfiles = s.teamProfiles.filter(t => t.id !== id);
+    if (s.activeTeamId === id) { switchTeam(''); }
+    else { store.save(); pushUpdate(); }
+    return buildState();
+  });
+
+  ipcMain.handle('team:invite', (e, id) => {
+    const p = settings().teamProfiles.find(t => t.id === id);
+    return p ? makeInvite(p) : null;
+  });
+
+  ipcMain.handle('team:rename', (e, { id, label }) => {
+    const p = settings().teamProfiles.find(t => t.id === id);
+    if (p) { p.label = String(label || '').trim() || p.teamId; applyActiveProfile(); store.save(); pushUpdate(); }
+    return buildState();
   });
 
   // 共有カレンダー
@@ -766,6 +858,7 @@ app.whenReady().then(() => {
   createTray();
   startTracker();
   startWatcher();
+  applyActiveProfile();
   sync = new Sync(syncCfg);
   setInterval(() => { if (sync.enabled()) runSync(); }, 3 * 60 * 1000);
   setTimeout(() => { if (sync.enabled()) runSync(); }, 10 * 1000);

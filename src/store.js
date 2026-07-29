@@ -31,9 +31,11 @@ class Store {
         folderDetect: false, // 【廃止】旧アクセシビリティ方式。互換のため残置(常にfalse)
         folderStickyMin: 30, // フォルダ監視の継続時間(分): 最後のファイル更新からこの間は同じ案件に継続計上
         watchRoots: [],      // フォルダ監視の親ディレクトリ(署名不要・権限ダイアログなし)
-        sync: {              // Firebaseチーム同期
+        sync: {              // 現在アクティブなチームの接続情報(teamProfilesから反映)
           enabled: false, projectId: '', apiKey: '', teamId: '', memberId: ''
-        }
+        },
+        teamProfiles: [],    // 複数チーム [{id,label,projectId,apiKey,teamId,memberId}]
+        activeTeamId: ''     // アクティブなチームプロファイルid
       },
       days: {},        // { 'YYYY-MM-DD': dayRecord }
       rules: [],       // マイルール
@@ -74,6 +76,19 @@ class Store {
           if (!d.projectMin) d.projectMin = {};
           if (!d.unclassified) d.unclassified = [];
           if (d.meetingMin == null) d.meetingMin = 0;
+        }
+        // 複数チームへの移行: 旧単一sync設定を1つのプロファイルに変換
+        if (!Array.isArray(this.data.settings.teamProfiles)) this.data.settings.teamProfiles = [];
+        if (this.data.settings.activeTeamId == null) this.data.settings.activeTeamId = '';
+        const sy = this.data.settings.sync || {};
+        if (this.data.settings.teamProfiles.length === 0 && sy.projectId) {
+          const pid = 'tp' + Math.random().toString(36).slice(2, 9);
+          this.data.settings.teamProfiles.push({
+            id: pid, label: sy.teamId || 'マイチーム',
+            projectId: sy.projectId, apiKey: sy.apiKey, teamId: sy.teamId,
+            memberId: sy.memberId || ('m' + Math.random().toString(36).slice(2, 10))
+          });
+          if (sy.enabled) this.data.settings.activeTeamId = pid;
         }
         if (this.data.settings.travelAsWork == null) this.data.settings.travelAsWork = true;
         if (this.data.settings.detectMeetings == null) this.data.settings.detectMeetings = true;

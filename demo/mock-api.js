@@ -143,7 +143,8 @@
       idleThresholdSec: 90, dayStartHour: 4, userName: 'あなた', autoLaunch: true, trackWork: true,
       notifications: true, hourlyRate: 5000, watchRoots: [], titleDetect: false, folderStickyMin: 30,
       travelAsWork: true, detectMeetings: true, recoruUserId: '',
-      sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' }
+      sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' },
+      teamProfiles: [], activeTeamId: ''
     },
     todayKey, days,
     rules: [
@@ -152,7 +153,7 @@
     ],
     projects, calEvents, learnN: 42,
     currentWork: { projectId: 'p1', code: 'F000', name: '山田商事 在庫管理システム', via: 'keyword', app: 'Excel' },
-    team: seedTeam(), remoteTeam: null,
+    team: seedTeam(), remoteTeam: null, teamProfiles: [], activeTeamId: '',
     syncStatus: { state: 'idle', lastSync: null, error: null, members: 0 },
     watchRoots: [], watchStatus: { mode: 'idle', roots: 0, lastHitAt: 0 },
     screenPermission: 'granted', recording: true, platform: 'demo'
@@ -220,8 +221,24 @@
       }
       return S();
     },
-    saveSync: async (patch) => { Object.assign(state.settings.sync, patch); return S(); },
     syncNow: async () => ({ ok: false, error: 'ブラウザデモのため同期は無効です', state: S() }),
+    addTeam: async (o) => {
+      if (!o.projectId || !o.apiKey || !o.teamId) return { ok: false, error: 'Project ID / API Key / チームIDを入力してください' };
+      const id = 'tp' + Math.random().toString(36).slice(2, 7);
+      state.settings.teamProfiles.push({ id, label: o.label || o.teamId, teamId: o.teamId, projectId: o.projectId });
+      state.settings.activeTeamId = id; state.teamProfiles = state.settings.teamProfiles; state.activeTeamId = id;
+      return { ok: true, id, state: S() };
+    },
+    joinTeam: async () => ({ ok: false, error: 'ブラウザデモでは招待参加は無効です(デスクトップ版でご利用ください)' }),
+    switchTeam: async (id) => { state.settings.activeTeamId = id; state.activeTeamId = id; return { ok: true, members: 0, state: S() }; },
+    removeTeam: async (id) => {
+      state.settings.teamProfiles = state.settings.teamProfiles.filter(t => t.id !== id);
+      state.teamProfiles = state.settings.teamProfiles;
+      if (state.activeTeamId === id) { state.activeTeamId = ''; state.settings.activeTeamId = ''; }
+      return S();
+    },
+    teamInvite: async () => 'DEMO-INVITE-CODE-XXXX(ブラウザデモ)',
+    renameTeam: async () => S(),
     importCalendar: async () => ({ ok: false, canceled: true }),
     setTeamStatus: async (memberId, dateKey, status) => {
       if (memberId === 'self') { if (state.days[dateKey]) state.days[dateKey].status = status; }

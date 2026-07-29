@@ -743,6 +743,119 @@ function renderRules() {
     </div>`;
 }
 
+/* ---------- チーム(複数チーム対応) ---------- */
+function teamCardHTML() {
+  const profiles = state.teamProfiles || [];
+  const active = state.activeTeamId || '';
+  const rows = profiles.map(p => {
+    const on = p.id === active;
+    return `<div class="rule-item">
+      <div class="grow">
+        <div><b>${esc(p.label)}</b> ${on ? '<span class="tag work">同期中</span>' : ''}</div>
+        <div class="meta">チームID: ${esc(p.teamId)} ／ Project: ${esc(p.projectId)}${on ? syncStatusHTML() : ''}</div>
+      </div>
+      ${on
+        ? '<span class="chip STABLE">アクティブ</span>'
+        : `<button class="btn sm primary" data-act="team-switch" data-id="${esc(p.id)}">切り替え</button>`}
+      <button class="btn sm ghost" data-act="team-invite" data-id="${esc(p.id)}">招待コード</button>
+      <button class="btn sm ghost danger" data-act="team-remove" data-id="${esc(p.id)}">削除</button>
+    </div>`;
+  }).join('');
+
+  return `<div class="card">
+    <h2>チーム(複数チーム切り替え対応)</h2>
+    <p class="muted">案件リスト・カレンダー・工数・学習をチームで共有します。タイトルや生ログは送信されません。
+    複数チームを登録して、ワンクリックで切り替えられます。</p>
+    ${profiles.length ? `<div class="mt8">${rows}</div>` : '<div class="muted mt8">まだチームがありません。招待コードで参加するか、新規に作成してください。</div>'}
+
+    <div class="row mt16">
+      <button class="btn primary" data-act="team-join">🔑 招待コードで参加</button>
+      <button class="btn" data-act="team-new">＋ 新しいチームを作成/追加</button>
+      ${active ? '<span class="grow"></span><button class="btn" data-act="sync-now">今すぐ同期</button>' : ''}
+    </div>
+    <p class="muted mt8">管理者は「新しいチームを作成」でFirebaseの3値を登録 → 各案件の「招待コード」をメンバーに配布。メンバーは「招待コードで参加」に貼り付けるだけで参加できます。</p>
+  </div>`;
+}
+
+function openTeamJoinModal() {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h2>招待コードで参加</h2>
+    <label class="field">管理者から受け取った招待コードを貼り付け
+      <input type="text" id="tj-code" placeholder="長い英数字のコード"></label>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">キャンセル</button>
+      <button class="btn primary" data-act="tj-join">参加する</button>
+    </div>
+  </div></div>`;
+  root.onclick = async (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'tj-join') {
+      const r = await window.api.joinTeam($('#tj-code').value);
+      if (!r.ok) { toast(r.error || '参加できませんでした'); return; }
+      state = r.state; root.innerHTML = ''; root.onclick = null;
+      renderSettings();
+      toast(r.dup ? '既存のチームに切り替えました' : 'チームに参加しました(同期中…)');
+    }
+  };
+}
+
+function openTeamNewModal() {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h2>新しいチームを作成/追加</h2>
+    <label class="field">チーム名(表示用)<input type="text" id="tn-label" placeholder="例: 制作部"></label>
+    <label class="field">Firebase Project ID<input type="text" id="tn-pid" placeholder="例: my-team-kintai"></label>
+    <label class="field">Web API Key<input type="text" id="tn-key" placeholder="AIza..."></label>
+    <label class="field">チームID(全員で同じ文字列・推測されにくい値)<input type="text" id="tn-team" placeholder="例: seisaku-7h3k2p"></label>
+    <p class="muted">Firebaseの作成手順は SIGNING と同様、console.firebase.google.com でプロジェクト作成 → Firestore(本番モード)→ Authenticationで匿名を有効化 → 設定からProject IDとAPI Keyを取得です。</p>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">キャンセル</button>
+      <button class="btn primary" data-act="tn-add">作成して参加</button>
+    </div>
+  </div></div>`;
+  root.onclick = async (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'tn-add') {
+      const r = await window.api.addTeam({
+        label: $('#tn-label').value, projectId: $('#tn-pid').value,
+        apiKey: $('#tn-key').value, teamId: $('#tn-team').value
+      });
+      if (!r.ok) { toast(r.error || '追加できませんでした'); return; }
+      state = r.state; root.innerHTML = ''; root.onclick = null;
+      renderSettings();
+      toast('チームを作成しました。招待コードを配布してください');
+    }
+  };
+}
+
+async function showInvite(id) {
+  const code = await window.api.teamInvite(id);
+  if (!code) { toast('招待コードを取得できませんでした'); return; }
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h2>招待コード</h2>
+    <p class="muted">このコードをチームメンバーに共有してください。メンバーは「招待コードで参加」に貼り付けるだけで参加できます。</p>
+    <textarea id="inv-code" readonly style="width:100%;height:110px;margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:12px;word-break:break-all">${esc(code)}</textarea>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">閉じる</button>
+      <button class="btn primary" data-act="inv-copy">コピー</button>
+    </div>
+  </div></div>`;
+  root.onclick = (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'inv-copy') {
+      const ta = $('#inv-code'); ta.select();
+      navigator.clipboard.writeText(ta.value).then(() => toast('招待コードをコピーしました'), () => {
+        try { document.execCommand('copy'); toast('招待コードをコピーしました'); } catch (_) { toast('手動でコピーしてください'); }
+      });
+    }
+  };
+}
+
 /* ---------- 設定 ---------- */
 function renderSettings() {
   const s = state.settings;
@@ -800,25 +913,7 @@ function renderSettings() {
           <div class="muted">カレンダーに「移動」「外出」「直行」「直帰」「出張」を含む予定を入れると、その時間を稼働に含めます(打ち合わせのための移動時間)。「通院」「私用」「中抜け」は対象外のままです。休憩の微調整は「今日の勤務 → 修正する」で行えます。</div></div>
       </div>
     </div>
-    <div class="card">
-      <h2>チーム同期(Firebase)</h2>
-      <p class="muted">Firestoreを通じて、案件マスター・学習辞書・勤怠/工数サマリーをチームで共有します。
-      タイトルや生ログは送信されません。${syncStatusHTML()}</p>
-      <div class="field-row mt8">
-        <label class="field">Firebase Project ID<input type="text" id="sy-pid" value="${esc(s.sync.projectId || '')}" placeholder="例: my-team-kintai"></label>
-        <label class="field">Web API Key<input type="text" id="sy-key" value="${esc(s.sync.apiKey || '')}" placeholder="AIza..."></label>
-        <label class="field">チームID(全員で同じ文字列)<input type="text" id="sy-team" value="${esc(s.sync.teamId || '')}" placeholder="例: eigyo-1"></label>
-      </div>
-      <div class="row">
-        <div class="toggle ${s.sync.enabled ? 'on' : ''}" data-act="sync-toggle"></div>
-        <span>チーム同期を有効にする</span>
-        <span class="grow"></span>
-        <button class="btn" data-act="sync-save">接続設定を保存</button>
-        <button class="btn primary" data-act="sync-now" ${s.sync.enabled ? '' : 'disabled'}>今すぐ同期</button>
-      </div>
-      <p class="muted mt8">セットアップ: console.firebase.google.com → プロジェクト作成 → Firestore Database を「テストモード」で作成 →
-      プロジェクトの設定からProject IDとWeb API Keyをコピー。チーム全員が同じ値+同じチームIDを設定すれば共有されます。</p>
-    </div>
+    ${teamCardHTML()}
     <div class="card">
       <h2>データ連携</h2>
       <p class="muted">カレンダーの予定(.ics)をかけ合わせると、会議中の無操作を稼働として、移動予定を対象外として推定できます。</p>
@@ -1386,15 +1481,18 @@ document.addEventListener('click', async (e) => {
   if (act === 'csv-export') exportMatrixCSV();
   if (act === 'csv-long') exportLongCSV();
 
-  if (act === 'sync-toggle') {
-    state = await window.api.saveSync({ enabled: !state.settings.sync.enabled });
-    renderSettings();
+  if (act === 'team-join') openTeamJoinModal();
+  if (act === 'team-new') openTeamNewModal();
+  if (act === 'team-invite') showInvite(btn.dataset.id);
+  if (act === 'team-switch') {
+    toast('切り替えています…');
+    const r = await window.api.switchTeam(btn.dataset.id);
+    state = r.state; renderSettings();
+    toast(r.ok ? `切り替えました(メンバー${r.members || 0}人)` : `同期エラー: ${r.error || ''}`);
   }
-  if (act === 'sync-save') {
-    state = await window.api.saveSync({
-      projectId: $('#sy-pid').value.trim(), apiKey: $('#sy-key').value.trim(), teamId: $('#sy-team').value.trim()
-    });
-    renderSettings(); toast('同期設定を保存しました');
+  if (act === 'team-remove') {
+    state = await window.api.removeTeam(btn.dataset.id);
+    renderSettings(); toast('チームを削除しました');
   }
   if (act === 'sync-now') {
     toast('同期しています…');
