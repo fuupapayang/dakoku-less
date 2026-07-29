@@ -153,7 +153,8 @@ class Sync {
       byKey.set(key, {
         ...newer,
         id: cur.id, // 先に入った側(リモート優先)のidを正とする
-        keywords: [...new Set([...(cur.keywords || []), ...(p.keywords || [])])]
+        // キーワードは「新しく編集した側」を採用(合算しない)。手で消した削除が反映され、混入も除去できる
+        keywords: [...new Set(newer.keywords || [])]
       });
     };
     for (const p of remote.projects || []) add(p);   // 先にリモート → idの基準

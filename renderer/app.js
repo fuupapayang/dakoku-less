@@ -971,10 +971,11 @@ function renderAdmin() {
   const pendingN = rows.filter(r => r.start != null && r.status === 'pending').length;
   const waiting = rows.filter(r => r.status === 'submitted').length;
 
-  // 乖離アラート(全期間)
+  // 乖離アラート(全期間)。同期時は実データのみ(デモの擬似乖離は出さない)
   const alerts = [];
-  for (const m of team.members)
-    for (const [k, d] of Object.entries(m.days))
+  const alertSrc = remote ? remote : (state.settings.sync && state.settings.sync.enabled ? [] : team.members);
+  for (const m of alertSrc)
+    for (const [k, d] of Object.entries(m.days || {}))
       if (d.discrepancyMin > 30) alerts.push({ name: m.name, key: k, min: d.discrepancyMin });
   alerts.sort((a, b) => b.key.localeCompare(a.key));
 
