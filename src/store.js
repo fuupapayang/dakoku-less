@@ -93,6 +93,8 @@ class Store {
         if (this.data.settings.travelAsWork == null) this.data.settings.travelAsWork = true;
         if (this.data.settings.detectMeetings == null) this.data.settings.detectMeetings = true;
         if (this.data.settings.recoruUserId == null) this.data.settings.recoruUserId = '';
+        // 同一コードの重複案件を統合(過去のID衝突の後始末)
+        this.dedupeProjects();
       }
     } catch (e) { console.error('store load error', e); }
   }
@@ -130,6 +132,50 @@ class Store {
     this.data.rules.push(r);
     this.save();
     return r;
+  }
+
+  /**
+   * 同一コードの重複案件を1つに統合(過去のID衝突の後始末)。
+   * 工数(projectMin)・カレンダー(projectId)・学習(totals)の参照を統合先へ付け替える。
+   */
+  dedupeProjects() {
+    const seen = new Map();  // CODE -> canonical project
+    const remap = {};        // 重複id -> canonical id
+    const kept = [];
+    for (const p of this.data.projects || []) {
+      const code = String(p.code || '').trim().toUpperCase();
+      if (!code) { kept.push(p); continue; }
+      const canon = seen.get(code);
+      if (!canon) { seen.set(code, p); kept.push(p); continue; }
+      remap[p.id] = canon.id;
+      canon.keywords = [...new Set([...(canon.keywords || []), ...(p.keywords || [])])];
+      if (!canon.client && p.client) canon.client = p.client;
+      if ((!canon.sales || !canon.sales.length) && p.sales && p.sales.length) canon.sales = p.sales;
+      if ((!canon.makers || !canon.makers.length) && p.makers && p.makers.length) canon.makers = p.makers;
+      if (!canon.boxUrl && p.boxUrl) canon.boxUrl = p.boxUrl;
+      if (!canon.budgetHours && p.budgetHours) canon.budgetHours = p.budgetHours;
+      if (!canon.estimateAmount && p.estimateAmount) canon.estimateAmount = p.estimateAmount;
+      if ((p.status || 'active') !== 'active') canon.status = canon.status; // 稼働中を優先で維持
+    }
+    if (!Object.keys(remap).length) return remap;
+    this.data.projects = kept;
+    for (const d of Object.values(this.data.days || {})) {
+      if (!d.projectMin) continue;
+      for (const [oid, nid] of Object.entries(remap)) {
+        if (d.projectMin[oid] != null) {
+          d.projectMin[nid] = (d.projectMin[nid] || 0) + d.projectMin[oid];
+          delete d.projectMin[oid];
+        }
+      }
+    }
+    for (const ev of this.data.calEvents || []) {
+      if (ev.projectId && remap[ev.projectId]) ev.projectId = remap[ev.projectId];
+    }
+    const ls = this.data.learnStats;
+    if (ls && ls.totals) for (const [oid, nid] of Object.entries(remap)) {
+      if (ls.totals[oid] != null) { ls.totals[nid] = (ls.totals[nid] || 0) + ls.totals[oid]; delete ls.totals[oid]; }
+    }
+    return remap;
   }
 
   addProject(p) {
