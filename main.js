@@ -405,9 +405,13 @@ async function switchTeam(id) {
   return { ok: true };
 }
 
-async function runSync() {
+async function runSync(force) {
   if (!sync || !sync.enabled()) return { ok: false, error: 'チーム同期が未設定です' };
   if (runSync.busy) return { ok: false, error: '同期中です' };
+  // 無料枠の上限に当たった直後はしばらく待機(手動「今すぐ同期」時はforceで即試行)
+  if (!force && runSync.quotaUntil && Date.now() < runSync.quotaUntil) {
+    return { ok: false, error: '無料枠の上限のため待機中', quota: true };
+  }
   runSync.busy = true;
   sync.status.state = 'syncing';
   pushUpdate();
@@ -446,10 +450,12 @@ async function runSync() {
       }
     }
     store.data.projects = merged.map(p => ({ keywords: [], active: true, ...p }));
-    // 2) 共有カレンダーをマージ
+    // 2) 共有カレンダーをマージ(変化があるときだけ書き込む)
     const remoteCal = (await sync.getDoc('meta/calendar')) || { events: [] };
     store.data.calEvents = calendarLib.mergeEvents(store.data.calEvents, remoteCal.events || []);
-    await sync.setDoc('meta/calendar', { events: store.data.calEvents, updatedAt: Date.now() });
+    if (sync._changed('calendar', store.data.calEvents)) {
+      await sync.setDoc('meta/calendar', { events: store.data.calEvents, updatedAt: Date.now() });
+    }
     // 3) 自分の勤怠サマリー・学習統計をpush
     await sync.pushSummary(store.data.days);
     await sync.pushDict(store.data.learnStats);
@@ -474,6 +480,7 @@ async function runSync() {
     sync.status.state = 'ok';
     sync.status.lastSync = Date.now();
     sync.status.error = null;
+    runSync.quotaUntil = 0;
     checkBudgets();
     store.save();
     pushUpdate();
@@ -481,6 +488,11 @@ async function runSync() {
   } catch (e) {
     sync.status.state = 'error';
     sync.status.error = String(e.message || e).slice(0, 200);
+    // 無料枠の上限(429)に当たったら翌日の朝まで自動待機(無駄な再試行で枠を消費しない)
+    if (e && e.quota) {
+      runSync.quotaUntil = Date.now() + 6 * 60 * 60 * 1000; // 6時間待機
+      notify('チーム同期を一時停止しました', 'Firebase無料枠の1日の上限に達したため、しばらく同期を控えます。翌日の上限リセットで自動回復します。');
+    }
     pushUpdate();
     return { ok: false, error: sync.status.error };
   } finally { runSync.busy = false; }
@@ -676,7 +688,7 @@ function registerIpc() {
 
   // Firebaseチーム同期
   ipcMain.handle('sync:now', async () => {
-    const r = await runSync();
+    const r = await runSync(true); // 手動同期は待機を無視して即実行
     return { ...r, state: buildState() };
   });
 
@@ -860,7 +872,7 @@ app.whenReady().then(() => {
   startWatcher();
   applyActiveProfile();
   sync = new Sync(syncCfg);
-  setInterval(() => { if (sync.enabled()) runSync(); }, 3 * 60 * 1000);
+  setInterval(() => { if (sync.enabled()) runSync(); }, 10 * 60 * 1000); // 無料枠節約のため10分間隔
   setTimeout(() => { if (sync.enabled()) runSync(); }, 10 * 1000);
   setTimeout(remindPending, 30 * 1000);
   setInterval(remindPending, 6 * 60 * 60 * 1000);

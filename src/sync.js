@@ -103,8 +103,22 @@ class Sync {
     if (res.status === 403 || res.status === 401) {
       throw new Error(`アクセス拒否(HTTP ${res.status})。Firestoreルールが本番用の場合は、Firebaseコンソール → Authentication → ログイン方法 で「匿名」を有効にしてください`);
     }
+    if (res.status === 429) {
+      const err = new Error('Firebase無料枠の1日の上限に達しました(RESOURCE_EXHAUSTED)。しばらく同期を控えます。翌日の上限リセットで自動回復します。');
+      err.quota = true;
+      throw err;
+    }
     if (!res.ok) throw new Error(`Firestore ${method} ${path}: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
     return res.json();
+  }
+
+  /** 前回送信内容と変化があるかを判定(無駄な書き込みを避けて無料枠を節約) */
+  _changed(key, obj) {
+    const h = JSON.stringify(obj);
+    if (!this._hashes) this._hashes = {};
+    if (this._hashes[key] === h) return false;
+    this._hashes[key] = h;
+    return true;
   }
 
   async getDoc(path) {
@@ -160,7 +174,10 @@ class Sync {
     for (const p of remote.projects || []) add(p);   // 先にリモート → idの基準
     for (const p of localProjects) add(p);            // ローカルを統合
     const merged = [...byKey.values()];
-    await this.setDoc('meta/projects', { projects: merged, updatedAt: Date.now() });
+    // 内容に変化があるときだけ書き込む(無料枠の節約)
+    if (this._changed('projects', merged)) {
+      await this.setDoc('meta/projects', { projects: merged, updatedAt: Date.now() });
+    }
     return merged;
   }
 
@@ -184,17 +201,19 @@ class Sync {
         )
       };
     }
-    await this.setDoc(`summary/${c.memberId}`, {
-      name: c.userName, days: out, updatedAt: Date.now()
-    });
+    const payload = { name: c.userName, days: out };
+    if (this._changed('summary', payload)) {
+      await this.setDoc(`summary/${c.memberId}`, { ...payload, updatedAt: Date.now() });
+    }
   }
 
   /** 学習統計をpush(語句→案件回数のみ) */
   async pushDict(stats) {
     const c = this.cfg();
-    await this.setDoc(`dict/${c.memberId}`, {
-      stats: JSON.stringify(stats), updatedAt: Date.now()
-    });
+    const str = JSON.stringify(stats);
+    if (this._changed('dict', str)) {
+      await this.setDoc(`dict/${c.memberId}`, { stats: str, updatedAt: Date.now() });
+    }
   }
 
   /** 管理者の承認/差し戻しをpush */
