@@ -14,9 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          # macOSは署名まわりが安定している macos-14(Apple Silicon)に固定
+          - os: macos-14
+            platform: mac
             artifact: 'dist/*.dmg'
           - os: windows-latest
+            platform: win
             artifact: 'dist/*.exe'
     runs-on: ${{ matrix.os }}
     steps:
@@ -34,7 +37,7 @@ jobs:
 
       # macOS: 署名 + 公証(secretsがあるとき)
       - name: Build macOS (signed & notarized)
-        if: matrix.os == 'macos-latest'
+        if: matrix.platform == 'mac'
         run: npm run dist:mac -- --publish never
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -45,7 +48,7 @@ jobs:
 
       # Windows: 署名なし(証明書env は一切渡さない)
       - name: Build Windows (unsigned)
-        if: matrix.os == 'windows-latest'
+        if: matrix.platform == 'win'
         run: npm run dist:win -- --publish never
 
       - name: Upload artifact
