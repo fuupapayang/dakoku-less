@@ -7,6 +7,7 @@ const engine = require('./src/engine');
 const projectsLib = require('./src/projects');
 const learnLib = require('./src/learn');
 const calendarLib = require('./src/calendar');
+const sheetsLib = require('./src/sheets');
 const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
@@ -498,6 +499,53 @@ async function runSync(force) {
   } finally { runSync.busy = false; }
 }
 
+// ---- Googleスプレッドシート書き出し ------------------------------------
+const STATUS_LABEL = { recording: '記録中', pending: '未提出', submitted: '提出済み', approved: '承認済み', rejected: '差し戻し' };
+
+/** 自分 + 同期メンバーの {name, days} 一覧 */
+function sheetMembers() {
+  const list = [{ name: settings().userName, days: store.data.days }];
+  const myId = (settings().sync || {}).memberId;
+  for (const m of ((store.data.remoteTeam && store.data.remoteTeam.members) || [])) {
+    if (m.id === myId) continue;
+    list.push({ name: m.name, days: m.days || {} });
+  }
+  return list;
+}
+
+/** 指定月(YYYY-MM)の履歴・工数をスプレッドシートへ書き出し */
+async function exportSheets(ym) {
+  const s = settings();
+  if (!s.sheetsUrl) return { ok: false, error: 'スプレッドシート連携URLが未設定です' };
+  const members = sheetMembers();
+  const projById = Object.fromEntries((store.data.projects || []).map(p => [p.id, p]));
+  const hist = sheetsLib.historyRows(members, ym, (st) => STATUS_LABEL[st] || st);
+  const rep = sheetsLib.reportRows(members, ym, projById);
+  await sheetsLib.post(s.sheetsUrl, s.sheetsToken, [hist, rep]);
+  return { ok: true, months: [ym], historyRows: hist.rows.length, reportRows: rep.rows.length };
+}
+
+function prevMonthKey(d = new Date()) {
+  const m = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** 毎月の自動書き出し: 前月分を1回だけ書き出す(月初〜いつ起動しても取りこぼさない) */
+async function maybeAutoExport() {
+  const s = settings();
+  if (!s.autoExportSheets || !s.sheetsUrl) return;
+  const target = prevMonthKey();
+  if (s.lastExportMonth === target) return; // 済み
+  try {
+    await exportSheets(target);
+    s.lastExportMonth = target;
+    store.save(); pushUpdate();
+    notify('スプレッドシートへ自動書き出し', `${target} の履歴・工数レポートを書き出しました。`);
+  } catch (e) {
+    console.error('auto export error', e);
+  }
+}
+
 // ---- 状態のシリアライズ -----------------------------------------------
 function buildState() {
   const days = {};
@@ -692,6 +740,19 @@ function registerIpc() {
     return { ...r, state: buildState() };
   });
 
+  // Googleスプレッドシート書き出し
+  ipcMain.handle('sheets:save', (e, patch) => {
+    Object.assign(settings(), patch);
+    store.save(); pushUpdate();
+    return buildState();
+  });
+  ipcMain.handle('sheets:export', async (e, ym) => {
+    try {
+      const r = await exportSheets(ym || prevMonthKey());
+      return r;
+    } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
+  });
+
   // 複数チーム管理
   ipcMain.handle('team:add', (e, { label, projectId, apiKey, teamId, activate }) => {
     if (!projectId || !apiKey || !teamId) return { ok: false, error: 'Project ID / API Key / チームID を入力してください' };
@@ -877,6 +938,9 @@ app.whenReady().then(() => {
   setTimeout(remindPending, 30 * 1000);
   setInterval(remindPending, 6 * 60 * 60 * 1000);
   setInterval(checkBudgets, 10 * 60 * 1000);
+  // 月次の自動書き出し(起動30秒後 + 6時間ごとにチェック。前月分を1回だけ書き出す)
+  setTimeout(maybeAutoExport, 30 * 1000);
+  setInterval(maybeAutoExport, 6 * 60 * 60 * 1000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

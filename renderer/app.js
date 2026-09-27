@@ -292,12 +292,36 @@ function renderDashboard() {
 }
 
 /* ---------- 履歴 ---------- */
+/** 履歴の期間フィルタ状態 */
+function historyRange() {
+  const r = renderHistory.range || { preset: 'all', from: '', to: '' };
+  renderHistory.range = r;
+  const now = new Date();
+  const day = (y, m, d) => new Date(y, m, d).getTime();
+  let fromTs = 0, toTs = Date.now(), label = '全期間';
+  switch (r.preset) {
+    case 'thisMonth': fromTs = day(now.getFullYear(), now.getMonth(), 1); label = '今月'; break;
+    case 'lastMonth': fromTs = day(now.getFullYear(), now.getMonth() - 1, 1); toTs = day(now.getFullYear(), now.getMonth(), 1) - 1; label = '先月'; break;
+    case '30d': fromTs = Date.now() - 30 * 86400000; label = '直近30日'; break;
+    case '90d': fromTs = Date.now() - 90 * 86400000; label = '直近90日'; break;
+    case 'custom':
+      fromTs = r.from ? new Date(r.from).getTime() : 0;
+      toTs = r.to ? new Date(r.to).getTime() + 86399999 : Date.now();
+      label = `${r.from || '…'}〜${r.to || '…'}`; break;
+  }
+  return { fromTs, toTs, label, preset: r.preset };
+}
+
 function renderHistory() {
-  const keys = Object.keys(state.days).sort().reverse();
+  const hr = historyRange();
+  const inRange = (k) => { const t = new Date(k).getTime(); return t >= hr.fromTs && t <= hr.toTs; };
+  const keys = Object.keys(state.days).filter(inRange).sort().reverse();
+  let sumWork = 0, sumBreak = 0, sumMeeting = 0, nDays = 0;
   const rows = keys.map(k => {
     const day = state.days[k];
     const est = effective(day);
     if (!est || est.start == null) return '';
+    sumWork += est.workMin || 0; sumBreak += est.breakMin || 0; sumMeeting += day.meetingMin || 0; nDays++;
     const conf = day.estimation ? day.estimation.confidence : 'LOW';
     const canSubmit = day.status === 'pending' || day.status === 'rejected';
     return `<tr>
@@ -311,12 +335,29 @@ function renderHistory() {
           <button class="btn sm ghost" data-act="correct-day" data-key="${esc(k)}">修正</button></td>
     </tr>`;
   }).join('');
+  const rr = renderHistory.range;
   $('#tab-history').innerHTML = `
     <h1>履歴</h1>
     <div class="page-sub">推定・修正・提出の記録。修正はAIの次回推定に反映されます。</div>
-    <div class="card"><table>
+    <div class="card">
+      <div class="row">
+        <span class="grow"><b>${hr.label}</b> ／ ${nDays}日 ・ 実働計 ${fmtDur(sumWork)}${sumMeeting ? ` ・ 会議 ${fmtDur(sumMeeting)}` : ''}</span>
+        <select id="hist-preset" style="width:130px;margin:0">
+          <option value="all" ${hr.preset === 'all' ? 'selected' : ''}>全期間</option>
+          <option value="thisMonth" ${hr.preset === 'thisMonth' ? 'selected' : ''}>今月</option>
+          <option value="lastMonth" ${hr.preset === 'lastMonth' ? 'selected' : ''}>先月</option>
+          <option value="30d" ${hr.preset === '30d' ? 'selected' : ''}>直近30日</option>
+          <option value="90d" ${hr.preset === '90d' ? 'selected' : ''}>直近90日</option>
+          <option value="custom" ${hr.preset === 'custom' ? 'selected' : ''}>期間指定</option>
+        </select>
+        ${hr.preset === 'custom' ? `
+          <input type="date" id="hist-from" value="${esc(rr.from || '')}" style="width:150px;margin:0">
+          <span class="muted">〜</span>
+          <input type="date" id="hist-to" value="${esc(rr.to || '')}" style="width:150px;margin:0">` : ''}
+      </div>
+      <table class="mt8">
       <thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>信頼度</th><th>状態</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="8" class="muted">まだ記録がありません</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="8" class="muted">この期間の記録はありません</td></tr>'}</tbody>
     </table></div>`;
 }
 
@@ -914,6 +955,56 @@ function renderSettings() {
       </div>
     </div>
     ${teamCardHTML()}
+
+    <div class="card">
+      <h2>Googleスプレッドシートへ書き出し</h2>
+      <p class="muted">個人履歴と工数レポートを、月ごとのタブ(履歴_2026-09 / 工数_2026-09)に書き出します。
+      毎月自動、または「今すぐ書き出し」で任意月を出力できます。連携用URLはGoogle Apps Scriptのウェブアプリで用意します(下の手順)。</p>
+      <div class="field-row mt8">
+        <label class="field">連携URL(GASウェブアプリの /exec)<input type="text" id="sh-url" value="${esc(s.sheetsUrl || '')}" placeholder="https://script.google.com/macros/s/..../exec"></label>
+        <label class="field" style="max-width:200px">合言葉(任意・GASと一致)<input type="text" id="sh-token" value="${esc(s.sheetsToken || '')}" placeholder="任意の文字列"></label>
+      </div>
+      <div class="row">
+        <div class="toggle ${s.autoExportSheets ? 'on' : ''}" data-act="sheets-auto"></div>
+        <span>毎月自動で書き出す(前月分を月初に自動出力)</span>
+        <span class="grow"></span>
+        <button class="btn" data-act="sheets-save">URLを保存</button>
+      </div>
+      <div class="row mt8">
+        <span class="muted">今すぐ書き出す月:</span>
+        <select id="sh-month" style="width:130px;margin:0">
+          <option value="__prev__">先月</option>
+          <option value="__this__">今月</option>
+        </select>
+        <button class="btn primary" data-act="sheets-export" ${s.sheetsUrl ? '' : 'disabled'}>今すぐ書き出し</button>
+        ${s.lastExportMonth ? `<span class="muted">最終自動書き出し: ${esc(s.lastExportMonth)}</span>` : ''}
+      </div>
+      <details class="mt8"><summary class="muted" style="cursor:pointer">セットアップ手順(GASスクリプトを含む)</summary>
+        <div class="muted mt8" style="line-height:1.7">
+          1. 書き出し先のGoogleスプレッドシートを開く → メニュー「拡張機能」→「Apps Script」<br>
+          2. 表示されたエディタの内容を全消しして、下のコードを貼り付け(<code>TOKEN</code>を上の合言葉と同じにする)<br>
+          3. 右上「デプロイ」→「新しいデプロイ」→種類「ウェブアプリ」→ 実行ユーザー「自分」、アクセス「全員」→ デプロイ<br>
+          4. 表示された「ウェブアプリのURL(/exec)」をコピーして、上の「連携URL」に貼り付け → 「URLを保存」<br>
+          <pre style="background:#f5f7f6;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;font-size:11px;white-space:pre-wrap;word-break:break-all">const TOKEN = ''; // 合言葉(任意)。設定するなら上のアプリと同じ文字列に
+
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents);
+    if (TOKEN && body.token !== TOKEN) return out({ ok:false, error:'token' });
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    (body.sheets || []).forEach(function(s) {
+      let sh = ss.getSheetByName(s.tab) || ss.insertSheet(s.tab);
+      sh.clearContents();
+      const values = [s.headers].concat(s.rows || []);
+      if (values.length) sh.getRange(1, 1, values.length, s.headers.length).setValues(values);
+    });
+    return out({ ok:true });
+  } catch (err) { return out({ ok:false, error:String(err) }); }
+}
+function out(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }</pre>
+        </div>
+      </details>
+    </div>
     <div class="card">
       <h2>データ連携</h2>
       <p class="muted">カレンダーの予定(.ics)をかけ合わせると、会議中の無操作を稼働として、移動予定を対象外として推定できます。</p>
@@ -1482,6 +1573,24 @@ document.addEventListener('click', async (e) => {
   if (act === 'csv-export') exportMatrixCSV();
   if (act === 'csv-long') exportLongCSV();
 
+  if (act === 'sheets-auto') {
+    state = await window.api.saveSheets({ autoExportSheets: !state.settings.autoExportSheets });
+    renderSettings();
+  }
+  if (act === 'sheets-save') {
+    state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
+    renderSettings(); toast('連携URLを保存しました');
+  }
+  if (act === 'sheets-export') {
+    const sel = $('#sh-month').value;
+    const now = new Date();
+    let ym;
+    if (sel === '__this__') ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    else { const p = new Date(now.getFullYear(), now.getMonth() - 1, 1); ym = `${p.getFullYear()}-${String(p.getMonth() + 1).padStart(2, '0')}`; }
+    toast('書き出しています…');
+    const r = await window.api.exportSheets(ym);
+    toast(r.ok ? `${ym} を書き出しました(履歴${r.historyRows}行・工数${r.reportRows}行)` : `エラー: ${r.error}`);
+  }
   if (act === 'team-join') openTeamJoinModal();
   if (act === 'team-new') openTeamNewModal();
   if (act === 'team-invite') showInvite(btn.dataset.id);
@@ -1549,6 +1658,9 @@ document.addEventListener('change', (e) => {
   if (e.target.id === 'rep-preset2') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-from') { renderAdmin.range.from = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-to') { renderAdmin.range.to = e.target.value; renderAdmin(); }
+  if (e.target.id === 'hist-preset') { renderHistory.range.preset = e.target.value; renderHistory(); }
+  if (e.target.id === 'hist-from') { renderHistory.range.from = e.target.value; renderHistory(); }
+  if (e.target.id === 'hist-to') { renderHistory.range.to = e.target.value; renderHistory(); }
 });
 
 /* ---------- ナビ / 描画 ---------- */

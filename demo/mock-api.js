@@ -143,6 +143,7 @@
       idleThresholdSec: 90, dayStartHour: 4, userName: 'あなた', autoLaunch: true, trackWork: true,
       notifications: true, hourlyRate: 5000, watchRoots: [], titleDetect: false, folderStickyMin: 30,
       travelAsWork: true, detectMeetings: true, recoruUserId: '',
+      sheetsUrl: '', sheetsToken: '', autoExportSheets: false, lastExportMonth: '',
       sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' },
       teamProfiles: [], activeTeamId: ''
     },
@@ -222,6 +223,8 @@
       return S();
     },
     syncNow: async () => ({ ok: false, error: 'ブラウザデモのため同期は無効です', state: S() }),
+    saveSheets: async (patch) => { Object.assign(state.settings, patch); return S(); },
+    exportSheets: async () => ({ ok: false, error: 'ブラウザデモでは書き出しは無効です(デスクトップ版でご利用ください)' }),
     addTeam: async (o) => {
       if (!o.projectId || !o.apiKey || !o.teamId) return { ok: false, error: 'Project ID / API Key / チームIDを入力してください' };
       const id = 'tp' + Math.random().toString(36).slice(2, 7);

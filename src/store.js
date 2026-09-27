@@ -26,6 +26,10 @@ class Store {
         travelAsWork: true,  // カレンダーの「移動・外出」予定を稼働として計上
         detectMeetings: true,// オンライン会議(Teams/Zoom/Meet等)を会議として記録
         recoruUserId: '',    // レコルCSV用のユーザID(空なら表示名)
+        sheetsUrl: '',       // Google Apps Script ウェブアプリの /exec URL
+        sheetsToken: '',     // 連携用の合言葉(GAS側と一致)
+        autoExportSheets: false, // 毎月自動で書き出す
+        lastExportMonth: '', // 最後に自動書き出しした月 YYYY-MM
         trackWork: false,    // 案件トラッキング(オプトイン)
         titleDetect: false,  // ウィンドウタイトル判定(active-win使用・macOSは権限要求)。既定オフ
         folderDetect: false, // 【廃止】旧アクセシビリティ方式。互換のため残置(常にfalse)
@@ -93,6 +97,10 @@ class Store {
         if (this.data.settings.travelAsWork == null) this.data.settings.travelAsWork = true;
         if (this.data.settings.detectMeetings == null) this.data.settings.detectMeetings = true;
         if (this.data.settings.recoruUserId == null) this.data.settings.recoruUserId = '';
+        if (this.data.settings.sheetsUrl == null) this.data.settings.sheetsUrl = '';
+        if (this.data.settings.sheetsToken == null) this.data.settings.sheetsToken = '';
+        if (this.data.settings.autoExportSheets == null) this.data.settings.autoExportSheets = false;
+        if (this.data.settings.lastExportMonth == null) this.data.settings.lastExportMonth = '';
         // 同一コードの重複案件を統合(過去のID衝突の後始末)
         this.dedupeProjects();
       }

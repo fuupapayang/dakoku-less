@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('api', {
   deleteProject: (id) => ipcRenderer.invoke('projects:delete', id),
   assignBlock: (key, idx, projectId, keywords) => ipcRenderer.invoke('day:assign', { key, idx, projectId, keywords }),
   syncNow: () => ipcRenderer.invoke('sync:now'),
+  saveSheets: (patch) => ipcRenderer.invoke('sheets:save', patch),
+  exportSheets: (ym) => ipcRenderer.invoke('sheets:export', ym),
   addTeam: (obj) => ipcRenderer.invoke('team:add', obj),
   joinTeam: (code) => ipcRenderer.invoke('team:join', code),
   switchTeam: (id) => ipcRenderer.invoke('team:switch', id),
