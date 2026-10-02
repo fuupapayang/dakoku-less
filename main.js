@@ -426,11 +426,16 @@ async function runSync(force) {
     }
     const merged = await sync.syncProjects(store.data.projects);
     // コード同一でidが変わった案件は、工数/予定/学習の参照を新idへ付け替え(データ保全)
-    const remap = {};
+    const remapTo = {}; // 旧id -> 新idの集合
     for (const m of merged) {
       const c = String(m.code || '').trim().toUpperCase();
       const oldId = c ? localByCode[c] : null;
-      if (oldId && oldId !== m.id) remap[oldId] = m.id;
+      if (oldId && oldId !== m.id) (remapTo[oldId] = remapTo[oldId] || new Set()).add(m.id);
+    }
+    const remap = {}, ambiguous = {};
+    for (const [oid, set] of Object.entries(remapTo)) {
+      if (set.size === 1) remap[oid] = [...set][0];
+      else ambiguous[oid] = [...set]; // 1つの旧idが複数案件に分かれた → 根拠で付け替え/要確認へ
     }
     if (Object.keys(remap).length) {
       for (const d of Object.values(store.data.days)) {
@@ -451,6 +456,10 @@ async function runSync(force) {
       }
     }
     store.data.projects = merged.map(p => ({ keywords: [], active: true, ...p }));
+    if (Object.keys(ambiguous).length) {
+      const r = store.repairIdCollisions(ambiguous);
+      if (r && r.review) notify('案件工数の確認をお願いします', `案件IDの重複を修復しました。${r.review}分の工数は案件タブの「要確認の工数」で振り分けてください。`);
+    }
     // 2) 共有カレンダーをマージ(変化があるときだけ書き込む)
     const remoteCal = (await sync.getDoc('meta/calendar')) || { events: [] };
     store.data.calEvents = calendarLib.mergeEvents(store.data.calEvents, remoteCal.events || []);
@@ -556,6 +565,25 @@ async function maybeAutoExport() {
 }
 
 // ---- 状態のシリアライズ -----------------------------------------------
+/** 要確認の工数を「旧ID×候補」ごとにまとめる(全期間) */
+function reviewItems() {
+  const groups = {};
+  for (const [key, d] of Object.entries(store.data.days)) {
+    for (const r of d.reviewMin || []) {
+      const g = groups[r.from + '|' + r.candidates.join(',')] =
+        groups[r.from + '|' + r.candidates.join(',')] || { from: r.from, candidates: r.candidates, total: 0, days: [] };
+      g.total += r.min;
+      g.days.push({ key, min: r.min });
+    }
+  }
+  const byId = Object.fromEntries(store.data.projects.map(p => [p.id, p]));
+  return Object.values(groups).map(g => ({
+    ...g,
+    days: g.days.sort((a, b) => a.key.localeCompare(b.key)),
+    candidates: g.candidates.map(id => byId[id]).filter(Boolean).map(p => ({ id: p.id, code: p.code, name: p.name }))
+  }));
+}
+
 function buildState() {
   const days = {};
   const keys = Object.keys(store.data.days).sort().slice(-62);
@@ -572,6 +600,7 @@ function buildState() {
     team: store.data.team,
     remoteTeam: store.data.remoteTeam,
     sheetsConfig: sheetsConfig(),
+    reviewItems: reviewItems(),
     gasScript: sheetsLib.gasScript(sheetsConfig().token),
     syncReady: !!(sync && sync.enabled()),
     syncStatus: sync ? sync.status : null,
@@ -712,12 +741,35 @@ function registerIpc() {
   });
   ipcMain.handle('projects:update', (e, { id, patch }) => {
     const p = store.data.projects.find(p => p.id === id);
-    if (p) { Object.assign(p, patch); p.updatedAt = Date.now(); }
+    if (p) { Object.assign(p, patch); delete p.keywordsReview; p.updatedAt = Date.now(); }
     store.save(); pushUpdate(); return buildState();
   });
   ipcMain.handle('projects:delete', (e, id) => {
     store.data.projects = store.data.projects.filter(p => p.id !== id);
     store.save(); pushUpdate(); return buildState();
+  });
+
+  // 要確認の工数(ID衝突修復で振り分けできなかった分)を案件へ割り当て
+  // keys: 対象日の配列, from: 旧ID → 該当する要確認をまとめて projectId へ
+  ipcMain.handle('review:resolve', (e, { keys, from, projectId }) => {
+    if (!store.data.projects.some(p => p.id === projectId)) return buildState();
+    let total = 0;
+    for (const key of keys || []) {
+      const day = store.data.days[key];
+      if (!day || !day.reviewMin) continue;
+      day.reviewMin = day.reviewMin.filter(r => {
+        if (r.from !== from || !r.candidates.includes(projectId)) return true;
+        day.projectMin[projectId] = (day.projectMin[projectId] || 0) + r.min;
+        total += r.min;
+        return false;
+      });
+      if (!day.reviewMin.length) delete day.reviewMin;
+    }
+    const p = store.data.projects.find(p => p.id === projectId);
+    if (total && p) logEvent(store.day(currentKey || engine.dayKey(Date.now(), settings().dayStartHour)), `要確認の工数 ${total}分を「${p.code} ${p.name}」に振り分けました`);
+    store.save(); pushUpdate();
+    if (sync && sync.enabled()) runSync();
+    return buildState();
   });
 
   // 未分類ブロックを案件に割り当て(HITL: キーワード学習+動向学習)
@@ -958,6 +1010,10 @@ app.whenReady().then(() => {
   createTray();
   startTracker();
   startWatcher();
+  if (store.lastRepair && store.lastRepair.review) {
+    setTimeout(() => notify('案件工数の確認をお願いします',
+      `案件IDの重複(同じ時間が複数案件に表示される不具合)を修復しました。${store.lastRepair.review}分の工数は案件タブの「要確認の工数」で振り分けてください。`), 8000);
+  }
   applyActiveProfile();
   sync = new Sync(syncCfg);
   setInterval(() => { if (sync.enabled()) runSync(); }, 10 * 60 * 1000); // 無料枠節約のため10分間隔

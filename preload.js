@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   saveSheets: (patch) => ipcRenderer.invoke('sheets:save', patch),
   exportSheets: (ym) => ipcRenderer.invoke('sheets:export', ym),
   shareSheets: (cfg) => ipcRenderer.invoke('sheets:share', cfg),
+  resolveReview: (arg) => ipcRenderer.invoke('review:resolve', arg),
   addTeam: (obj) => ipcRenderer.invoke('team:add', obj),
   joinTeam: (code) => ipcRenderer.invoke('team:join', code),
   switchTeam: (id) => ipcRenderer.invoke('team:switch', id),

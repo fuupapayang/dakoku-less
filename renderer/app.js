@@ -431,7 +431,7 @@ function projListCardHTML() {
   const rows = list.map(p => `
     <tr>
       <td><b>${esc(p.code)}</b></td>
-      <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}${budgetBadge(p)}</td>
+      <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}${p.keywordsReview ? ' <span class="tag" title="ID重複の修復対象でした。キーワードが他案件と混ざっている可能性があります。編集して保存すると消えます">キーワード要確認</span>' : ''}${budgetBadge(p)}</td>
       <td>${esc(p.client || '-')}</td>
       <td>${(p.sales || []).map(esc).join('、') || '-'}</td>
       <td>${(p.makers || []).map(esc).join('、') || '-'}</td>
@@ -471,6 +471,29 @@ function projListCardHTML() {
   </div>`;
 }
 
+/** ID重複の修復で振り分けできなかった工数(本人が選ぶ) */
+function reviewCardHTML() {
+  const items = state.reviewItems || [];
+  if (!items.length) return '';
+  const total = items.reduce((a, g) => a + g.total, 0);
+  return `<div class="card" style="border-color:#f3ddb0">
+    <h2>要確認の工数 <span class="tag">${fmtDur(total)}</span></h2>
+    <p class="muted">以前のバージョンの不具合で、別々の案件が同じIDになり、同じ時間が複数案件に重複表示されていました。
+    重複は解消済みです。下の工数は記録時にどの案件だったか自動では判別できなかった分です。該当する案件を選んでください(まとめて、または日ごと)。</p>
+    ${items.map((g, gi) => `<div class="rule-item mt8"><div class="grow">
+        <div><b>${fmtDur(g.total)}</b> <span class="muted">(${g.days.length}日分 / ${esc(g.days[0].key)}〜${esc(g.days[g.days.length - 1].key)})</span></div>
+        <div class="actions mt8">まとめて振り分け:
+          ${g.candidates.map(c => `<button class="btn sm" data-act="review-resolve" data-g="${gi}" data-pid="${esc(c.id)}">${esc(c.code)} ${esc(c.name)}</button>`).join(' ')}
+        </div>
+        <details class="mt8"><summary class="muted" style="cursor:pointer">日ごとに振り分ける</summary>
+          ${g.days.map(d => `<div class="row mt8"><span style="min-width:150px">${esc(d.key)} ${fmtDur(d.min)}</span>
+            ${g.candidates.map(c => `<button class="btn sm ghost" data-act="review-resolve" data-g="${gi}" data-key="${esc(d.key)}" data-pid="${esc(c.id)}">${esc(c.code)}</button>`).join(' ')}
+          </div>`).join('')}
+        </details>
+      </div></div>`).join('')}
+  </div>`;
+}
+
 function renderProjects() {
   const s = state.settings;
   const day = state.days[state.todayKey] || {};
@@ -481,6 +504,7 @@ function renderProjects() {
     <h1>案件トラッキング</h1>
     <div class="page-sub">誰が・何の案件を・どれだけ。カレンダー → 案件コード → キーワードの順で自動判定します。</div>
 
+    ${reviewCardHTML()}
     ${projListCardHTML()}
 
     <div class="card">
@@ -1596,6 +1620,13 @@ document.addEventListener('click', async (e) => {
   if (act === 'sheets-save') {
     state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
     renderSettings(); toast('この端末の連携URLを保存しました');
+  }
+  if (act === 'review-resolve') {
+    const g = (state.reviewItems || [])[+btn.dataset.g];
+    if (!g) return;
+    const keys = btn.dataset.key ? [btn.dataset.key] : g.days.map(d => d.key);
+    state = await window.api.resolveReview({ keys, from: g.from, projectId: btn.dataset.pid });
+    renderProjects(); toast('工数を振り分けました');
   }
   if (act === 'sheets-edit') { sheetsEditing = true; renderSettings(); }
   if (act === 'sheets-share') {

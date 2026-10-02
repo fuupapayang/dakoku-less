@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const collisionsLib = require('./collisions');
 
 /**
  * シンプルなJSON永続化ストア。
@@ -103,6 +104,7 @@ class Store {
         if (this.data.settings.lastExportMonth == null) this.data.settings.lastExportMonth = '';
         // 同一コードの重複案件を統合(過去のID衝突の後始末)
         this.dedupeProjects();
+        this.lastRepair = this.repairIdCollisions();
       }
     } catch (e) { console.error('store load error', e); }
   }
@@ -184,6 +186,22 @@ class Store {
       if (ls.totals[oid] != null) { ls.totals[nid] = (ls.totals[nid] || 0) + ls.totals[oid]; delete ls.totals[oid]; }
     }
     return remap;
+  }
+
+  /**
+   * 案件IDの衝突(旧連番IDの名残)を修復。衝突が無ければ何もしない。
+   * @returns {{moved:number, review:number, ids:number}|null}
+   */
+  repairIdCollisions(collisions) {
+    if (!collisions) {
+      const r = collisionsLib.splitCollisions(this.data.projects || []);
+      if (!Object.keys(r.collisions).length) return null;
+      this.data.projects = r.projects;
+      collisions = r.collisions;
+    }
+    const res = collisionsLib.repairData(this.data, collisions, this.data.settings.userName);
+    this.save();
+    return { ...res, ids: Object.keys(collisions).length };
   }
 
   addProject(p) {

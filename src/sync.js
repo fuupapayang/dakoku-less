@@ -11,6 +11,8 @@
  * 前提: Firestoreを「テストモード」または適切なルールで作成しておくこと。
  */
 
+const { splitCollisions } = require('./collisions');
+
 const BASE = (pid) => `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents`;
 
 /* ---- JSON <-> Firestore Value 変換 ---- */
@@ -173,7 +175,9 @@ class Sync {
     };
     for (const p of remote.projects || []) add(p);   // 先にリモート → idの基準
     for (const p of localProjects) add(p);            // ローカルを統合
-    const merged = [...byKey.values()];
+    // 別コードの案件が同じIDを持っていたら(旧連番IDの衝突)コード由来のIDに振り直す。
+    // 古いバージョンの端末が衝突IDを送ってきても、ここで毎回分離されるので再発しない。
+    const merged = splitCollisions([...byKey.values()]).projects;
     // 内容に変化があるときだけ書き込む(無料枠の節約)
     if (this._changed('projects', merged)) {
       await this.setDoc('meta/projects', { projects: merged, updatedAt: Date.now() });
