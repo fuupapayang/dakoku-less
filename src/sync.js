@@ -205,7 +205,7 @@ class Sync {
         )
       };
     }
-    const payload = { name: c.userName, days: out };
+    const payload = { name: c.userName, recoruUserId: c.recoruUserId || '', days: out };
     if (this._changed('summary', payload)) {
       await this.setDoc(`summary/${c.memberId}`, { ...payload, updatedAt: Date.now() });
     }
@@ -240,7 +240,7 @@ class Sync {
       this.getDoc(`reviews/${c.memberId}`)
     ]);
     const members = summaries.map(s => ({
-      id: s.id, name: s.data.name || s.id, days: s.data.days || {}, updatedAt: s.data.updatedAt
+      id: s.id, name: s.data.name || s.id, recoruUserId: s.data.recoruUserId || '', days: s.data.days || {}, updatedAt: s.data.updatedAt
     }));
     const teamStats = [];
     for (const d of dicts) {

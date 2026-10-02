@@ -48,6 +48,21 @@ function overlapsWindow(gapS, gapE, fromMin, toMin) {
   return gapS < winE && gapE > winS;
 }
 
+/** 空白 [gapS,gapE) と HH:MM 窓の重なり部分(空白の開始日・終了日の両方の窓を確認)。無ければnull */
+function windowClip(gapS, gapE, fromMin, toMin) {
+  const bases = new Set();
+  for (const t of [gapS, gapE]) {
+    const d = new Date(t);
+    bases.add(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime());
+  }
+  for (const base of [...bases].sort((a, b) => a - b)) {
+    const s = Math.max(gapS, base + fromMin * MIN);
+    const e = Math.min(gapE, base + toMin * MIN);
+    if (e > s) return { s, e };
+  }
+  return null;
+}
+
 function minutesOfDay(ts) {
   const d = new Date(ts);
   return d.getHours() * 60 + d.getMinutes();
@@ -87,50 +102,60 @@ function estimate(day, rules = [], settings = {}) {
   const segments = merged.map(iv => ({ s: iv.s, e: iv.e, kind: 'work', label: '稼働' }));
   let ambiguousCount = 0;
 
-  for (let i = 0; i < merged.length - 1; i++) {
-    const gapS = merged[i].e, gapE = merged[i + 1].s;
+  /**
+   * 空白 [gapS, gapE) を分類する。
+   * マイルールとカレンダー予定は「重なっている部分だけ」に適用し、残りの部分は再帰的に分類する。
+   * (旧実装は空白全体に適用していたため、10:00〜10:15の「朝会」ルールがあると
+   *  9時間の不在でも丸ごと稼働扱いになっていた)
+   */
+  const classifyGap = (gapS, gapE) => {
     const gapMin = (gapE - gapS) / MIN;
-    if (gapMin < ambiguous) continue; // 短い空白は稼働継続とみなす
+    if (gapMin < ambiguous) return; // 短い空白は稼働継続とみなす(segments上は前後の稼働に含める)
 
     // 1) マイルール適用(最優先)
-    const rule = activeRules.find(r => overlapsWindow(gapS, gapE, r.fromMin, r.toMin));
-    if (rule) {
+    for (const rule of activeRules) {
+      const w = windowClip(gapS, gapE, rule.fromMin, rule.toMin);
+      if (!w) continue;
       if (rule.treatAs === 'work') {
-        segments.push({ s: gapS, e: gapE, kind: 'work', label: `稼働(ルール: ${rule.label})` });
-        notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} マイルール「${rule.label}」により稼働扱い`);
+        segments.push({ s: w.s, e: w.e, kind: 'work', label: `稼働(ルール: ${rule.label})` });
+        notes.push(`${fmtTime(w.s)}〜${fmtTime(w.e)} マイルール「${rule.label}」により稼働扱い`);
       } else {
         const kind = rule.treatAs === 'exclude' ? 'exclude' : 'break';
-        breaks.push({ s: gapS, e: gapE, kind, source: `ルール: ${rule.label}` });
-        segments.push({ s: gapS, e: gapE, kind, label: rule.label });
-        notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} マイルール「${rule.label}」により${kind === 'exclude' ? '対象外' : '休憩'}扱い`);
+        breaks.push({ s: w.s, e: w.e, kind, source: `ルール: ${rule.label}` });
+        segments.push({ s: w.s, e: w.e, kind, label: rule.label });
+        notes.push(`${fmtTime(w.s)}〜${fmtTime(w.e)} マイルール「${rule.label}」により${kind === 'exclude' ? '対象外' : '休憩'}扱い`);
       }
-      continue;
+      if (w.s > gapS) classifyRest(gapS, w.s);
+      if (w.e < gapE) classifyRest(w.e, gapE);
+      return;
     }
 
-    // 2) カレンダー予定との突合(会議中の無操作は稼働扱い)
+    // 2) カレンダー予定との突合(会議中の無操作は稼働扱い)。予定と重なる部分だけに適用
     const ev = calendar.find(ev => ev.s < gapE && ev.e > gapS);
     if (ev) {
+      const s0 = Math.max(gapS, ev.s), e0 = Math.min(gapE, ev.e);
       const summary = ev.summary || '';
       const isTravel = /移動|外出|直行|直帰|出張/.test(summary);
       const isExcluded = /通院|私用|中抜け|離席/.test(summary);
       if (isTravel && settings.travelAsWork !== false) {
-        // 移動・外出は稼働として計上(打ち合わせのための移動時間)
-        segments.push({ s: gapS, e: gapE, kind: 'work', label: `移動: ${summary}` });
-        notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} 「${summary}」を移動(稼働)として計上`);
+        segments.push({ s: s0, e: e0, kind: 'work', label: `移動: ${summary}` });
+        notes.push(`${fmtTime(s0)}〜${fmtTime(e0)} 「${summary}」を移動(稼働)として計上`);
       } else if (isTravel || isExcluded) {
-        breaks.push({ s: gapS, e: gapE, kind: 'exclude', source: `予定: ${summary}` });
-        segments.push({ s: gapS, e: gapE, kind: 'exclude', label: summary });
+        breaks.push({ s: s0, e: e0, kind: 'exclude', source: `予定: ${summary}` });
+        segments.push({ s: s0, e: e0, kind: 'exclude', label: summary });
         suggestions.push({
           type: 'rule', treatAs: 'exclude',
-          fromMin: minutesOfDay(gapS), toMin: minutesOfDay(gapE), weekday,
+          fromMin: minutesOfDay(s0), toMin: minutesOfDay(e0), weekday,
           label: summary || '対象外',
-          text: `${fmtTime(gapS)}〜${fmtTime(gapE)} は「${summary}」かもしれません。稼働に含めず申請しますか？`
+          text: `${fmtTime(s0)}〜${fmtTime(e0)} は「${summary}」かもしれません。稼働に含めず申請しますか？`
         });
       } else {
-        segments.push({ s: gapS, e: gapE, kind: 'work', label: `会議: ${summary}` });
-        notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} カレンダー予定「${summary}」により稼働扱い`);
+        segments.push({ s: s0, e: e0, kind: 'work', label: `会議: ${summary}` });
+        notes.push(`${fmtTime(s0)}〜${fmtTime(e0)} カレンダー予定「${summary}」により稼働扱い`);
       }
-      continue;
+      if (s0 > gapS) classifyRest(gapS, s0);
+      if (e0 < gapE) classifyRest(e0, gapE);
+      return;
     }
 
     // 3) ヒューリスティック
@@ -145,7 +170,17 @@ function estimate(day, rules = [], settings = {}) {
       segments.push({ s: gapS, e: gapE, kind: 'ambiguous', label: '判定が微妙な空白' });
       notes.push(`${fmtTime(gapS)}〜${fmtTime(gapE)} の空白(${Math.round(gapMin)}分)は稼働として扱いました`);
     }
-  }
+  };
+  // ルール/予定で切り出した残りの部分。短い切れ端も休憩判定の対象にする(短い場合は稼働扱いの「微妙」へ)
+  const classifyRest = (s0, e0) => {
+    if ((e0 - s0) / MIN < ambiguous) {
+      segments.push({ s: s0, e: e0, kind: 'ambiguous', label: '判定が微妙な空白' });
+      return;
+    }
+    classifyGap(s0, e0);
+  };
+
+  for (let i = 0; i < merged.length - 1; i++) classifyGap(merged[i].e, merged[i + 1].s);
 
   segments.sort((a, b) => a.s - b.s);
   const breakMin = breaks.reduce((a, b) => a + (b.e - b.s) / MIN, 0);

@@ -329,7 +329,7 @@ function renderHistory() {
       <td>${fmtTime(est.start)}</td><td>${fmtTime(est.end)}</td>
       <td>${fmtDur(est.breakMin)}</td><td><b>${fmtDur(est.workMin)}</b></td>
       <td><span class="chip ${esc(conf)}">${CONF[conf]}</span></td>
-      <td><span class="chip status-${esc(day.status)}">${STATUS[day.status] || day.status}</span>
+      <td><span class="chip status-${esc(day.status)}">${STATUS[day.status] || day.status}</span>${(day.reviewReasons || []).length && canSubmit ? ` <span class="tag" title="${esc(day.reviewReasons.join('・'))}">要確認</span>` : ''}
           ${day.submitted && day.submitted.auto ? '<span class="tag">自動</span>' : ''}</td>
       <td>${canSubmit ? `<button class="btn sm" data-act="submit-day" data-key="${esc(k)}">提出</button>` : ''}
           <button class="btn sm ghost" data-act="correct-day" data-key="${esc(k)}">修正</button></td>
@@ -1161,7 +1161,7 @@ function renderAdmin() {
           <option value="lastMonth" ${reportRange().preset === 'lastMonth' ? 'selected' : ''}>先月</option>
         </select>
         <button class="btn sm primary" data-act="csv-recoru">レコル向けCSV出力</button></div>
-      <p class="muted mt8">出力列: ユーザID / 日付 / 出勤時刻 / 退勤時刻 / 休憩時間(HH:MM)。提出済み・確定済みの勤怠を対象期間ぶん書き出します。管理者がレコルの「打刻データCSVインポート」に取り込んでください。</p>
+      <p class="muted mt8">出力列: ユーザID / 日付 / 勤務区分(出勤・所定休日出勤・法定休日出勤) / 開始 / 終了(翌日は25:30のような24時超え表記) / 休憩時間 / メモ。提出済み・承認済みの勤怠のみ。休日・長時間の日はメモに「要確認」理由が入ります。管理者がレコルの「打刻データCSVインポート」に取り込んでください。</p>
       <div class="row mt8">
         <label style="display:flex;align-items:center;gap:8px" title="準備中の機能です">
           <input type="checkbox" data-act="recoru-send-dummy" disabled> レコルへ自動送信(準備中)
@@ -1178,39 +1178,19 @@ function renderAdmin() {
     </div>`;
 }
 
-/** レコル取込用CSV: ユーザID,日付,出勤時刻,退勤時刻,休憩時間(HH:MM) */
-function exportRecoruCSV() {
+/** レコル取込用CSV: ユーザID,日付,勤務区分,開始,終了,休憩時間,メモ(生成はメインプロセスの src/recoru.js) */
+async function exportRecoruCSV() {
   const { fromTs, toTs } = reportRange();
-  const inRange = (k) => { const t = new Date(k).getTime(); return t >= fromTs && t <= toTs; };
-  const hhmm = (ts) => ts == null ? '' : fmtTime(ts);
-  const durHHMM = (min) => `${String(Math.floor((min || 0) / 60)).padStart(2, '0')}:${String(Math.round((min || 0) % 60)).padStart(2, '0')}`;
-  const lines = [['ユーザID', '日付', '出勤時刻', '退勤時刻', '休憩時間']];
-  const myUid = (state.settings.recoruUserId || '').trim() || state.settings.userName;
-  const pushMember = (uid, days) => {
-    for (const k of Object.keys(days).sort()) {
-      if (!inRange(k)) continue;
-      const d = days[k];
-      const est = d.submitted || d.correction || d.estimation;
-      if (!est || est.start == null) continue;
-      // 提出/承認済みのみ対象(未提出は除外)
-      if (d.status && !['submitted', 'approved'].includes(d.status)) continue;
-      lines.push([uid, k, hhmm(est.start), hhmm(est.end), durHHMM(est.breakMin)]);
-    }
-  };
-  pushMember(myUid, state.days);
-  const meId = (state.settings.sync && state.settings.sync.memberId) || '';
-  for (const m of ((state.remoteTeam && state.remoteTeam.members) || [])) {
-    if (m.id === meId) continue;
-    pushMember(m.name, m.days || {});
-  }
-  if (lines.length === 1) { toast('対象期間に提出済みの勤怠がありません'); return; }
-  const csv = '﻿' + lines.map(l => l.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const key = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  if (!window.api.recoruCSV) { toast('ブラウザデモではCSV出力は無効です'); return; }
+  const r = await window.api.recoruCSV({ from: key(fromTs), to: key(toTs) });
+  if (!r.rows) { toast('対象期間に提出済みの勤怠がありません'); return; }
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = `レコル勤怠_${state.todayKey}.csv`;
+  a.href = URL.createObjectURL(new Blob(['\ufeff' + r.csv], { type: 'text/csv' }));
+  a.download = `レコル勤怠_${key(fromTs)}_${key(toTs)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
-  toast('レコル向けCSVを書き出しました');
+  toast(`レコル向けCSVを書き出しました(${r.rows}行)`);
 }
 
 function syncStatusHTML() {

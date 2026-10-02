@@ -8,6 +8,7 @@ const projectsLib = require('./src/projects');
 const learnLib = require('./src/learn');
 const calendarLib = require('./src/calendar');
 const sheetsLib = require('./src/sheets');
+const recoruLib = require('./src/recoru');
 const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
@@ -262,24 +263,65 @@ function pushUpdate() {
   if (win && !win.isDestroyed()) win.webContents.send('state:update', buildState());
 }
 
-function finalizeDay(key) {
+/**
+ * 1日分を確定。
+ * @param stale true = アプリ終了・再起動などで「記録中」のまま残っていた過去日(自動提出しない)
+ */
+function finalizeDay(key, stale = false) {
   const day = store.day(key);
   if (day.status !== 'recording') return;
   reestimate(key);
   day.status = 'pending';
-  const conf = day.estimation ? day.estimation.confidence : 'LOW';
-  if (day.estimation && day.estimation.start && engine.shouldAutoSubmit(settings().submitMode, conf)) {
+  const est = day.estimation;
+  const conf = est ? est.confidence : 'LOW';
+  // 休日・長時間・後から確定した日は、人が確認してから提出する(誤った値をそのまま提出しない)
+  const reasons = recoruLib.reviewReasons(key, est, { longMin: settings().reviewLongMin || 720 });
+  if (stale) reasons.push('記録中のまま残っていた日');
+  day.reviewReasons = reasons;
+  if (est && est.start && !reasons.length && engine.shouldAutoSubmit(settings().submitMode, conf)) {
     submitDay(key, true);
   }
-  logEvent(day, `本日分を確定(信頼度: ${conf})`);
-  const est = day.estimation;
-  if (est && est.start) {
+  logEvent(day, `${stale ? '記録中のまま残っていた日を' : '本日分を'}確定(信頼度: ${conf}${reasons.length ? ' / 要確認: ' + reasons.join('・') : ''})`);
+  if (est && est.start && !stale) {
     notify(
       day.status === 'submitted' ? '勤怠を自動提出しました' : '勤怠の確認をお願いします',
       `${key} ${engine.fmtTime(est.start)}〜${engine.fmtTime(est.end)} 実働${engine.fmtDur(est.workMin)}` +
-      (day.status === 'submitted' ? '' : `(信頼度: ${conf} — 履歴タブから提出してください)`)
+      (day.status === 'submitted' ? '' : `(${reasons.length ? reasons.join('・') : '信頼度: ' + conf} — 履歴タブから確認して提出してください)`)
     );
   }
+}
+
+/** 今日より前で「記録中」のまま残っている日をすべて確定(アプリ終了・PC再起動で日付を跨いだ場合の取りこぼし対策) */
+function finalizeStaleDays(todayKey) {
+  const stale = Object.keys(store.data.days).filter(k => k < todayKey && store.data.days[k].status === 'recording');
+  for (const k of stale) finalizeDay(k, true);
+  if (stale.length) {
+    store.save();
+    notify('未確定の勤怠を確定しました', `${stale.length}日分が「記録中」のまま残っていました。履歴タブで確認して提出してください。`);
+  }
+}
+
+/**
+ * 推定ロジック修正(v0.12: マイルール/予定が空白全体を稼働扱いにしていた不具合)後の再計算。
+ * 自動提出された日(承認前)だけを対象に、差が15分以上あれば「未提出」に戻して確認を促す。
+ * 手動で提出・修正した日、承認済みの日は変更しない。
+ */
+function recheckAutoSubmitted() {
+  if (settings().engineFixV12) return;
+  let n = 0;
+  for (const [key, day] of Object.entries(store.data.days)) {
+    if (day.status !== 'submitted' || !day.submitted || !day.submitted.auto || day.correction) continue;
+    const before = day.submitted.workMin || 0;
+    const est = reestimate(key);
+    if (!est || est.start == null || Math.abs((est.workMin || 0) - before) < 15) continue;
+    day.status = 'pending';
+    day.reviewReasons = ['推定ロジック修正で再計算'];
+    logEvent(day, `推定ロジックの修正により再計算しました(実働 ${engine.fmtDur(before)} → ${engine.fmtDur(est.workMin)})。確認して再提出してください`);
+    n++;
+  }
+  settings().engineFixV12 = true;
+  store.save();
+  if (n) notify('勤怠を再計算しました', `マイルールの適用範囲の不具合を修正し、自動提出済みの${n}日分を再計算しました。履歴タブで確認して再提出してください。`);
 }
 
 function submitDay(key, auto = false) {
@@ -288,6 +330,7 @@ function submitDay(key, auto = false) {
   if (!est || est.start == null) return { ok: false, error: '提出できる推定結果がありません' };
   day.status = 'submitted';
   day.submittedAt = Date.now();
+  delete day.reviewReasons;
   day.submitted = {
     start: est.start, end: est.end,
     workMin: est.workMin, breakMin: est.breakMin, auto
@@ -313,6 +356,7 @@ async function sample() {
       flushUnclassified(prev);
       finalizeDay(currentKey);
     }
+    if (key !== currentKey) finalizeStaleDays(key); // 起動直後・日付変更時に取りこぼしを確定
     currentKey = key;
     const day = store.day(key);
 
@@ -377,7 +421,7 @@ function applyActiveProfile() {
 
 function syncCfg() {
   const s = settings().sync || {};
-  return { ...s, userName: settings().userName };
+  return { ...s, userName: settings().userName, recoruUserId: settings().recoruUserId || '' };
 }
 
 /** 招待コード(base64のJSON)を作成/解析 */
@@ -749,6 +793,28 @@ function registerIpc() {
     store.save(); pushUpdate(); return buildState();
   });
 
+  // レコル取込用CSV(提出・承認済みの日のみ)。範囲 [from,to] は YYYY-MM-DD
+  ipcMain.handle('recoru:csv', (e, { from, to }) => {
+    const rows = [recoruLib.IMPORT_HEADERS];
+    const add = (uid, days) => {
+      for (const k of Object.keys(days).sort()) {
+        if (k < from || k > to) continue;
+        const d = days[k];
+        if (!['submitted', 'approved'].includes(d.status)) continue;
+        const est = d.submitted || d.correction || d.estimation || d;
+        if (!est || est.start == null) continue;
+        const reasons = recoruLib.reviewReasons(k, est, { longMin: settings().reviewLongMin || 720 });
+        rows.push(recoruLib.importRow(uid, k, est, ['全自動勤怠管理くん', ...reasons].join(' / ')));
+      }
+    };
+    add((settings().recoruUserId || '').trim() || settings().userName, store.data.days);
+    const myId = (settings().sync || {}).memberId;
+    for (const m of ((store.data.remoteTeam && store.data.remoteTeam.members) || [])) {
+      if (m.id !== myId) add(m.recoruUserId || m.name, m.days || {});
+    }
+    return { rows: rows.length - 1, csv: recoruLib.toCSV(rows) };
+  });
+
   // 要確認の工数(ID衝突修復で振り分けできなかった分)を案件へ割り当て
   // keys: 対象日の配列, from: 旧ID → 該当する要確認をまとめて projectId へ
   ipcMain.handle('review:resolve', (e, { keys, from, projectId }) => {
@@ -1010,6 +1076,7 @@ app.whenReady().then(() => {
   createTray();
   startTracker();
   startWatcher();
+  setTimeout(recheckAutoSubmitted, 3000);
   if (store.lastRepair && store.lastRepair.review) {
     setTimeout(() => notify('案件工数の確認をお願いします',
       `案件IDの重複(同じ時間が複数案件に表示される不具合)を修復しました。${store.lastRepair.review}分の工数は案件タブの「要確認の工数」で振り分けてください。`), 8000);

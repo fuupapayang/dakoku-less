@@ -6,7 +6,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/engine.test.js && node test/projects.test.js && node test/learn.test.js && node test/calendar.test.js && node test/watcher.test.js && node test/sync.test.js && node test/store.test.js && node test/sheets.test.js && node test/collisions.test.js",
+    "test": "node test/engine.test.js && node test/projects.test.js && node test/learn.test.js && node test/calendar.test.js && node test/watcher.test.js && node test/sync.test.js && node test/store.test.js && node test/sheets.test.js && node test/collisions.test.js && node test/recoru.test.js",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win"
