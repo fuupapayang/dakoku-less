@@ -105,6 +105,52 @@ function suggestionHTML(sug, key, idx) {
   </div>`;
 }
 
+/** 監視フォルダの登録を促すバナー */
+function folderBannerHTML() {
+  const f = state.folderStatus;
+  if (!f) return '';
+  let title = '', body = '', extra = '';
+  if (f.noRoots) {
+    title = '監視する案件フォルダが未登録です';
+    body = 'このままでは<b>案件ごとの作業時間(工数)が記録されません</b>(出退勤は記録されます)。案件フォルダ(F000_名称)が並んでいる<b>親フォルダ</b>を登録してください。親フォルダごと登録すると、今後追加される案件も自動で対象になります。';
+  } else if (f.missing.length) {
+    title = '監視フォルダが見つかりません';
+    body = `外付けドライブやNASが接続されていない可能性があります。接続するまで工数が記録されません: ${f.missing.map(esc).join(', ')}`;
+  } else if (f.unregistered.length) {
+    title = '担当案件のフォルダが監視範囲にありません';
+    body = '次の案件は監視フォルダ内に「コード_名称」のフォルダが見つからないため、工数が記録されない可能性があります。親フォルダを追加するか、フォルダ名を「T724_名称」の形式にしてください。';
+    extra = `<div class="mt8">${f.unregistered.slice(0, 8).map(p => `<span class="tag">${esc(p.code)} ${esc(p.name)} <a href="#" data-act="folder-dismiss" data-code="${esc(p.code)}" title="この案件はフォルダを使わない(今後表示しない)">×</a></span>`).join(' ')}${f.unregistered.length > 8 ? ` ほか${f.unregistered.length - 8}件` : ''}</div>`;
+  } else return '';
+  return `<div class="suggestion" style="background:var(--amber-bg);border-color:#f3ddb0;margin-bottom:12px">
+    <div class="who" style="color:var(--amber)">📁 ${title}</div><div>${body}</div>${extra}
+    <div class="actions"><button class="btn sm primary" data-act="watch-add">監視フォルダを追加</button></div>
+  </div>`;
+}
+
+/** みなし残業メーター */
+function overtimeCardHTML() {
+  const o = state.overtime;
+  if (!o) return '';
+  const pct = Math.min(100, Math.round(o.overtimeMin / o.limitMin * 100));
+  const fpct = Math.min(100, Math.round(o.forecastMin / o.limitMin * 100));
+  const color = { over: '#d9534f', warn: '#f0a92e', pace: '#f0a92e', ok: 'var(--green, #3aa76d)' }[o.level];
+  const msg = {
+    over: `⚠ みなし残業(${fmtDur(o.limitMin)})を超えています。上長に相談してください。`,
+    warn: `みなし残業の${pct}%に達しました。月末予測 ${fmtDur(o.forecastMin)}。`,
+    pace: `このペースだと月末に約${fmtDur(o.forecastMin)}となり、みなし残業を超える見込みです。`,
+    ok: `月末予測 ${fmtDur(o.forecastMin)}`
+  }[o.level];
+  return `<div class="card">
+    <div class="row"><h2 class="grow">今月の残業 <span style="color:${color}">${fmtDur(o.overtimeMin)}</span> <span class="muted">/ みなし ${fmtDur(o.limitMin)}</span></h2>
+      ${o.legalHolidayMin ? `<span class="tag" title="日曜(法定休日)の労働は残業とは別に集計">休日労働 ${fmtDur(o.legalHolidayMin)}</span>` : ''}</div>
+    <div style="position:relative;background:#eef2ef;border-radius:6px;height:14px;overflow:hidden;margin-top:6px">
+      <div style="position:absolute;left:0;top:0;bottom:0;width:${fpct}%;background:${color};opacity:.25"></div>
+      <div style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:${color}"></div>
+    </div>
+    <div class="muted mt8">${msg}(残業 = 平日8時間超 + 土曜・祝日の労働。PC稼働からの推定値です)</div>
+  </div>`;
+}
+
 function renderToday() {
   const key = state.todayKey;
   const day = state.days[key];
@@ -118,6 +164,8 @@ function renderToday() {
   $('#tab-today').innerHTML = `
     <h1>今日の勤務</h1>
     <div class="page-sub">${fmtDate(key)} ｜ ただ仕事に集中するだけで、出退勤ログをそっと整えます。</div>
+    ${folderBannerHTML()}
+    ${overtimeCardHTML()}
 
     <div class="card">
       <div class="row">
@@ -372,7 +420,7 @@ function workLineHTML() {
   const w = state.currentWork;
   let label;
   if (!w) label = '<span class="muted">計測待機中</span>';
-  else if (w.projectId) label = `<b>${esc(projName(w.projectId))}</b> <span class="muted">(${{ code: 'コード', keyword: 'キーワード', calendar: '会議', folder: 'フォルダ', ai: 'AI' }[w.via] || ''}判定${w.app ? ' ・ ' + esc(w.app) : ''})</span>`;
+  else if (w.projectId) label = `<b>${esc(projName(w.projectId))}</b> <span class="muted">(${{ code: 'コード', keyword: 'キーワード', calendar: '会議', folder: 'フォルダ', ai: 'AI', 'ai-tool': 'AIツール操作中・直前の案件を継続' }[w.via] || ''}判定${w.app ? ' ・ ' + esc(w.app) : ''})</span>`;
   else label = `<span class="muted">案件未判定${w.app ? '(' + esc(w.app) + ')' : ''}</span>`;
   return `<div class="mt8">現在の作業: ${label}</div>`;
 }
@@ -1073,6 +1121,31 @@ function selfRow(dateKey) {
   };
 }
 
+/** 管理者: メンバー別の今月の残業(同期サマリーから試算) */
+function teamOvertimeHTML(roster) {
+  if (!state.overtime) return '';
+  const limit = state.overtime.limitMin, ym = state.overtime.ym;
+  const rows = roster.map(m => {
+    let ot = 0, hol = 0;
+    for (const [k, d] of Object.entries(m.days || {})) {
+      if (k.slice(0, 7) !== ym) continue;
+      const e = d.submitted || d.correction || d.estimation || d;
+      if (!e || e.start == null) continue;
+      const wd = new Date(k).getDay();
+      const holiday = (state.holidays || []).includes(k);
+      if (wd === 0) hol += e.workMin || 0;
+      else if (wd === 6 || holiday) ot += e.workMin || 0;
+      else ot += Math.max(0, (e.workMin || 0) - 480);
+    }
+    return { name: m.name, ot, hol };
+  }).sort((a, b) => b.ot - a.ot);
+  const lv = (m) => m >= limit ? '<span class="chip LOW">超過</span>' : m >= limit * 0.8 ? '<span class="chip UNSURE">80%以上</span>' : '';
+  return `<div class="card"><h2>今月の残業(みなし ${fmtDur(limit)})</h2>
+    <table><thead><tr><th>メンバー</th><th>残業</th><th>休日労働(日曜)</th><th></th></tr></thead>
+    <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td><b>${fmtDur(r.ot)}</b></td><td>${fmtDur(r.hol)}</td><td>${lv(r.ot)}</td></tr>`).join('')}</tbody></table>
+    <div class="muted mt8">PC稼働からの推定値です。各メンバーが最新版に更新すると推定の不具合修正が反映されます。</div></div>`;
+}
+
 function renderAdmin() {
   const team = state.team || { members: [] };
   const sel = renderAdmin.date || (() => {
@@ -1117,6 +1190,7 @@ function renderAdmin() {
       <div class="kpi"><div class="num">${waiting}</div><div class="lbl">承認待ち</div></div>
       <div class="kpi"><div class="num" style="color:${alerts.length ? 'var(--red)' : 'inherit'}">${alerts.length}</div><div class="lbl">乖離アラート(30分超)</div></div>
     </div>
+    ${teamOvertimeHTML([{ name: state.settings.userName + '(あなた)', days: state.days }, ...roster])}
     <div class="card">
       <div class="row"><h2 class="grow">メンバー勤怠</h2>
         <input type="date" id="adm-date" value="${sel}" style="width:170px;margin:0"></div>
@@ -1600,6 +1674,11 @@ document.addEventListener('click', async (e) => {
   if (act === 'sheets-save') {
     state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
     renderSettings(); toast('この端末の連携URLを保存しました');
+  }
+  if (act === 'folder-dismiss') {
+    e.preventDefault();
+    state = await window.api.dismissFolderHint(btn.dataset.code);
+    renderToday();
   }
   if (act === 'review-resolve') {
     const g = (state.reviewItems || [])[+btn.dataset.g];

@@ -10,6 +10,8 @@ const STOP = new Set([
   'excel', 'word', 'powerpoint', 'outlook', 'teams', 'slack', 'zoom', 'chrome', 'safari',
   'edge', 'firefox', 'finder', 'explorer', 'google', 'microsoft', 'adobe', 'acrobat',
   'docs', 'sheets', 'slides', 'drive', 'gmail', 'notion', 'figma',
+  // AIツール名(タイトルに常に含まれ、案件の手がかりにならない)
+  'chatgpt', 'claude', 'antigravity', 'gemini', 'cursor', 'perplexity', 'copilot', 'codex', 'notebooklm',
   'pdf', 'docx', 'xlsx', 'pptx', 'txt', 'csv', 'html', 'app',
   'www', 'http', 'https', 'com', 'co', 'jp', 'ne', 'or',
   '新規', '無題', 'untitled', 'document', 'presentation', 'book', 'sheet',

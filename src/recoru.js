@@ -109,6 +109,40 @@ function summarize(key, est, memo = '') {
   ];
 }
 
+/**
+ * 当月の残業(みなし残業の消化状況)。
+ *  残業 = 平日の8時間超 + 所定休日(土・祝)の労働。法定休日(日)の労働は「休日労働」として別集計。
+ *  月末予測 = ここまでの残業 ÷ 経過日数 × 月の日数(単純な日割りペース)
+ * @param days {key: day} (submitted/correction/estimation を持つ day、または同期サマリー)
+ * @param ym 'YYYY-MM'  @param todayKey 'YYYY-MM-DD'
+ */
+function monthOvertime(days, ym, todayKey) {
+  let overtime = 0, legalHoliday = 0;
+  for (const [k, d] of Object.entries(days || {})) {
+    if (k.slice(0, 7) !== ym) continue;
+    const est = d.submitted || d.correction || d.estimation || d;
+    if (!est || est.start == null) continue;
+    const w = est.workMin || 0;
+    const t = dayType(k);
+    if (t === 'work') overtime += Math.max(0, w - SCHEDULED_MIN);
+    else if (t === 'scheduledHoliday') overtime += w;
+    else legalHoliday += w;
+  }
+  const [y, m] = ym.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const elapsed = todayKey.slice(0, 7) === ym ? Number(todayKey.slice(8, 10)) : daysInMonth;
+  const forecast = elapsed ? Math.round(overtime / elapsed * daysInMonth) : overtime;
+  return { overtimeMin: Math.round(overtime), legalHolidayMin: Math.round(legalHoliday), forecastMin: forecast, elapsed, daysInMonth };
+}
+
+/** みなし残業に対する段階: ok / pace(月末予測が超過) / warn(80%以上) / over(超過) */
+function overtimeLevel(ot, limitMin) {
+  if (ot.overtimeMin >= limitMin) return 'over';
+  if (ot.overtimeMin >= limitMin * 0.8) return 'warn';
+  if (ot.forecastMin >= limitMin && ot.elapsed >= 5) return 'pace';
+  return 'ok';
+}
+
 function toCSV(rows) {
   return rows.map(r => r.map(v => {
     const s = String(v == null ? '' : v);
@@ -118,5 +152,5 @@ function toCSV(rows) {
 
 module.exports = {
   HOLIDAYS, SCHEDULED_MIN, KUBUN, IMPORT_HEADERS, SUMMARY_HEADERS,
-  dayType, clock, hhmm, reviewReasons, nightMin, importRow, summarize, toCSV
+  dayType, clock, hhmm, reviewReasons, nightMin, importRow, summarize, toCSV, monthOvertime, overtimeLevel
 };

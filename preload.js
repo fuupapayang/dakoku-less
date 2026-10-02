@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
   shareSheets: (cfg) => ipcRenderer.invoke('sheets:share', cfg),
   resolveReview: (arg) => ipcRenderer.invoke('review:resolve', arg),
   recoruCSV: (range) => ipcRenderer.invoke('recoru:csv', range),
+  dismissFolderHint: (code) => ipcRenderer.invoke('folder:dismiss', code),
   addTeam: (obj) => ipcRenderer.invoke('team:add', obj),
   joinTeam: (code) => ipcRenderer.invoke('team:join', code),
   switchTeam: (id) => ipcRenderer.invoke('team:switch', id),

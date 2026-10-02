@@ -9,6 +9,7 @@ const learnLib = require('./src/learn');
 const calendarLib = require('./src/calendar');
 const sheetsLib = require('./src/sheets');
 const recoruLib = require('./src/recoru');
+const collisionsLib = require('./src/collisions');
 const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
@@ -39,6 +40,15 @@ let teamStatsCache = [];    // チームメンバーの学習統計(同期で取
 let sync = null;            // Firebase同期
 let watcher = null;         // フォルダ監視
 let recentFolderHit = null; // { folder, pid, ts } 直近のファイル更新による案件検知
+let recentHit = null;       // { pid, ts } 直近に案件を判定できた時刻(手段を問わない)。AIツール操作中の継続計上に使う
+
+// AIツール(デスクトップアプリ名 / ブラウザのタブタイトル)
+const AI_APP = /^(ChatGPT|Claude|Antigravity|Cursor|Codex|Gemini|Perplexity|Copilot|Windsurf|Microsoft Copilot)\b/i;
+const AI_TITLE = /(ChatGPT|Claude|Gemini|Perplexity|Copilot|NotebookLM|Antigravity|Google AI Studio)/i;
+function isAiFg(fg) {
+  if (!fg) return false;
+  return AI_APP.test(fg.app || '') || AI_TITLE.test(fg.title || '');
+}
 
 /** macOSの画面収録権限。granted以外のときはactive-winを呼ばない(権限アラート連発防止) */
 function screenPermission() {
@@ -137,13 +147,23 @@ function trackWork(day, now, fg) {
     const p = store.data.projects.find(p => p.id === recentFolderHit.pid);
     if (p && p.active !== false) { hit = { id: p.id, code: p.code, name: p.name, via: 'folder' }; viaFolder = true; }
   }
+  // AIツール(ChatGPT/Claude/Antigravity等)操作中:
+  //  タイトルに案件コードがあればそれで判定済み。無ければ直前に判定できた案件を継続計上
+  //  (AIへの相談・生成は、直前まで作業していた案件の続きであることが多いため)
+  const ai = isAiFg(fg);
+  if (ai) day.aiMin = (day.aiMin || 0) + SAMPLE_MIN;
+  if (!hit && ai && recentHit && now - recentHit.ts <= (settings().aiStickyMin || 30) * 60000) {
+    const p = store.data.projects.find(p => p.id === recentHit.pid);
+    if (p && p.active !== false) hit = { id: p.id, code: p.code, name: p.name, via: 'ai-tool' };
+  }
   if (hit) {
+    if (hit.via !== 'ai-tool') recentHit = { pid: hit.id, ts: now };
     day.projectMin[hit.id] = (day.projectMin[hit.id] || 0) + SAMPLE_MIN;
     currentWork = { projectId: hit.id, code: hit.code, name: hit.name, via: hit.via, app: fg ? fg.app : '' };
     flushUnclassified(day);
     // 確定判定から動向を弱く学習(1分に1回)。フォルダ判定時はタイトル語句を学習して精度向上
     const nowMin = Math.floor(now / 60000);
-    if (fg && text && nowMin !== lastLearnMin) {
+    if (fg && text && hit.via !== 'ai-tool' && nowMin !== lastLearnMin) {
       lastLearnMin = nowMin;
       learnLib.learn(store.data.learnStats, {
         tokens: projectsLib.tokenize(text), ts: now, projectId: hit.id, weight: viaFolder ? 2 : 1
@@ -228,6 +248,80 @@ function checkBudgets() {
     }
   }
   if (changed) { store.save(); pushUpdate(); }
+}
+
+/**
+ * 監視フォルダの点検: 未登録 / 見つからない(外付け・NAS未接続) / 担当案件のフォルダが監視範囲に無い
+ * 監視範囲内のフォルダ名(CODE_名称)は30分ごとに浅く走査してキャッシュする
+ */
+let folderScan = { at: 0, codes: new Set() };
+function scanFolderCodes(roots) {
+  const codes = new Set();
+  const walk = (dir, depth) => {
+    const own = Watcher.projectFolderIn(path.basename(dir));
+    if (own) codes.add(own.split('_')[0]);
+    if (depth >= 2) return;
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of ents) if (e.isDirectory() && !e.name.startsWith('.')) walk(path.join(dir, e.name), depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  return codes;
+}
+function folderStatus() {
+  const roots = settings().watchRoots || [];
+  const existing = roots.filter(r => { try { return fs.existsSync(r); } catch (_) { return false; } });
+  const missing = roots.filter(r => !existing.includes(r));
+  if (Date.now() - folderScan.at > 30 * 60000) folderScan = { at: Date.now(), codes: scanFolderCodes(existing) };
+  const me = settings().userName;
+  const dismissed = new Set(settings().folderHintDismissed || []);
+  const since = engine.dayKey(Date.now() - 30 * 86400000, settings().dayStartHour);
+  const usedRecently = new Set();
+  for (const [k, d] of Object.entries(store.data.days)) if (k >= since) for (const pid of Object.keys(d.projectMin || {})) usedRecently.add(pid);
+  const mine = store.data.projects.filter(p => p.active !== false && (p.status || 'active') === 'active' && p.code &&
+    (collisionsLib.isMaker(p, me) || usedRecently.has(p.id)));
+  const unregistered = mine.filter(p => !folderScan.codes.has(String(p.code).toUpperCase()) && !dismissed.has(p.code))
+    .map(p => ({ code: p.code, name: p.name }));
+  return { noRoots: roots.length === 0, missing, unregistered, trackWork: !!settings().trackWork };
+}
+function checkFolders() {
+  const st = folderStatus();
+  const today = engine.dayKey(Date.now(), settings().dayStartHour);
+  if (settings().folderNoticeDay === today) return;
+  let msg = null;
+  if (st.noRoots) msg = '監視する案件フォルダが未登録です。このままでは案件ごとの作業時間(工数)が記録されません。設定してください。';
+  else if (st.missing.length) msg = `監視フォルダが見つかりません(外付けドライブ・NASが未接続?): ${st.missing.map(r => path.basename(r)).join(', ')}。接続するまで工数が記録されません。`;
+  else if (st.unregistered.length) msg = `担当案件のフォルダが監視範囲にありません: ${st.unregistered.slice(0, 5).map(p => p.code).join(', ')}${st.unregistered.length > 5 ? ' ほか' : ''}。工数が記録されない可能性があります。`;
+  if (!msg) return;
+  settings().folderNoticeDay = today;
+  store.save();
+  notify('案件フォルダの登録をお願いします', msg);
+}
+
+/** みなし残業(既定45h)に対する当月の残業状況 */
+function overtimeStatus(days = store.data.days) {
+  const today = currentKey || engine.dayKey(Date.now(), settings().dayStartHour);
+  const ym = today.slice(0, 7);
+  const limitMin = (settings().minashiHours || 45) * 60;
+  const ot = recoruLib.monthOvertime(days, ym, today);
+  return { ...ot, ym, limitMin, level: recoruLib.overtimeLevel(ot, limitMin) };
+}
+
+/** 段階が上がったときだけ通知(月ごと・段階ごとに1回) */
+function checkOvertime() {
+  const st = overtimeStatus();
+  if (st.level === 'ok') return;
+  const s = settings();
+  if (!s.otAlert || s.otAlert.ym !== st.ym) s.otAlert = { ym: st.ym, sent: [] };
+  if (s.otAlert.sent.includes(st.level)) return;
+  s.otAlert.sent.push(st.level);
+  store.save();
+  const h = (m) => engine.fmtDur(m);
+  const msg = {
+    pace: ['残業が多めのペースです', `今月の残業 ${h(st.overtimeMin)}。このペースだと月末に約${h(st.forecastMin)}となり、みなし残業${h(st.limitMin)}を超える見込みです。`],
+    warn: ['みなし残業の80%に達しました', `今月の残業 ${h(st.overtimeMin)} / ${h(st.limitMin)}。月末予測 ${h(st.forecastMin)}。`],
+    over: ['⚠ みなし残業を超えました', `今月の残業 ${h(st.overtimeMin)} がみなし残業${h(st.limitMin)}を超えています。上長に相談してください。`]
+  }[st.level];
+  notify(msg[0], msg[1]);
 }
 
 function logEvent(day, msg) {
@@ -645,6 +739,9 @@ function buildState() {
     remoteTeam: store.data.remoteTeam,
     sheetsConfig: sheetsConfig(),
     reviewItems: reviewItems(),
+    overtime: overtimeStatus(),
+    holidays: [...recoruLib.HOLIDAYS],
+    folderStatus: folderStatus(),
     gasScript: sheetsLib.gasScript(sheetsConfig().token),
     syncReady: !!(sync && sync.enabled()),
     syncStatus: sync ? sync.status : null,
@@ -724,9 +821,15 @@ function registerIpc() {
     const roots = new Set(settings().watchRoots || []);
     roots.add(res.filePaths[0]);
     settings().watchRoots = [...roots];
+    folderScan.at = 0; // 次回の点検で再走査
     startWatcher();
     store.save(); pushUpdate();
     return { ok: true, state: buildState() };
+  });
+  ipcMain.handle('folder:dismiss', (e, code) => {
+    const s = settings();
+    s.folderHintDismissed = [...new Set([...(s.folderHintDismissed || []), code])];
+    store.save(); pushUpdate(); return buildState();
   });
   ipcMain.handle('watch:removeRoot', (e, root) => {
     settings().watchRoots = (settings().watchRoots || []).filter(r => r !== root);
@@ -1077,6 +1180,8 @@ app.whenReady().then(() => {
   startTracker();
   startWatcher();
   setTimeout(recheckAutoSubmitted, 3000);
+  setTimeout(() => { checkFolders(); checkOvertime(); }, 60 * 1000);
+  setInterval(() => { checkFolders(); checkOvertime(); }, 60 * 60 * 1000);
   if (store.lastRepair && store.lastRepair.review) {
     setTimeout(() => notify('案件工数の確認をお願いします',
       `案件IDの重複(同じ時間が複数案件に表示される不具合)を修復しました。${store.lastRepair.review}分の工数は案件タブの「要確認の工数」で振り分けてください。`), 8000);

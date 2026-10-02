@@ -38,4 +38,22 @@ assert.deepStrictEqual(R.reviewReasons('2026-09-05', { start: 1, workMin: 100 })
 assert.deepStrictEqual(R.reviewReasons('2026-09-04', e4, { longMin: 720 }), ['実働12時間以上']);
 assert.strictEqual(R.toCSV([['a', 'b,c']]), 'a,"b,c"\r\n');
 
+// ---- みなし残業
+const W = (min) => ({ estimation: { start: 1, workMin: min } });
+const ot = R.monthOvertime({
+  '2026-09-01': W(600),  // 平日10h → 残業2h
+  '2026-09-02': W(420),  // 平日7h → 0(不足はマイナスしない)
+  '2026-09-05': W(300),  // 土曜 → 全部残業
+  '2026-09-06': W(240),  // 日曜 → 休日労働
+  '2026-09-22': W(60),   // 祝日 → 残業
+  '2026-08-31': W(900)   // 前月は対象外
+}, '2026-09', '2026-09-10');
+assert.strictEqual(ot.overtimeMin, 120 + 300 + 60);
+assert.strictEqual(ot.legalHolidayMin, 240);
+assert.strictEqual(ot.forecastMin, Math.round(480 / 10 * 30));
+assert.strictEqual(R.overtimeLevel(ot, 2700), 'ok');     // 8h消化・月末予測24h
+assert.strictEqual(R.overtimeLevel({ overtimeMin: 1200, forecastMin: 3600, elapsed: 10 }, 2700), 'pace');
+assert.strictEqual(R.overtimeLevel({ overtimeMin: 1200, forecastMin: 3600, elapsed: 3 }, 2700), 'ok'); // 月初はブレるので予測警告しない
+assert.strictEqual(R.overtimeLevel({ overtimeMin: 2200, forecastMin: 2200, elapsed: 28 }, 2700), 'warn');
+assert.strictEqual(R.overtimeLevel({ overtimeMin: 2700, forecastMin: 2700, elapsed: 28 }, 2700), 'over');
 console.log('✓ all recoru tests passed');
