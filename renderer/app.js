@@ -956,55 +956,7 @@ function renderSettings() {
     </div>
     ${teamCardHTML()}
 
-    <div class="card">
-      <h2>Googleスプレッドシートへ書き出し</h2>
-      <p class="muted">個人履歴と工数レポートを、月ごとのタブ(履歴_2026-09 / 工数_2026-09)に書き出します。
-      毎月自動、または「今すぐ書き出し」で任意月を出力できます。連携用URLはGoogle Apps Scriptのウェブアプリで用意します(下の手順)。</p>
-      <div class="field-row mt8">
-        <label class="field">連携URL(GASウェブアプリの /exec)<input type="text" id="sh-url" value="${esc(s.sheetsUrl || '')}" placeholder="https://script.google.com/macros/s/..../exec"></label>
-        <label class="field" style="max-width:200px">合言葉(任意・GASと一致)<input type="text" id="sh-token" value="${esc(s.sheetsToken || '')}" placeholder="任意の文字列"></label>
-      </div>
-      <div class="row">
-        <div class="toggle ${s.autoExportSheets ? 'on' : ''}" data-act="sheets-auto"></div>
-        <span>毎月自動で書き出す(前月分を月初に自動出力)</span>
-        <span class="grow"></span>
-        <button class="btn" data-act="sheets-save">URLを保存</button>
-      </div>
-      <div class="row mt8">
-        <span class="muted">今すぐ書き出す月:</span>
-        <select id="sh-month" style="width:130px;margin:0">
-          <option value="__prev__">先月</option>
-          <option value="__this__">今月</option>
-        </select>
-        <button class="btn primary" data-act="sheets-export" ${s.sheetsUrl ? '' : 'disabled'}>今すぐ書き出し</button>
-        ${s.lastExportMonth ? `<span class="muted">最終自動書き出し: ${esc(s.lastExportMonth)}</span>` : ''}
-      </div>
-      <details class="mt8"><summary class="muted" style="cursor:pointer">セットアップ手順(GASスクリプトを含む)</summary>
-        <div class="muted mt8" style="line-height:1.7">
-          1. 書き出し先のGoogleスプレッドシートを開く → メニュー「拡張機能」→「Apps Script」<br>
-          2. 表示されたエディタの内容を全消しして、下のコードを貼り付け(<code>TOKEN</code>を上の合言葉と同じにする)<br>
-          3. 右上「デプロイ」→「新しいデプロイ」→種類「ウェブアプリ」→ 実行ユーザー「自分」、アクセス「全員」→ デプロイ<br>
-          4. 表示された「ウェブアプリのURL(/exec)」をコピーして、上の「連携URL」に貼り付け → 「URLを保存」<br>
-          <pre style="background:#f5f7f6;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;font-size:11px;white-space:pre-wrap;word-break:break-all">const TOKEN = ''; // 合言葉(任意)。設定するなら上のアプリと同じ文字列に
-
-function doPost(e) {
-  try {
-    const body = JSON.parse(e.postData.contents);
-    if (TOKEN && body.token !== TOKEN) return out({ ok:false, error:'token' });
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    (body.sheets || []).forEach(function(s) {
-      let sh = ss.getSheetByName(s.tab) || ss.insertSheet(s.tab);
-      sh.clearContents();
-      const values = [s.headers].concat(s.rows || []);
-      if (values.length) sh.getRange(1, 1, values.length, s.headers.length).setValues(values);
-    });
-    return out({ ok:true });
-  } catch (err) { return out({ ok:false, error:String(err) }); }
-}
-function out(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }</pre>
-        </div>
-      </details>
-    </div>
+    ${sheetsCardHTML(s)}
     <div class="card">
       <h2>データ連携</h2>
       <p class="muted">カレンダーの予定(.ics)をかけ合わせると、会議中の無操作を稼働として、移動予定を対象外として推定できます。</p>
@@ -1020,6 +972,68 @@ function out(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMi
       管理者を含め他の人が生ログを閲覧することはできません。</p>
     </div>`;
 }
+
+/* ---------- Googleスプレッドシート書き出し ---------- */
+function sheetsCardHTML(s) {
+  const cfg = state.sheetsConfig || { url: s.sheetsUrl, token: s.sheetsToken, autoExport: !!s.autoExportSheets, shared: false, by: '' };
+  const editing = !cfg.shared || sheetsEditing;
+  const url = cfg.shared ? cfg.url : (s.sheetsUrl || '');
+  const token = cfg.shared ? cfg.token : (s.sheetsToken || '');
+  const shareBtn = state.syncReady
+    ? `<button class="btn primary" data-act="sheets-share">${cfg.shared ? 'チーム設定を更新' : 'チームで共有'}</button>`
+    : '';
+  return `<div class="card">
+      <h2>Googleスプレッドシートへ書き出し</h2>
+      <p class="muted">勤怠履歴と工数を、共有ドライブ上の1つのスプレッドシートに月ごとに書き出します。
+      各メンバーは<b>自分の分だけ</b>を個人タブ(履歴_2026-09_山田 / 工数_2026-09_山田)に書き込み、
+      チーム全員分のタブ(履歴_2026-09 / 工数_2026-09)はスプレッドシート側で自動的にまとめ直します。</p>
+      ${cfg.shared ? `<div class="rule-item mt8"><div class="grow">
+          <div><span class="tag work">チーム共有中</span> 書き出し先はチームで共通です${cfg.by ? `(設定: ${esc(cfg.by)})` : ''}</div>
+          <div class="meta" style="word-break:break-all">${esc(cfg.url)}</div>
+          <div class="meta">毎月自動書き出し: ${cfg.autoExport ? 'オン(前月分を月初に各自のアプリが自動出力)' : 'オフ'}</div>
+        </div>
+        ${sheetsEditing ? '' : '<button class="btn sm" data-act="sheets-edit">変更</button>'}
+      </div>` : ''}
+      ${editing ? `
+      <div class="field-row mt8">
+        <label class="field">連携URL(GASウェブアプリの /exec)<input type="text" id="sh-url" value="${esc(url)}" placeholder="https://script.google.com/macros/s/..../exec"></label>
+        <label class="field" style="max-width:200px">合言葉(任意・GASと一致)<input type="text" id="sh-token" value="${esc(token)}" placeholder="任意の文字列"></label>
+      </div>
+      <div class="row">
+        <div class="toggle ${cfg.autoExport ? 'on' : ''}" data-act="sheets-auto" id="sh-auto"></div>
+        <span>毎月自動で書き出す(前月分を月初に自動出力)</span>
+        <span class="grow"></span>
+        ${cfg.shared ? '' : '<button class="btn" data-act="sheets-save">この端末だけに保存</button>'}
+        ${shareBtn}
+        ${cfg.shared ? '<button class="btn ghost" data-act="sheets-unshare">チーム共有を解除</button>' : ''}
+      </div>
+      ${state.syncReady ? '' : '<div class="muted mt8">「チームで共有」するには、先に上の「チーム同期」を設定してください。共有すると、メンバー全員のアプリに書き出し先が自動で配られます。</div>'}` : ''}
+      <div class="row mt8">
+        <span class="muted">今すぐ書き出す月:</span>
+        <select id="sh-month" style="width:130px;margin:0">
+          <option value="__prev__">先月</option>
+          <option value="__this__">今月</option>
+        </select>
+        <button class="btn primary" data-act="sheets-export" ${cfg.url ? '' : 'disabled'}>今すぐ書き出し(自分の分)</button>
+        ${s.lastExportMonth ? `<span class="muted">最終自動書き出し: ${esc(s.lastExportMonth)}</span>` : ''}
+      </div>
+      <details class="mt8"><summary class="muted" style="cursor:pointer">セットアップ手順(管理者が1回だけ・GASスクリプトを含む)</summary>
+        <div class="muted mt8" style="line-height:1.7">
+          1. Googleドライブの<b>共有ドライブ</b>に書き出し用フォルダを作り、その中に新しいGoogleスプレッドシートを作成<br>
+          2. スプレッドシートのメニュー「拡張機能」→「Apps Script」<br>
+          3. エディタの内容を全消しして、下のコードを貼り付け(<code>TOKEN</code>を上の合言葉と同じにする)→ 保存<br>
+          4. 右上「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」→ 実行ユーザー「自分」、アクセスできるユーザー「全員」→ デプロイ(初回はGoogleの承認画面で「許可」)<br>
+          5. 表示された「ウェブアプリのURL(/exec)」を上の「連携URL」に貼り付け →「毎月自動」をオン →「チームで共有」<br>
+          → メンバー全員のアプリに次回同期(最大10分)で自動配布されます。メンバー側の作業は不要です。<br>
+          <b>注意:</b> デプロイしたアカウントの権限で書き込まれます。退職・異動で消えない管理者アカウントでのデプロイがおすすめです。
+          「全員」が選べない場合は、Google Workspaceの管理者に外部共有の制限を確認してください。
+          以前のスクリプトを使っている場合は、貼り替えた後「デプロイを管理」→ 編集 →「新バージョン」で更新してください(URLは変わりません)。<br>
+          <pre style="background:#f5f7f6;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;font-size:11px;white-space:pre-wrap;word-break:break-all">${esc(state.gasScript || '(スクリプトはデスクトップ版の設定画面に表示されます)')}</pre>
+        </div>
+      </details>
+    </div>`;
+}
+let sheetsEditing = false;
 
 /* ---------- 管理者 ---------- */
 function selfRow(dateKey) {
@@ -1574,12 +1588,30 @@ document.addEventListener('click', async (e) => {
   if (act === 'csv-long') exportLongCSV();
 
   if (act === 'sheets-auto') {
+    const cfg = state.sheetsConfig;
+    if (cfg && cfg.shared) { btn.classList.toggle('on'); return; } // チーム設定は「チーム設定を更新」で確定
     state = await window.api.saveSheets({ autoExportSheets: !state.settings.autoExportSheets });
     renderSettings();
   }
   if (act === 'sheets-save') {
     state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
-    renderSettings(); toast('連携URLを保存しました');
+    renderSettings(); toast('この端末の連携URLを保存しました');
+  }
+  if (act === 'sheets-edit') { sheetsEditing = true; renderSettings(); }
+  if (act === 'sheets-share') {
+    toast('チームに共有しています…');
+    const r = await window.api.shareSheets({
+      url: $('#sh-url').value.trim(), token: $('#sh-token').value.trim(),
+      autoExport: $('#sh-auto').classList.contains('on')
+    });
+    if (r.ok) { state = r.state; sheetsEditing = false; renderSettings(); toast('書き出し先をチームで共有しました(メンバーには次回同期で反映)'); }
+    else toast(`エラー: ${r.error}`);
+  }
+  if (act === 'sheets-unshare') {
+    if (!confirm('チーム共有を解除しますか?メンバー全員の自動書き出しが止まります。')) return;
+    const r = await window.api.shareSheets(null);
+    if (r.ok) { state = r.state; sheetsEditing = false; renderSettings(); toast('チーム共有を解除しました'); }
+    else toast(`エラー: ${r.error}`);
   }
   if (act === 'sheets-export') {
     const sel = $('#sh-month').value;
@@ -1589,7 +1621,7 @@ document.addEventListener('click', async (e) => {
     else { const p = new Date(now.getFullYear(), now.getMonth() - 1, 1); ym = `${p.getFullYear()}-${String(p.getMonth() + 1).padStart(2, '0')}`; }
     toast('書き出しています…');
     const r = await window.api.exportSheets(ym);
-    toast(r.ok ? `${ym} を書き出しました(履歴${r.historyRows}行・工数${r.reportRows}行)` : `エラー: ${r.error}`);
+    toast(r.ok ? `${ym} を書き出しました(履歴${r.historyRows}行・工数${r.reportRows}行)${r.warning ? ' ※' + r.warning : ''}` : `エラー: ${r.error}`);
   }
   if (act === 'team-join') openTeamJoinModal();
   if (act === 'team-new') openTeamNewModal();

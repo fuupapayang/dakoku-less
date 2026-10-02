@@ -4,8 +4,13 @@
  * OAuth不要。ユーザーは対象シートにGASを貼り付けてウェブアプリ公開し、その/exec URLを設定するだけ。
  * アプリは月ごとのタブに「履歴」「工数」を書き出す(タブ内容を置き換える冪等な書き込み)。
  *
- * 送信ペイロード: { token, sheets: [ { tab, headers:[...], rows:[[...],...] }, ... ] }
+ * 送信ペイロード: { token, sheets: [ { tab, headers:[...], rows:[[...],...] }, ... ], summaries: [ { tab, from }, ... ] }
+ *
+ * v0.12〜: 各メンバーは「自分の分だけ」を個人タブ(履歴_2026-09_山田)に書く。
+ * チーム全員分のタブ(履歴_2026-09)はGAS側が個人タブを連結して作り直す(summaries)。
+ * これにより、複数人が同じスプレッドシートへ書き込んでも互いに上書きし合わない。
  */
+const GAS_VERSION = 2; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
 function fmtTime(ts) {
@@ -61,12 +66,77 @@ function reportRows(members, ym, projById) {
   return { tab: `工数_${ym}`, headers, rows };
 }
 
+/** シート名に使えない文字を除去(Googleスプレッドシートの制約: []*?:/\\ 不可・100文字以内) */
+function safeTabName(name) {
+  return String(name || '').replace(/[\[\]*?:\/\\]/g, '').trim().slice(0, 40) || '名称未設定';
+}
+
+/**
+ * 1人分の書き出し内容: 個人タブ2つ + GASに作らせるチーム集計タブ2つ
+ * @returns {{ sheets: Array, summaries: Array }}
+ */
+function personalExport(member, ym, projById, statusLabel) {
+  const who = safeTabName(member.name);
+  const hist = historyRows([member], ym, statusLabel);
+  const rep = reportRows([member], ym, projById);
+  const sheets = [
+    { ...hist, tab: `${hist.tab}_${who}` },
+    { ...rep, tab: `${rep.tab}_${who}` }
+  ];
+  const summaries = [
+    { tab: hist.tab, from: `${hist.tab}_` },
+    { tab: rep.tab, from: `${rep.tab}_` }
+  ];
+  return { sheets, summaries };
+}
+
+/** スプレッドシートに貼り付けるGASコード(アプリの設定画面に表示する) */
+function gasScript(token) {
+  return `const TOKEN = ${JSON.stringify(token || '')}; // 合言葉(任意)。アプリの合言葉と同じ文字列に
+
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000); // 複数人の同時書き込みを順番に処理
+    const body = JSON.parse(e.postData.contents);
+    if (TOKEN && body.token !== TOKEN) return out({ ok:false, error:'合言葉が一致しません' });
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    (body.sheets || []).forEach(function(s) { writeTab(ss, s.tab, s.headers, s.rows || []); });
+    // チーム全員分: 「履歴_2026-09_〇〇」などの個人タブを連結して作り直す
+    (body.summaries || []).forEach(function(sum) {
+      let headers = null, rows = [];
+      ss.getSheets().forEach(function(sh) {
+        const name = sh.getName();
+        if (name.indexOf(sum.from) !== 0) return;
+        const v = sh.getDataRange().getDisplayValues(); // 表示どおりの文字列で連結(時刻の型変換を避ける)
+        if (!v.length) return;
+        headers = headers || v[0];
+        rows = rows.concat(v.slice(1).filter(function(r){ return r.join('') !== ''; }));
+      });
+      if (headers) writeTab(ss, sum.tab, headers, rows);
+    });
+    return out({ ok:true, v:${GAS_VERSION} });
+  } catch (err) {
+    return out({ ok:false, error:String(err) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+function writeTab(ss, tab, headers, rows) {
+  const sh = ss.getSheetByName(tab) || ss.insertSheet(tab);
+  sh.clearContents();
+  const values = [headers].concat(rows);
+  sh.getRange(1, 1, values.length, headers.length).setValues(values);
+}
+function out(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }`;
+}
+
 /** GASウェブアプリへPOST */
-async function post(url, token, sheets) {
+async function post(url, token, sheets, summaries) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: token || '', sheets }),
+    body: JSON.stringify({ token: token || '', sheets, summaries: summaries || [] }),
     redirect: 'follow'
   });
   const text = await res.text();
@@ -76,4 +146,4 @@ async function post(url, token, sheets) {
   return json || { ok: true };
 }
 
-module.exports = { historyRows, reportRows, post, hhmm, fmtTime };
+module.exports = { historyRows, reportRows, personalExport, safeTabName, gasScript, post, hhmm, fmtTime, GAS_VERSION };

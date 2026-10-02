@@ -463,7 +463,9 @@ async function runSync(force) {
     // 3) チーム全体をpull
     const pulled = await sync.pullAll();
     teamStatsCache = pulled.teamStats;
-    store.data.remoteTeam = { members: pulled.members, pulledAt: Date.now() };
+    // チーム共有のスプレッドシート書き出し先(未設定ならnull)
+    const teamSheets = await sync.getDoc('meta/sheets');
+    store.data.remoteTeam = { members: pulled.members, pulledAt: Date.now(), sheets: teamSheets };
     // 4) 自分宛の承認/差し戻しを反映
     for (const [k, v] of Object.entries(pulled.myReview)) {
       if (k === 'updatedAt') continue;
@@ -485,6 +487,7 @@ async function runSync(force) {
     checkBudgets();
     store.save();
     pushUpdate();
+    maybeAutoExport(); // チーム共有の書き出し設定を初めて受け取った直後にも前月分を出す
     return { ok: true, members: pulled.members.length };
   } catch (e) {
     sync.status.state = 'error';
@@ -502,27 +505,32 @@ async function runSync(force) {
 // ---- Googleスプレッドシート書き出し ------------------------------------
 const STATUS_LABEL = { recording: '記録中', pending: '未提出', submitted: '提出済み', approved: '承認済み', rejected: '差し戻し' };
 
-/** 自分 + 同期メンバーの {name, days} 一覧 */
-function sheetMembers() {
-  const list = [{ name: settings().userName, days: store.data.days }];
-  const myId = (settings().sync || {}).memberId;
-  for (const m of ((store.data.remoteTeam && store.data.remoteTeam.members) || [])) {
-    if (m.id === myId) continue;
-    list.push({ name: m.name, days: m.days || {} });
+/**
+ * 実際に使う書き出し設定。チームで共有された設定(Firestore meta/sheets)があればそれを優先し、
+ * 無ければこの端末だけの設定を使う。
+ */
+function sheetsConfig() {
+  const s = settings();
+  const team = store.data.remoteTeam && store.data.remoteTeam.sheets;
+  if (team && team.url) {
+    return { url: team.url, token: team.token || '', autoExport: !!team.autoExport, shared: true, by: team.updatedBy || '' };
   }
-  return list;
+  return { url: s.sheetsUrl, token: s.sheetsToken, autoExport: !!s.autoExportSheets, shared: false, by: '' };
 }
 
-/** 指定月(YYYY-MM)の履歴・工数をスプレッドシートへ書き出し */
+/** 指定月(YYYY-MM)の「自分の」履歴・工数を個人タブへ書き出し(チーム集計タブはGASが再構成) */
 async function exportSheets(ym) {
-  const s = settings();
-  if (!s.sheetsUrl) return { ok: false, error: 'スプレッドシート連携URLが未設定です' };
-  const members = sheetMembers();
+  const cfg = sheetsConfig();
+  if (!cfg.url) return { ok: false, error: 'スプレッドシート連携URLが未設定です' };
+  const me = { name: settings().userName, days: store.data.days };
   const projById = Object.fromEntries((store.data.projects || []).map(p => [p.id, p]));
-  const hist = sheetsLib.historyRows(members, ym, (st) => STATUS_LABEL[st] || st);
-  const rep = sheetsLib.reportRows(members, ym, projById);
-  await sheetsLib.post(s.sheetsUrl, s.sheetsToken, [hist, rep]);
-  return { ok: true, months: [ym], historyRows: hist.rows.length, reportRows: rep.rows.length };
+  const { sheets, summaries } = sheetsLib.personalExport(me, ym, projById, (st) => STATUS_LABEL[st] || st);
+  const res = await sheetsLib.post(cfg.url, cfg.token, sheets, summaries);
+  const r = { ok: true, months: [ym], historyRows: sheets[0].rows.length, reportRows: sheets[1].rows.length };
+  if (!res || res.v !== sheetsLib.GAS_VERSION) {
+    r.warning = 'スプレッドシート側のGASスクリプトが古いため、チーム全員分のタブが更新されません。設定画面の最新スクリプトに貼り替えて再デプロイしてください。';
+  }
+  return r;
 }
 
 function prevMonthKey(d = new Date()) {
@@ -533,7 +541,8 @@ function prevMonthKey(d = new Date()) {
 /** 毎月の自動書き出し: 前月分を1回だけ書き出す(月初〜いつ起動しても取りこぼさない) */
 async function maybeAutoExport() {
   const s = settings();
-  if (!s.autoExportSheets || !s.sheetsUrl) return;
+  const cfg = sheetsConfig();
+  if (!cfg.autoExport || !cfg.url) return;
   const target = prevMonthKey();
   if (s.lastExportMonth === target) return; // 済み
   try {
@@ -562,6 +571,9 @@ function buildState() {
     learnN: store.data.learnStats ? store.data.learnStats.n : 0,
     team: store.data.team,
     remoteTeam: store.data.remoteTeam,
+    sheetsConfig: sheetsConfig(),
+    gasScript: sheetsLib.gasScript(sheetsConfig().token),
+    syncReady: !!(sync && sync.enabled()),
     syncStatus: sync ? sync.status : null,
     teamProfiles: (settings().teamProfiles || []).map(t => ({ id: t.id, label: t.label, teamId: t.teamId, projectId: t.projectId })),
     activeTeamId: settings().activeTeamId || '',
@@ -745,6 +757,21 @@ function registerIpc() {
     Object.assign(settings(), patch);
     store.save(); pushUpdate();
     return buildState();
+  });
+  // チームで書き出し先を共有/解除(meta/sheets)。同期中の全メンバーに次回同期で反映される
+  ipcMain.handle('sheets:share', async (e, cfg) => {
+    if (!sync || !sync.enabled()) return { ok: false, error: '先にチーム同期を設定してください' };
+    try {
+      const doc = cfg
+        ? { url: String(cfg.url || '').trim(), token: String(cfg.token || '').trim(), autoExport: !!cfg.autoExport }
+        : { url: '', token: '', autoExport: false };
+      if (cfg && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(doc.url)) {
+        return { ok: false, error: '連携URLは https://script.google.com/…/exec の形式で入力してください' };
+      }
+      await sync.setDoc('meta/sheets', { ...doc, updatedBy: settings().userName, updatedAt: Date.now() });
+      await runSync(true);
+      return { ok: true, state: buildState() };
+    } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
   });
   ipcMain.handle('sheets:export', async (e, ym) => {
     try {

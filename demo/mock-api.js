@@ -225,6 +225,7 @@
     syncNow: async () => ({ ok: false, error: 'ブラウザデモのため同期は無効です', state: S() }),
     saveSheets: async (patch) => { Object.assign(state.settings, patch); return S(); },
     exportSheets: async () => ({ ok: false, error: 'ブラウザデモでは書き出しは無効です(デスクトップ版でご利用ください)' }),
+    shareSheets: async () => ({ ok: false, error: 'ブラウザデモではチーム共有は無効です(デスクトップ版でご利用ください)' }),
     addTeam: async (o) => {
       if (!o.projectId || !o.apiKey || !o.teamId) return { ok: false, error: 'Project ID / API Key / チームIDを入力してください' };
       const id = 'tp' + Math.random().toString(36).slice(2, 7);

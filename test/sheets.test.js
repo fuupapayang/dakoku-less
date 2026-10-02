@@ -25,3 +25,49 @@ const f = rep.rows.find(r => r[1] === 'F001');
 assert.deepStrictEqual(f, ['佐藤', 'F001', 'A案件', 300, '05:00']);
 
 console.log('✓ all sheets tests passed');
+
+// ---- v0.12: 個人タブ + チーム集計(GASで再構成) ----
+assert.strictEqual(sh.safeTabName('山田/太郎[営業]'), '山田太郎営業');
+const px = sh.personalExport(members[0], '2026-09', projById, (s) => s);
+assert.deepStrictEqual(px.sheets.map(s => s.tab), ['履歴_2026-09_佐藤', '工数_2026-09_佐藤']);
+assert.deepStrictEqual(px.summaries, [{ tab: '履歴_2026-09', from: '履歴_2026-09_' }, { tab: '工数_2026-09', from: '工数_2026-09_' }]);
+
+// GASスクリプトを擬似スプレッドシートで実行し、2人が順に書いても互いに消えないことを確認
+function fakeSpreadsheet() {
+  const tabs = new Map();
+  const mk = (name) => {
+    let vals = [];
+    return {
+      getName: () => name,
+      clearContents: () => { vals = []; },
+      getRange: (r, c, nr, nc) => ({ setValues: (v) => { assert.strictEqual(v.length, nr); vals = v.map(x => x.map(String)); } }),
+      getDataRange: () => ({ getDisplayValues: () => vals })
+    };
+  };
+  return {
+    tabs,
+    getSheetByName: (n) => tabs.get(n) || null,
+    insertSheet: (n) => { const t = mk(n); tabs.set(n, t); return t; },
+    getSheets: () => [...tabs.values()]
+  };
+}
+const ss = fakeSpreadsheet();
+const gasEnv = {
+  SpreadsheetApp: { getActiveSpreadsheet: () => ss },
+  LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+  ContentService: { MimeType: { JSON: 'json' }, createTextOutput: (t) => ({ t, setMimeType() { return JSON.parse(t); } }) }
+};
+const doPost = new Function(...Object.keys(gasEnv), sh.gasScript('abc') + '\nreturn doPost;')(...Object.values(gasEnv));
+const send = (payload) => doPost({ postData: { contents: JSON.stringify(payload) } });
+
+assert.strictEqual(send({ token: 'wrong', sheets: [] }).ok, false);
+const other = sh.personalExport({ name: '鈴木', days: members[0].days }, '2026-09', projById, (s) => s);
+assert.deepStrictEqual(send({ token: 'abc', ...px }), { ok: true, v: sh.GAS_VERSION });
+send({ token: 'abc', ...other });
+send({ token: 'abc', ...px }); // 佐藤が再書き出ししても鈴木の分は残る
+const team = ss.getSheetByName('履歴_2026-09').getDataRange().getDisplayValues();
+assert.strictEqual(team[0][0], 'ユーザ');
+assert.deepStrictEqual(team.slice(1).map(r => r[0]).sort(), ['佐藤', '鈴木']);
+assert.strictEqual(ss.getSheetByName('工数_2026-09').getDataRange().getDisplayValues().length, 1 + 4);
+
+console.log('✓ v0.12 team sheets tests passed');
