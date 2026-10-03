@@ -7,6 +7,9 @@
  */
 
 const MIN = 60 * 1000;
+/** 「稼働扱い」マイルールの最大幅(分)。長いルールで不在を稼働に見せかけるのを防ぐ */
+const MAX_WORK_RULE_MIN = 30;
+const ruleSpan = (r) => ((r.toMin - r.fromMin) + 1440) % 1440;
 
 /** 日付キー(YYYY-MM-DD)。dayStartHour より前は前日扱い */
 function dayKey(ts, dayStartHour = 4) {
@@ -95,7 +98,8 @@ function estimate(day, rules = [], settings = {}) {
   const end = merged[merged.length - 1].e;
   const weekday = new Date(start).getDay();
   const activeRules = rules.filter(r => r.enabled !== false &&
-    (r.weekday == null || r.weekday === weekday));
+    (r.weekday == null || r.weekday === weekday) &&
+    !(r.treatAs === 'work' && ruleSpan(r) > MAX_WORK_RULE_MIN)); // 30分超の稼働ルールは無効
 
   // ギャップを分類
   const breaks = [];
@@ -219,10 +223,10 @@ function diffToRuleProposals(estimation, correction) {
       });
     }
   }
-  // 推定休憩が修正で削除された → 稼働ルール候補
+  // 推定休憩が修正で削除された → 稼働ルール候補(30分以内のものだけ)
   for (const eb of estimation.breaks || []) {
     const kept = (correction.breaks || []).some(cb => cb.s < eb.e && cb.e > eb.s);
-    if (!kept) {
+    if (!kept && (eb.e - eb.s) / MIN <= MAX_WORK_RULE_MIN) {
       proposals.push({
         treatAs: 'work', fromMin: minutesOfDay(eb.s), toMin: minutesOfDay(eb.e),
         weekday: wd, label: '稼働(修正学習)',
@@ -273,6 +277,6 @@ function parseICS(text) {
 }
 
 module.exports = {
-  dayKey, fmtTime, fmtDur, mergeIntervals, estimate,
+  dayKey, fmtTime, fmtDur, mergeIntervals, estimate, MAX_WORK_RULE_MIN, ruleSpan,
   diffToRuleProposals, shouldAutoSubmit, discrepancyMin, parseICS, MIN
 };

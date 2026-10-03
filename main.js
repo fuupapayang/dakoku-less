@@ -333,12 +333,41 @@ function privateReason(now, key, fg, day) {
   if (policyLib.privateAppHit(fg, p)) return 'app';                       // B) 私用アプリ・サイト
   if (policyLib.inWorkWindow(now, key, p)) return null;                   // 勤務時間帯は従来どおり
   // A) 時間外・休日は「仕事の証拠」がある時だけ稼働
-  if (policyLib.isWorkApp(fg, p) || isAiFg(fg) || isMeetingFg(fg)) return null;
+  return hasWorkEvidence(now, key, fg, day) ? null : 'offhours';
+}
+
+/** 仕事の証拠: 仕事用アプリ / AIツール / 会議 / 案件の判定 / 案件フォルダの更新 */
+function hasWorkEvidence(now, key, fg, day) {
+  const p = pol();
+  if (policyLib.isWorkApp(fg, p) || isAiFg(fg) || isMeetingFg(fg)) return true;
   const cal = dayCalendar(day, key);
-  if (isMeetingCal(cal, now)) return null;
-  if (projectsLib.classify({ title: (fg && fg.title) || '', calendar: cal, now, projects: store.data.projects })) return null;
-  if (recentFolderHit && now - recentFolderHit.ts <= (settings().folderStickyMin || 30) * 60000) return null;
-  return 'offhours';
+  if (isMeetingCal(cal, now)) return true;
+  if (projectsLib.classify({ title: (fg && fg.title) || '', calendar: cal, now, projects: store.data.projects })) return true;
+  if (recentFolderHit && now - recentFolderHit.ts <= (settings().folderStickyMin || 30) * 60000) return true;
+  return false;
+}
+
+/**
+ * 勤務時間内でも「仕事の証拠がない稼働」が60分以上続いた区間を記録(マウス自動操作ツール等の検知)。
+ * 前面ウィンドウを取得できる時(タイトル判定オン)だけ判定する。勤怠からは差し引かず、管理者に表示する。
+ */
+const NO_EVIDENCE_MIN = 60;
+let noEv = null; // { s, e } 進行中の「証拠なし」区間
+function trackNoEvidence(day, now, key, fg, counted) {
+  const judgeable = counted && fg;
+  if (judgeable && !hasWorkEvidence(now, key, fg, day)) {
+    if (!noEv || now - noEv.e > settings().mergeGapMin * engine.MIN) noEv = { s: now, e: now };
+    else noEv.e = now;
+    if (noEv.e - noEv.s >= NO_EVIDENCE_MIN * 60000) {
+      day.noEvidence = day.noEvidence || [];
+      const last = day.noEvidence[day.noEvidence.length - 1];
+      if (last && last.s === noEv.s) last.e = noEv.e;
+      else { day.noEvidence.push({ s: noEv.s, e: noEv.e }); logEvent(day, `仕事の証拠がない操作が${NO_EVIDENCE_MIN}分以上続いています(${engine.fmtTime(noEv.s)}〜)`); }
+      day.noEvidenceMin = Math.round(day.noEvidence.reduce((a, b) => a + (b.e - b.s) / 60000, 0));
+    }
+  } else if (counted) {
+    noEv = null; // 証拠あり → 区間リセット(判定不能時は維持)
+  }
 }
 
 /** みなし残業(既定45h)に対する当月の残業状況 */
@@ -469,10 +498,19 @@ function submitDay(key, auto = false) {
   day.status = 'submitted';
   day.submittedAt = Date.now();
   delete day.reviewReasons;
+  // 本人修正で実働が30分以上増えた場合は総管理者の承認が必要(承認までは集計にPCログの推定値を使う)
+  const delta = day.correction && day.estimation ? Math.round((day.correction.workMin || 0) - (day.estimation.workMin || 0)) : 0;
+  const needsApproval = delta >= 30;
   day.submitted = {
     start: est.start, end: est.end,
-    workMin: est.workMin, breakMin: est.breakMin, auto
+    workMin: est.workMin, breakMin: est.breakMin, auto,
+    ...(day.correction ? { corrDeltaMin: delta } : {}),
+    ...(needsApproval ? { needsApproval: true } : {})
   };
+  if (needsApproval) {
+    logEvent(day, `実働を${delta}分増やす修正のため、総管理者の承認待ちです(承認まではPCログの推定値で集計)`);
+    notify('修正した勤怠は承認待ちです', `${key} 実働 +${engine.fmtDur(delta)} の修正は総管理者の承認後に反映されます。`);
+  }
   logEvent(day, auto ? '自動提出しました' : '手動で提出しました');
   store.save();
   return { ok: true };
@@ -510,6 +548,7 @@ async function sample() {
       if (lastPrivateWhy !== why) logEvent(day, { mode: '私用モード中', app: '私用アプリ・サイトを検知', offhours: '時間外・休日で仕事の証拠がないため私用扱い' }[why] + `(${engine.fmtTime(now)}〜)`);
     }
     lastPrivateWhy = why;
+    trackNoEvidence(day, now, key, fg, active);
 
     if (active) {
       if (currentInterval && now - currentInterval.e <= settings().mergeGapMin * engine.MIN) {
@@ -662,7 +701,7 @@ async function runSync(force) {
       await sync.setDoc('meta/calendar', { events: store.data.calEvents, updatedAt: Date.now() });
     }
     // 3) 自分の勤怠サマリー・学習統計をpush
-    await sync.pushSummary(store.data.days);
+    await sync.pushSummary(store.data.days, null, store.data.rules);
     await sync.pushDict(store.data.learnStats);
     // 3) チーム全体をpull
     const pulled = await sync.pullAll();
@@ -823,6 +862,8 @@ function buildState() {
     adminUnlocked: adminUnlocked(),
     adminUntil,
     privateUntil: settings().privateUntil || 0,
+    appVersion: app.getVersion(),
+    update: updateState,
     holidays: [...recoruLib.HOLIDAYS],
     folderStatus: folderStatus(),
     gasScript: sheetsLib.gasScript(sheetsConfig().token),
@@ -869,6 +910,45 @@ function updateTray() {
   tray.setToolTip(`全自動勤怠管理くん ${status}` + (est && est.start ? ` | ${engine.fmtTime(est.start)}〜 稼働 ${engine.fmtDur(est.workMin)}` : ''));
 }
 
+// ---- 自動アップデート(GitHub Releases / electron-updater) ----------------
+// 新しい版を見つけたら裏でダウンロードし、PCを10分以上使っていない時(または画面ロック中・アプリ終了時)に
+// 自動で入れ替えて再起動する。作業中に突然再起動しないよう、操作中はインストールしない。
+let updater = null;
+const updateState = { status: 'idle', version: null, error: null, checkedAt: 0 };
+function installUpdateNow() {
+  if (!updater || updateState.status !== 'downloaded') return;
+  try {
+    if (currentKey && currentInterval) persistInterval(store.day(currentKey));
+    store.save();
+  } catch (_) {}
+  quitting = true;
+  updater.quitAndInstall(true, true); // サイレントで入れ替え → 自動で再起動
+}
+function setupAutoUpdater() {
+  if (!app.isPackaged) return; // 開発中(npm start)は無効
+  try { updater = require('electron-updater').autoUpdater; } catch (e) { return; }
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  updater.on('checking-for-update', () => { updateState.status = 'checking'; updateState.checkedAt = Date.now(); });
+  updater.on('update-not-available', () => { updateState.status = 'latest'; pushUpdate(); });
+  updater.on('update-available', (info) => { updateState.status = 'downloading'; updateState.version = info.version; pushUpdate(); });
+  updater.on('error', (err) => { updateState.status = 'error'; updateState.error = String((err && err.message) || err).slice(0, 200); pushUpdate(); });
+  updater.on('update-downloaded', (info) => {
+    updateState.status = 'downloaded'; updateState.version = info.version;
+    buildTrayMenu(); pushUpdate();
+    notify('アップデートの準備ができました', `v${info.version} をダウンロードしました。PCを使っていない時に自動で更新・再起動します(作業は中断されません)。`);
+  });
+  const check = () => updater.checkForUpdates().catch(() => {});
+  setTimeout(check, 20 * 1000);
+  setInterval(check, 3 * 60 * 60 * 1000);
+  // ダウンロード済みなら、操作していない時に入れ替える
+  setInterval(() => {
+    if (updateState.status !== 'downloaded') return;
+    let idle = 0; try { idle = powerMonitor.getSystemIdleTime(); } catch (_) {}
+    if (forcedIdle || idle >= 10 * 60) installUpdateNow();
+  }, 60 * 1000);
+}
+
 /** 私用モードを minutes 分オン(0で解除) */
 function setPrivate(minutes) {
   const s = settings();
@@ -895,8 +975,10 @@ function buildTrayMenu() {
       : { label: '私用モード(この間は記録しない)', submenu: [30, 60, 120, 240].map(m => ({ label: `${m < 60 ? m + '分' : m / 60 + '時間'}`, click: () => setPrivate(m) })) },
     { type: 'separator' },
     { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
+    ...(updateState.status === 'downloaded'
+      ? [{ type: 'separator' }, { label: `今すぐ v${updateState.version} に更新して再起動`, click: installUpdateNow }] : []),
     { type: 'separator' },
-    { label: '終了', click: () => { quitting = true; app.quit(); } }
+    { label: `終了(v${app.getVersion()})`, click: () => { quitting = true; app.quit(); } }
   ]));
 }
 
@@ -943,6 +1025,7 @@ function registerIpc() {
     return { ok: true, state: buildState() };
   });
   // C) 私用モード(minutes=0で解除)
+  ipcMain.handle('update:install', () => { installUpdateNow(); return { ok: true }; });
   ipcMain.handle('private:set', (e, minutes) => { setPrivate(minutes); return buildState(); });
 
   // 総管理者
@@ -1008,6 +1091,9 @@ function registerIpc() {
   });
 
   ipcMain.handle('rules:add', (e, rule) => {
+    if (rule && rule.treatAs === 'work' && engine.ruleSpan(rule) > engine.MAX_WORK_RULE_MIN) {
+      return { ...buildState(), error: `「稼働扱い」のルールは${engine.MAX_WORK_RULE_MIN}分以内にしてください(長い不在を稼働に見せかけることを防ぐため)` };
+    }
     store.addRule(rule);
     if (currentKey) reestimate(currentKey);
     store.save(); pushUpdate();
@@ -1059,7 +1145,7 @@ function registerIpc() {
         if (k < from || k > to) continue;
         const d = days[k];
         if (!['submitted', 'approved'].includes(d.status)) continue;
-        const est = d.submitted || d.correction || d.estimation || d;
+        const est = recoruLib.recordOf(d);
         if (!est || est.start == null) continue;
         const reasons = recoruLib.reviewReasons(k, est, { longMin: settings().reviewLongMin || 720 });
         rows.push(recoruLib.importRow(uid, k, est, ['全自動勤怠管理くん', ...reasons].join(' / ')));
@@ -1338,6 +1424,7 @@ app.whenReady().then(() => {
   startTracker();
   startWatcher();
   setTimeout(recheckAutoSubmitted, 3000);
+  setupAutoUpdater();
   setTimeout(() => { checkFolders(); checkOvertime(); }, 60 * 1000);
   setInterval(() => { checkFolders(); checkOvertime(); }, 60 * 60 * 1000);
   if (store.lastRepair && store.lastRepair.review) {

@@ -15,12 +15,20 @@ jobs:
       matrix:
         include:
           # macOSは署名まわりが安定している macos-14(Apple Silicon)に固定
+          # 自動アップデート用に zip / blockmap / latest*.yml もリリースへ添付する
           - os: macos-14
             platform: mac
-            artifact: 'dist/*.dmg'
+            artifact: |
+              dist/*.dmg
+              dist/*.zip
+              dist/*.blockmap
+              dist/latest-mac.yml
           - os: windows-latest
             platform: win
-            artifact: 'dist/*.exe'
+            artifact: |
+              dist/*.exe
+              dist/*.blockmap
+              dist/latest.yml
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

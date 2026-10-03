@@ -110,6 +110,17 @@ function summarize(key, est, memo = '') {
 }
 
 /**
+ * 集計に使う値。実働を30分以上増やす本人修正は、総管理者が承認するまで推定値(PCログ)を使う。
+ */
+function recordOf(d) {
+  if (!d) return null;
+  // 同期サマリー形式(start/end/workMinが修正後の値、estWorkMinが推定値)
+  if (d.needsApproval && d.status !== 'approved') return { ...d, workMin: d.estWorkMin || 0 };
+  if (d.submitted && d.submitted.needsApproval && d.status !== 'approved') return d.estimation || d.submitted;
+  return d.submitted || d.correction || d.estimation || d;
+}
+
+/**
  * 当月の残業(みなし残業の消化状況)。
  *  残業 = 平日の8時間超 + 所定休日(土・祝)の労働。法定休日(日)の労働は「休日労働」として別集計。
  *  月末予測 = ここまでの残業 ÷ 経過日数 × 月の日数(単純な日割りペース)
@@ -120,7 +131,7 @@ function monthOvertime(days, ym, todayKey) {
   let overtime = 0, legalHoliday = 0;
   for (const [k, d] of Object.entries(days || {})) {
     if (k.slice(0, 7) !== ym) continue;
-    const est = d.submitted || d.correction || d.estimation || d;
+    const est = recordOf(d);
     if (!est || est.start == null) continue;
     const w = est.workMin || 0;
     const t = dayType(k);
@@ -152,5 +163,5 @@ function toCSV(rows) {
 
 module.exports = {
   HOLIDAYS, SCHEDULED_MIN, KUBUN, IMPORT_HEADERS, SUMMARY_HEADERS,
-  dayType, clock, hhmm, reviewReasons, nightMin, importRow, summarize, toCSV, monthOvertime, overtimeLevel
+  dayType, clock, hhmm, reviewReasons, nightMin, importRow, summarize, toCSV, monthOvertime, overtimeLevel, recordOf
 };

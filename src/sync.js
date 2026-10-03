@@ -186,7 +186,7 @@ class Sync {
   }
 
   /** 自分の勤怠サマリー(直近35日)を1ドキュメントでpush */
-  async pushSummary(days, projectsMeta) {
+  async pushSummary(days, projectsMeta, rules = []) {
     const c = this.cfg();
     const cutoff = Date.now() - 35 * 86400000;
     const out = {};
@@ -201,12 +201,18 @@ class Sync {
         status: d.status, auto: !!(d.submitted && d.submitted.auto),
         meetingMin: Math.round(d.meetingMin || 0),
         privateMin: Math.round(d.privateMin || 0),
+        noEvidenceMin: Math.round(d.noEvidenceMin || 0),
+        estWorkMin: d.estimation ? Math.round(d.estimation.workMin || 0) : 0,
+        corrDeltaMin: d.correction && d.estimation ? Math.round((d.correction.workMin || 0) - (d.estimation.workMin || 0)) : 0,
+        needsApproval: !!(d.submitted && d.submitted.needsApproval),
         projectMin: Object.fromEntries(
           Object.entries(d.projectMin || {}).map(([k, v]) => [k, Math.round(v)])
         )
       };
     }
-    const payload = { name: c.userName, recoruUserId: c.recoruUserId || '', days: out };
+    const workRules = (rules || []).filter(r => r.enabled !== false && r.treatAs === 'work')
+      .map(r => ({ label: r.label, fromMin: r.fromMin, toMin: r.toMin, weekday: r.weekday == null ? null : r.weekday }));
+    const payload = { name: c.userName, recoruUserId: c.recoruUserId || '', workRules, days: out };
     if (this._changed('summary', payload)) {
       await this.setDoc(`summary/${c.memberId}`, { ...payload, updatedAt: Date.now() });
     }
@@ -241,7 +247,7 @@ class Sync {
       this.getDoc(`reviews/${c.memberId}`)
     ]);
     const members = summaries.map(s => ({
-      id: s.id, name: s.data.name || s.id, recoruUserId: s.data.recoruUserId || '', days: s.data.days || {}, updatedAt: s.data.updatedAt
+      id: s.id, name: s.data.name || s.id, recoruUserId: s.data.recoruUserId || '', workRules: s.data.workRules || [], days: s.data.days || {}, updatedAt: s.data.updatedAt
     }));
     const teamStats = [];
     for (const d of dicts) {

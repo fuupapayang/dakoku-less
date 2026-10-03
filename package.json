@@ -12,7 +12,8 @@
     "dist:win": "electron-builder --win"
   },
   "dependencies": {
-    "active-win": "^8.2.1"
+    "active-win": "^8.2.1",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^31.0.0",
@@ -21,25 +22,59 @@
   "build": {
     "appId": "jp.example.dakokuless",
     "productName": "全自動勤怠管理くん",
-    "files": ["main.js", "preload.js", "src/**/*", "renderer/**/*", "assets/**/*"],
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "assets/**/*"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "ZenjidoKintai-${version}-${arch}.${ext}",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": { "teamId": "PDAC4867M2" }
+      "notarize": {
+        "teamId": "PDAC4867M2"
+      }
     },
-    "win": { "target": "nsis" },
+    "win": {
+      "target": "nsis"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": true,
-      "runAfterFinish": true
-    }
+      "runAfterFinish": true,
+      "artifactName": "ZenjidoKintai-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "fuupapayang",
+        "repo": "dakoku-less",
+        "releaseType": "release"
+      }
+    ]
   }
 }

@@ -843,7 +843,7 @@ function renderRules() {
     <div class="rule-item">
       <div class="toggle ${r.enabled !== false ? 'on' : ''}" data-act="rule-toggle" data-id="${esc(r.id)}"></div>
       <div class="grow">
-        <div><b>${esc(r.label)}</b> <span class="tag ${esc(r.treatAs)}">${{ work: '稼働扱い', break: '休憩扱い', exclude: '対象外' }[r.treatAs]}</span></div>
+        <div><b>${esc(r.label)}</b> <span class="tag ${esc(r.treatAs)}">${{ work: '稼働扱い', break: '休憩扱い', exclude: '対象外' }[r.treatAs]}</span>${r.treatAs === 'work' && ((r.toMin - r.fromMin + 1440) % 1440) > 30 ? ' <span class="chip LOW" title="稼働扱いのルールは30分以内のみ有効です">無効(30分超)</span>' : ''}</div>
         <div class="meta">${hm(r.fromMin)}〜${hm(r.toMin)} ／ ${r.weekday == null ? '毎日' : WD[r.weekday] + '曜日'} ／ 追加日 ${new Date(r.createdAt).toLocaleDateString('ja-JP')}</div>
       </div>
       <button class="btn sm ghost danger" data-act="rule-del" data-id="${esc(r.id)}">削除</button>
@@ -992,6 +992,13 @@ function renderSettings() {
   $('#tab-settings').innerHTML = `
     <h1>設定</h1>
     <div class="page-sub">自動提出も、手動チェックも。好みの提出レベルを選択できます。</div>
+    ${(() => {
+      const u = state.update || {};
+      const st = { checking: '更新を確認中…', latest: '最新版です', downloading: `v${esc(u.version || '')} をダウンロード中…`,
+        downloaded: `v${esc(u.version || '')} の準備ができました(PCを使っていない時に自動で更新します)`, error: '更新の確認に失敗しました(次回自動で再試行)', idle: '自動アップデート: 有効' }[u.status || 'idle'];
+      return `<div class="card"><div class="row"><div class="grow"><b>バージョン v${esc(state.appVersion || '')}</b> <span class="muted">${st}</span></div>
+        ${u.status === 'downloaded' ? '<button class="btn sm primary" data-act="update-install">今すぐ更新して再起動</button>' : ''}</div></div>`;
+    })()}
     <div class="card">
       <h2>提出モード</h2>
       <div class="mode-grid">
@@ -1200,6 +1207,9 @@ function memberDetailHTML(roster) {
     const d = m.days[k];
     const e = d.submitted || d.correction || d.estimation || d;
     if (!e || e.start == null) return '';
+    const delta = d.corrDeltaMin != null ? d.corrDeltaMin : (d.submitted && d.submitted.corrDeltaMin) || 0;
+    const needs = (d.needsApproval || (d.submitted && d.submitted.needsApproval)) && d.status !== 'approved';
+    const noEv = Math.round(d.noEvidenceMin || 0);
     const wd = new Date(k).getDay(), hol = (state.holidays || []).includes(k);
     const ot = wd === 0 ? 0 : (wd === 6 || hol) ? (e.workMin || 0) : Math.max(0, (e.workMin || 0) - 480);
     const top = Object.entries(d.projectMin || {}).sort((a, b) => b[1] - a[1]).slice(0, 2)
@@ -1207,14 +1217,22 @@ function memberDetailHTML(roster) {
     return `<tr><td>${fmtDate(k)}${wd === 0 || wd === 6 || hol ? ' <span class="tag">休日</span>' : ''}</td>
       <td>${fmtTime(e.start)}</td><td>${fmtTime(e.end)}</td><td>${fmtDur(e.breakMin)}</td><td><b>${fmtDur(e.workMin)}</b></td>
       <td>${ot ? fmtDur(ot) : '-'}</td><td>${d.privateMin ? fmtDur(Math.round(d.privateMin)) : '-'}</td>
-      <td><span class="chip status-${esc(d.status || '')}">${STATUS[d.status] || d.status || ''}</span>${d.correction ? ' <span class="tag">本人修正</span>' : ''}</td>
+      <td><span class="chip status-${esc(d.status || '')}">${STATUS[d.status] || d.status || ''}</span>
+        ${delta ? ` <span class="tag" title="PCログの推定からの差">修正${delta > 0 ? '+' : '-'}${fmtDur(Math.abs(delta))}</span>` : ''}
+        ${noEv ? ` <span class="chip UNSURE" title="勤務時間内で、仕事用アプリ・案件・会議などの証拠がない操作が60分以上続いた時間">証拠なし ${fmtDur(noEv)}</span>` : ''}
+        ${needs ? ` <button class="btn sm primary" data-act="approve" data-id="${esc(m.id || 'self')}" data-key="${esc(k)}">修正を承認</button>` : ''}</td>
       <td class="muted" style="font-size:12px">${top || '-'}</td></tr>`;
   }).join('');
   return `<div class="card"><div class="row"><h2 class="grow">${esc(name)} の勤怠詳細(${esc(ym)})</h2>
       <button class="btn sm ghost" data-act="admin-member" data-name="">閉じる</button></div>
     <table class="mt8"><thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>残業</th><th>私用除外</th><th>状態</th><th>主な案件</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="9" class="muted">記録がありません</td></tr>'}</tbody></table>
-    <div class="muted mt8">他のメンバーは同期された直近35日分を表示します。</div></div>`;
+    <div class="mt8"><b>稼働扱いのマイルール</b>: ${(() => {
+      const rules = m.id === 'self' ? (state.rules || []).filter(r => r.enabled !== false && r.treatAs === 'work') : (m.workRules || []);
+      const hm = (x) => `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`;
+      return rules.length ? rules.map(r => `<span class="tag">${esc(r.label)} ${hm(r.fromMin)}〜${hm(r.toMin)}${r.weekday != null ? '(' + '日月火水木金土'[r.weekday] + ')' : ''}</span>`).join(' ') : '<span class="muted">なし</span>';
+    })()} <span class="muted">(30分以内のみ有効)</span></div>
+    <div class="muted mt8">他のメンバーは同期された直近35日分を表示します。「修正+」はPCログの推定から本人が増やした時間で、30分以上は承認されるまで推定値で集計します。</div></div>`;
 }
 
 /** 総管理者: 会社ポリシー(検知パラメータ・勤務時間帯・アプリ一覧・パスワード変更) */
@@ -1298,7 +1316,7 @@ function renderAdmin() {
       <div class="kpi"><div class="num" style="color:${alerts.length ? 'var(--red)' : 'inherit'}">${alerts.length}</div><div class="lbl">乖離アラート(30分超)</div></div>
     </div>
     ${teamOvertimeHTML([{ name: state.settings.userName + '(あなた)', days: state.days }, ...roster])}
-    ${memberDetailHTML([{ name: state.settings.userName + '(あなた)', days: state.days }, ...roster])}
+    ${memberDetailHTML([{ id: 'self', name: state.settings.userName + '(あなた)', days: state.days }, ...roster.map(r => ({ ...r, workRules: ((state.remoteTeam && state.remoteTeam.members) || []).find(x => x.id === r.id)?.workRules || [] }))])}
     <div class="card">
       <div class="row"><h2 class="grow">メンバー勤怠</h2>
         <input type="date" id="adm-date" value="${sel}" style="width:170px;margin:0"></div>
@@ -1627,6 +1645,7 @@ function openProposalModal(proposals) {
     if (act === 'prop-add') {
       const p = proposals[+e.target.dataset.i];
       state = await window.api.addRule({ label: p.label, treatAs: p.treatAs, fromMin: p.fromMin, toMin: p.toMin, weekday: p.weekday });
+    if (state.error) { toast(state.error); delete state.error; return; }
       e.target.closest('.suggestion').remove();
       toast('マイルールに追加しました。次回から自動適用されます');
       renderAll();
@@ -1657,6 +1676,7 @@ document.addEventListener('click', async (e) => {
     const day = state.days[wrap.dataset.key];
     const p = day.estimation.suggestions[+wrap.dataset.idx];
     state = await window.api.addRule({ label: p.label, treatAs: p.treatAs, fromMin: p.fromMin, toMin: p.toMin, weekday: p.weekday });
+    if (state.error) { toast(state.error); delete state.error; return; }
     toast('マイルールに追加しました'); renderAll();
   }
   if (act === 'sug-once') { btn.closest('.suggestion').remove(); toast('今回だけ適用します'); }
@@ -1671,6 +1691,7 @@ document.addEventListener('click', async (e) => {
       label: $('#rl-label').value || '手動ルール', treatAs: $('#rl-treat').value,
       fromMin: fh * 60 + fm, toMin: th * 60 + tm, weekday: wd === '' ? null : +wd
     });
+    if (state.error) { toast(state.error); delete state.error; return; }
     renderRules(); toast('ルールを追加しました');
   }
 
@@ -1784,6 +1805,7 @@ document.addEventListener('click', async (e) => {
     state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
     renderSettings(); toast('この端末の連携URLを保存しました');
   }
+  if (act === 'update-install') { toast('更新して再起動します…'); await window.api.installUpdate(); }
   if (act === 'private-set') {
     state = await window.api.setPrivate(+btn.dataset.min);
     renderToday(); toast(+btn.dataset.min ? '私用モードにしました(この間は記録しません)' : '私用モードを解除しました');

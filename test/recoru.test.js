@@ -56,4 +56,18 @@ assert.strictEqual(R.overtimeLevel({ overtimeMin: 1200, forecastMin: 3600, elaps
 assert.strictEqual(R.overtimeLevel({ overtimeMin: 1200, forecastMin: 3600, elapsed: 3 }, 2700), 'ok'); // 月初はブレるので予測警告しない
 assert.strictEqual(R.overtimeLevel({ overtimeMin: 2200, forecastMin: 2200, elapsed: 28 }, 2700), 'warn');
 assert.strictEqual(R.overtimeLevel({ overtimeMin: 2700, forecastMin: 2700, elapsed: 28 }, 2700), 'over');
+// ---- 水増し対策: 30分超の「稼働扱い」ルールは無効
+const longRule = [{ label: '作業', treatAs: 'work', fromMin: 9 * 60, toMin: 18 * 60, enabled: true }];
+assert.strictEqual(E.estimate(day, longRule, {}).workMin, 120);           // 9時間ルールは効かない
+assert.strictEqual(E.estimate(day, rules, {}).workMin, 135);              // 15分ルールは有効
+const prop = E.diffToRuleProposals({ start: at(8), breaks: [{ s: at(12), e: at(14) }] }, { breaks: [] });
+assert.strictEqual(prop.length, 0);                                       // 2時間の休憩削除から稼働ルールを提案しない
+
+// ---- 水増し対策: 30分以上増やす修正は承認まで推定値で集計
+const pend = { status: 'submitted', estimation: { start: 1, workMin: 480 }, correction: { start: 1, workMin: 600 }, submitted: { start: 1, workMin: 600, needsApproval: true } };
+assert.strictEqual(R.recordOf(pend).workMin, 480);
+assert.strictEqual(R.recordOf({ ...pend, status: 'approved' }).workMin, 600);
+assert.strictEqual(R.recordOf({ start: 1, workMin: 600, estWorkMin: 480, needsApproval: true, status: 'submitted' }).workMin, 480); // 同期サマリー
+assert.strictEqual(R.monthOvertime({ '2026-09-01': pend }, '2026-09', '2026-09-30').overtimeMin, 0);
+
 console.log('✓ all recoru tests passed');

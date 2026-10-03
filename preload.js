@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   recoruCSV: (range) => ipcRenderer.invoke('recoru:csv', range),
   dismissFolderHint: (code) => ipcRenderer.invoke('folder:dismiss', code),
   setPrivate: (minutes) => ipcRenderer.invoke('private:set', minutes),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
   adminSetup: (pw) => ipcRenderer.invoke('admin:setup', pw),
   adminUnlock: (pw) => ipcRenderer.invoke('admin:unlock', pw),
   adminLock: () => ipcRenderer.invoke('admin:lock'),
