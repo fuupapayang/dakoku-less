@@ -72,8 +72,9 @@ jobs:
         run: |
           set -o pipefail
           npm run dist:mac -- --publish never 2>&1 | tee "$RUNNER_TEMP/build.log" || {
-            grep -E "⨯|rror|errSec|codesign|failed|not signed|detritus|notar" "$RUNNER_TEMP/build.log" \
-              | grep -vE "^[[:space:]]+at " | tail -n 9 | while IFS= read -r l; do echo "::error::${l:0:900}"; done
+            # 公証(notarytool)のHTTPエラー本文を最優先で出す
+            grep -E "HTTP|agreement|401|403|notary|Notariz|⨯" "$RUNNER_TEMP/build.log" \
+              | grep -vE "^[[:space:]]+at |Executing\.\.\. codesign" | tail -n 9 | while IFS= read -r l; do echo "::error::${l:0:900}"; done
             exit 1
           }
         env:
