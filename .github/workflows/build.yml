@@ -67,8 +67,17 @@ jobs:
       # macOS: 署名(上で取り込んだ証明書を自動検出) + 公証
       - name: Build macOS (signed & notarized)
         if: matrix.platform == 'mac'
-        run: npm run dist:mac -- --publish never
+        shell: bash
+        # 失敗時は原因の行(⨯ / Error / codesign など)をアノテーションとして出す(ログを開かずに原因が分かるように)
+        run: |
+          set -o pipefail
+          npm run dist:mac -- --publish never 2>&1 | tee "$RUNNER_TEMP/build.log" || {
+            grep -E "⨯|rror|errSec|codesign|failed|not signed|detritus|notar" "$RUNNER_TEMP/build.log" \
+              | grep -vE "^[[:space:]]+at " | tail -n 9 | while IFS= read -r l; do echo "::error::${l:0:900}"; done
+            exit 1
+          }
         env:
+          DEBUG: electron-osx-sign*
           CSC_IDENTITY_AUTO_DISCOVERY: 'true'
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
