@@ -10,6 +10,7 @@ const calendarLib = require('./src/calendar');
 const sheetsLib = require('./src/sheets');
 const recoruLib = require('./src/recoru');
 const collisionsLib = require('./src/collisions');
+const policyLib = require('./src/policy');
 const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
@@ -40,6 +41,7 @@ let teamStatsCache = [];    // チームメンバーの学習統計(同期で取
 let sync = null;            // Firebase同期
 let watcher = null;         // フォルダ監視
 let recentFolderHit = null; // { folder, pid, ts } 直近のファイル更新による案件検知
+let lastPrivateWhy = null;
 let recentHit = null;       // { pid, ts } 直近に案件を判定できた時刻(手段を問わない)。AIツール操作中の継続計上に使う
 
 // AIツール(デスクトップアプリ名 / ブラウザのタブタイトル)
@@ -297,6 +299,48 @@ function checkFolders() {
   notify('案件フォルダの登録をお願いします', msg);
 }
 
+// ---- 会社ポリシー・総管理者 ------------------------------------------------
+function pol() { return policyLib.effective(store.data.policy); }
+
+/** ポリシーの検知パラメータを設定へ強制反映(各自は変更不可) */
+function applyPolicyParams() {
+  const p = pol().params;
+  const s = settings();
+  let changed = false;
+  for (const k of Object.keys(p)) if (s[k] !== p[k]) { s[k] = p[k]; changed = true; }
+  if (changed && currentKey) reestimate(currentKey);
+  return changed;
+}
+
+let adminUntil = 0;                 // 総管理者モードの有効期限(メモリのみ。再起動でロック)
+let adminFails = { n: 0, until: 0 }; // 連続失敗のロックアウト
+const ADMIN_SESSION_MS = 30 * 60000;
+function adminUnlocked() { return Date.now() < adminUntil; }
+
+/** ポリシーを保存(同期中はチーム全体へ) */
+async function savePolicy(next) {
+  store.data.policy = { ...(store.data.policy || {}), ...next, updatedAt: Date.now(), updatedBy: settings().userName };
+  applyPolicyParams();
+  store.save();
+  if (sync && sync.enabled()) await sync.setDoc('meta/policy', store.data.policy);
+  pushUpdate();
+}
+
+/** 私用判定(A+B+C)。私用ならその理由、仕事なら null */
+function privateReason(now, key, fg, day) {
+  const p = pol();
+  if ((settings().privateUntil || 0) > now) return 'mode';                // C) 私用モード
+  if (policyLib.privateAppHit(fg, p)) return 'app';                       // B) 私用アプリ・サイト
+  if (policyLib.inWorkWindow(now, key, p)) return null;                   // 勤務時間帯は従来どおり
+  // A) 時間外・休日は「仕事の証拠」がある時だけ稼働
+  if (policyLib.isWorkApp(fg, p) || isAiFg(fg) || isMeetingFg(fg)) return null;
+  const cal = dayCalendar(day, key);
+  if (isMeetingCal(cal, now)) return null;
+  if (projectsLib.classify({ title: (fg && fg.title) || '', calendar: cal, now, projects: store.data.projects })) return null;
+  if (recentFolderHit && now - recentFolderHit.ts <= (settings().folderStickyMin || 30) * 60000) return null;
+  return 'offhours';
+}
+
 /** みなし残業(既定45h)に対する当月の残業状況 */
 function overtimeStatus(days = store.data.days) {
   const today = currentKey || engine.dayKey(Date.now(), settings().dayStartHour);
@@ -440,8 +484,10 @@ async function sample() {
   try {
     const now = Date.now();
     const idleSec = forcedIdle ? Infinity : powerMonitor.getSystemIdleTime();
-    const active = idleSec < settings().idleThresholdSec;
+    const inputActive = idleSec < settings().idleThresholdSec;
     const key = engine.dayKey(now, settings().dayStartHour);
+    // 前面ウィンドウ(タイトル判定オン時のみ取得)。私用判定と案件判定の両方に使う
+    const fg = inputActive ? await getForeground() : null;
 
     // 日付ロールオーバー: 前日を確定して自動提出判定
     if (currentKey && key !== currentKey) {
@@ -453,6 +499,17 @@ async function sample() {
     if (key !== currentKey) finalizeStaleDays(key); // 起動直後・日付変更時に取りこぼしを確定
     currentKey = key;
     const day = store.day(key);
+
+    // 私用判定: 私用モード / 私用アプリ / 時間外・休日で仕事の証拠なし → 稼働に数えない
+    const why = inputActive ? privateReason(now, key, fg, day) : null;
+    const active = inputActive && !why;
+    if (why) {
+      day.privateMin = (day.privateMin || 0) + SAMPLE_MIN;
+      day.privateBy = day.privateBy || {};
+      day.privateBy[why] = (day.privateBy[why] || 0) + SAMPLE_MIN;
+      if (lastPrivateWhy !== why) logEvent(day, { mode: '私用モード中', app: '私用アプリ・サイトを検知', offhours: '時間外・休日で仕事の証拠がないため私用扱い' }[why] + `(${engine.fmtTime(now)}〜)`);
+    }
+    lastPrivateWhy = why;
 
     if (active) {
       if (currentInterval && now - currentInterval.e <= settings().mergeGapMin * engine.MIN) {
@@ -471,7 +528,7 @@ async function sample() {
 
     // 案件トラッキング(オプトイン時のみ前面ウィンドウを参照)
     if (active && settings().trackWork) {
-      trackWork(day, now, await getForeground());
+      trackWork(day, now, fg);
     } else if (!active) {
       flushUnclassified(day);
       currentWork = null;
@@ -610,6 +667,11 @@ async function runSync(force) {
     // 3) チーム全体をpull
     const pulled = await sync.pullAll();
     teamStatsCache = pulled.teamStats;
+    // 会社ポリシー: チームにあれば採用。無く端末側に総管理者設定があれば初回だけチームへ登録
+    const remotePolicy = await sync.getDoc('meta/policy');
+    if (remotePolicy) store.data.policy = remotePolicy;
+    else if (store.data.policy && store.data.policy.adminHash) await sync.setDoc('meta/policy', store.data.policy);
+    applyPolicyParams();
     // チーム共有のスプレッドシート書き出し先(未設定ならnull)
     const teamSheets = await sync.getDoc('meta/sheets');
     store.data.remoteTeam = { members: pulled.members, pulledAt: Date.now(), sheets: teamSheets };
@@ -703,6 +765,22 @@ async function maybeAutoExport() {
 }
 
 // ---- 状態のシリアライズ -----------------------------------------------
+/**
+ * 他メンバーの勤怠詳細は総管理者モードの間だけ画面へ渡す。
+ * ロック中は案件の工数(projectMin)だけ渡す(案件の消化状況・予算アラートに必要なため)。
+ */
+function gatedRemoteTeam() {
+  const rt = store.data.remoteTeam;
+  if (!rt || adminUnlocked()) return rt;
+  return {
+    ...rt,
+    members: (rt.members || []).map(m => ({
+      id: m.id, name: m.name,
+      days: Object.fromEntries(Object.entries(m.days || {}).map(([k, d]) => [k, { projectMin: d.projectMin || {} }]))
+    }))
+  };
+}
+
 /** 要確認の工数を「旧ID×候補」ごとにまとめる(全期間) */
 function reviewItems() {
   const groups = {};
@@ -736,10 +814,15 @@ function buildState() {
     currentWork,
     learnN: store.data.learnStats ? store.data.learnStats.n : 0,
     team: store.data.team,
-    remoteTeam: store.data.remoteTeam,
+    remoteTeam: gatedRemoteTeam(),
     sheetsConfig: sheetsConfig(),
     reviewItems: reviewItems(),
     overtime: overtimeStatus(),
+    policy: (() => { const p = pol(); return { params: p.params, workStartMin: p.workStartMin, workEndMin: p.workEndMin, workApps: p.workApps, privateApps: p.privateApps, updatedBy: p.updatedBy || '', updatedAt: p.updatedAt || 0 }; })(),
+    adminConfigured: !!pol().adminHash,
+    adminUnlocked: adminUnlocked(),
+    adminUntil,
+    privateUntil: settings().privateUntil || 0,
     holidays: [...recoruLib.HOLIDAYS],
     folderStatus: folderStatus(),
     gasScript: sheetsLib.gasScript(sheetsConfig().token),
@@ -777,21 +860,50 @@ function updateTray() {
   if (!tray) return;
   const day = currentKey ? store.day(currentKey) : null;
   const est = day && day.estimation;
-  const status = currentInterval ? '記録中' : '待機中';
+  if (settings().privateUntil && settings().privateUntil <= Date.now()) {
+    settings().privateUntil = 0;
+    if (currentKey) logEvent(store.day(currentKey), '私用モードが終了しました(自動)');
+    buildTrayMenu();
+  }
+  const status = (settings().privateUntil || 0) > Date.now() ? '私用モード' : currentInterval ? '記録中' : '待機中';
   tray.setToolTip(`全自動勤怠管理くん ${status}` + (est && est.start ? ` | ${engine.fmtTime(est.start)}〜 稼働 ${engine.fmtDur(est.workMin)}` : ''));
+}
+
+/** 私用モードを minutes 分オン(0で解除) */
+function setPrivate(minutes) {
+  const s = settings();
+  const day = currentKey ? store.day(currentKey) : null;
+  if (minutes > 0) {
+    s.privateUntil = Date.now() + minutes * 60000;
+    if (day) logEvent(day, `私用モードを開始(${engine.fmtTime(s.privateUntil)}まで)`);
+  } else {
+    s.privateUntil = 0;
+    if (day) logEvent(day, '私用モードを解除');
+  }
+  store.save(); buildTrayMenu(); pushUpdate();
+}
+
+function buildTrayMenu() {
+  if (!tray) return;
+  const until = settings().privateUntil || 0;
+  const on = until > Date.now();
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '全自動勤怠管理くんを開く', click: () => { win.show(); win.focus(); } },
+    { type: 'separator' },
+    on
+      ? { label: `私用モード中(${engine.fmtTime(until)}まで)— 解除する`, click: () => setPrivate(0) }
+      : { label: '私用モード(この間は記録しない)', submenu: [30, 60, 120, 240].map(m => ({ label: `${m < 60 ? m + '分' : m / 60 + '時間'}`, click: () => setPrivate(m) })) },
+    { type: 'separator' },
+    { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
+    { type: 'separator' },
+    { label: '終了', click: () => { quitting = true; app.quit(); } }
+  ]));
 }
 
 function createTray() {
   const img = nativeImage.createFromPath(path.join(__dirname, 'assets/tray.png'));
   tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img.resize({ width: 16, height: 16 }));
-  const menu = Menu.buildFromTemplate([
-    { label: '全自動勤怠管理くんを開く', click: () => { win.show(); win.focus(); } },
-    { type: 'separator' },
-    { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
-    { type: 'separator' },
-    { label: '終了', click: () => { quitting = true; app.quit(); } }
-  ]);
-  tray.setContextMenu(menu);
+  buildTrayMenu();
   tray.on('click', () => { win.show(); win.focus(); });
   updateTray();
 }
@@ -801,6 +913,10 @@ function registerIpc() {
   ipcMain.handle('state:get', () => buildState());
 
   ipcMain.handle('settings:update', (e, patch) => {
+    patch = { ...patch };
+    // 検知パラメータは会社ポリシーで固定(総管理者モードでも、ここではなくポリシー保存で変更する)
+    for (const k of Object.keys(policyLib.DEFAULT_PARAMS)) delete patch[k];
+    delete patch.privateUntil;
     Object.assign(store.data.settings, patch);
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
@@ -826,6 +942,45 @@ function registerIpc() {
     store.save(); pushUpdate();
     return { ok: true, state: buildState() };
   });
+  // C) 私用モード(minutes=0で解除)
+  ipcMain.handle('private:set', (e, minutes) => { setPrivate(minutes); return buildState(); });
+
+  // 総管理者
+  ipcMain.handle('admin:setup', async (e, password) => {
+    if (pol().adminHash) return { ok: false, error: '総管理者パスワードは設定済みです' };
+    if (String(password || '').length < 8) return { ok: false, error: 'パスワードは8文字以上にしてください' };
+    const { hash, salt } = policyLib.hashPassword(password);
+    try { await savePolicy({ adminHash: hash, adminSalt: salt }); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+    adminUntil = Date.now() + ADMIN_SESSION_MS;
+    return { ok: true, state: buildState() };
+  });
+  ipcMain.handle('admin:unlock', (e, password) => {
+    if (Date.now() < adminFails.until) return { ok: false, error: `入力の失敗が続いたため、${Math.ceil((adminFails.until - Date.now()) / 60000)}分後に再試行してください` };
+    if (!policyLib.verifyPassword(password, pol())) {
+      adminFails.n++;
+      if (adminFails.n >= 5) { adminFails = { n: 0, until: Date.now() + 5 * 60000 }; }
+      return { ok: false, error: 'パスワードが違います' };
+    }
+    adminFails = { n: 0, until: 0 };
+    adminUntil = Date.now() + ADMIN_SESSION_MS;
+    pushUpdate();
+    return { ok: true, state: buildState() };
+  });
+  ipcMain.handle('admin:lock', () => { adminUntil = 0; pushUpdate(); return buildState(); });
+  ipcMain.handle('admin:change', async (e, { oldPassword, newPassword }) => {
+    if (!adminUnlocked() || !policyLib.verifyPassword(oldPassword, pol())) return { ok: false, error: '現在のパスワードが違います' };
+    if (String(newPassword || '').length < 8) return { ok: false, error: 'パスワードは8文字以上にしてください' };
+    const { hash, salt } = policyLib.hashPassword(newPassword);
+    try { await savePolicy({ adminHash: hash, adminSalt: salt }); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+    return { ok: true, state: buildState() };
+  });
+  ipcMain.handle('admin:savePolicy', async (e, input) => {
+    if (!adminUnlocked()) return { ok: false, error: '総管理者モードでのみ変更できます' };
+    try { await savePolicy(policyLib.sanitize(input)); } catch (err) { return { ok: false, error: String(err.message || err) }; }
+    adminUntil = Date.now() + ADMIN_SESSION_MS; // 操作したら延長
+    return { ok: true, state: buildState() };
+  });
+
   ipcMain.handle('folder:dismiss', (e, code) => {
     const s = settings();
     s.folderHintDismissed = [...new Set([...(s.folderHintDismissed || []), code])];
@@ -981,6 +1136,7 @@ function registerIpc() {
   });
   // チームで書き出し先を共有/解除(meta/sheets)。同期中の全メンバーに次回同期で反映される
   ipcMain.handle('sheets:share', async (e, cfg) => {
+    if (!adminUnlocked()) return { ok: false, error: 'チーム共有の変更は総管理者モードで行ってください(管理者ビューでロック解除)' };
     if (!sync || !sync.enabled()) return { ok: false, error: '先にチーム同期を設定してください' };
     try {
       const doc = cfg
@@ -1143,6 +1299,7 @@ function registerIpc() {
 
   // 管理者: 承認 / 差し戻し(本人・同期メンバー・デモメンバー)
   ipcMain.handle('team:setStatus', async (e, { memberId, dateKey, status }) => {
+    if (!adminUnlocked()) return buildState(); // 承認/差し戻しは総管理者モードのみ
     if (memberId === 'self') {
       const day = store.day(dateKey);
       day.status = status;
@@ -1174,6 +1331,7 @@ function registerIpc() {
 app.whenReady().then(() => {
   store = new Store(app.getPath('userData'));
   if (!store.data.team) store.data.team = seedTeam();
+  applyPolicyParams(); store.save();
   registerIpc();
   createWindow();
   createTray();

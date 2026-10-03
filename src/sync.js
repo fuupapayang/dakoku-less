@@ -200,6 +200,7 @@ class Sync {
         confidence: d.estimation ? d.estimation.confidence : 'LOW',
         status: d.status, auto: !!(d.submitted && d.submitted.auto),
         meetingMin: Math.round(d.meetingMin || 0),
+        privateMin: Math.round(d.privateMin || 0),
         projectMin: Object.fromEntries(
           Object.entries(d.projectMin || {}).map(([k, v]) => [k, Math.round(v)])
         )

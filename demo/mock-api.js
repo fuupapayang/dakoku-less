@@ -147,6 +147,11 @@
       sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' },
       teamProfiles: [], activeTeamId: ''
     },
+    overtime: { ym: todayKey.slice(0, 7), overtimeMin: 2280, legalHolidayMin: 300, forecastMin: 3100, elapsed: 22, daysInMonth: 31, limitMin: 2700, level: 'warn' },
+    holidays: [],
+    adminConfigured: true, adminUnlocked: false, adminUntil: 0, privateUntil: 0,
+    policy: { params: { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4 }, workStartMin: 540, workEndMin: 1320,
+      workApps: ['Figma', 'Photoshop', 'Illustrator', 'Excel', 'Slack', 'ChatGPT', 'Claude', 'Antigravity'], privateApps: ['Netflix', 'Prime Video', 'Steam'], updatedBy: '' },
     todayKey, days,
     rules: [
       { id: 'r1', label: '移動時間', treatAs: 'exclude', fromMin: 630, toMin: 660, weekday: 2, enabled: true, createdAt: Date.now() - 5 * 86400000 },
@@ -226,6 +231,12 @@
     saveSheets: async (patch) => { Object.assign(state.settings, patch); return S(); },
     exportSheets: async () => ({ ok: false, error: 'ブラウザデモでは書き出しは無効です(デスクトップ版でご利用ください)' }),
     shareSheets: async () => ({ ok: false, error: 'ブラウザデモではチーム共有は無効です(デスクトップ版でご利用ください)' }),
+    setPrivate: async (m) => { state.privateUntil = m ? Date.now() + m * 60000 : 0; return S(); },
+    adminSetup: async () => { state.adminConfigured = true; state.adminUnlocked = true; state.adminUntil = Date.now() + 1800000; return { ok: true, state: S() }; },
+    adminUnlock: async () => { state.adminUnlocked = true; state.adminUntil = Date.now() + 1800000; return { ok: true, state: S() }; },
+    adminLock: async () => { state.adminUnlocked = false; return S(); },
+    adminChange: async () => ({ ok: true, state: S() }),
+    adminSavePolicy: async (p) => { state.policy = { ...state.policy, ...p }; return { ok: true, state: S() }; },
     addTeam: async (o) => {
       if (!o.projectId || !o.apiKey || !o.teamId) return { ok: false, error: 'Project ID / API Key / チームIDを入力してください' };
       const id = 'tp' + Math.random().toString(36).slice(2, 7);

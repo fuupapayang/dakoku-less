@@ -127,6 +127,22 @@ function folderBannerHTML() {
   </div>`;
 }
 
+/** 私用モード・私用として除外した時間 */
+function privateCardHTML(day) {
+  const on = (state.privateUntil || 0) > Date.now();
+  const by = (day && day.privateBy) || {};
+  const total = Math.round((day && day.privateMin) || 0);
+  const detail = [['mode', '私用モード'], ['app', '私用アプリ'], ['offhours', '時間外・休日(仕事の証拠なし)']]
+    .filter(([k]) => by[k]).map(([k, l]) => `${l} ${fmtDur(Math.round(by[k]))}`).join(' / ');
+  return `<div class="card" ${on ? 'style="border-color:#c9b8f0;background:#f7f4ff"' : ''}>
+    <div class="row">
+      <div class="grow"><b>${on ? `🔕 私用モード中(${fmtTime(state.privateUntil)}まで)— この間は勤怠に記録しません` : '私用で使うときは「私用モード」'}</b>
+        <div class="muted">${total ? `今日 私用として除外: ${fmtDur(total)}(${detail})` : '時間外・休日は仕事のアプリ/案件フォルダ/会議など「仕事の証拠」がある時間だけ記録します。'}</div></div>
+      ${on ? '<button class="btn sm" data-act="private-set" data-min="0">解除</button>'
+        : [30, 60, 120].map(m => `<button class="btn sm ghost" data-act="private-set" data-min="${m}">${m < 60 ? m + '分' : m / 60 + '時間'}</button>`).join('')}
+    </div></div>`;
+}
+
 /** みなし残業メーター */
 function overtimeCardHTML() {
   const o = state.overtime;
@@ -165,6 +181,7 @@ function renderToday() {
     <h1>今日の勤務</h1>
     <div class="page-sub">${fmtDate(key)} ｜ ただ仕事に集中するだけで、出退勤ログをそっと整えます。</div>
     ${folderBannerHTML()}
+    ${privateCardHTML(day)}
     ${overtimeCardHTML()}
 
     <div class="card">
@@ -988,10 +1005,11 @@ function renderSettings() {
     <div class="card">
       <h2>検知パラメータ</h2>
       <div class="field-row">
-        <label class="field">無操作とみなす秒数<input type="number" id="st-idle" value="${s.idleThresholdSec}" min="30" max="600"></label>
-        <label class="field">休憩とみなす空白(分)<input type="number" id="st-break" value="${s.breakThresholdMin}" min="5" max="120"></label>
-        <label class="field">日付の切替時刻(時)<input type="number" id="st-daystart" value="${s.dayStartHour}" min="0" max="12"></label>
+        <label class="field">無操作とみなす秒数<input type="number" value="${s.idleThresholdSec}" disabled></label>
+        <label class="field">休憩とみなす空白(分)<input type="number" value="${s.breakThresholdMin}" disabled></label>
+        <label class="field">日付の切替時刻(時)<input type="number" value="${s.dayStartHour}" disabled></label>
       </div>
+      <div class="muted">🔒 検知パラメータは会社ポリシーで固定されています(変更は総管理者のみ: 管理者ビュー →「会社ポリシー」)。</div>
       <div class="field-row">
         <label class="field">表示名<input type="text" id="st-name" value="${esc(s.userName)}"></label>
         <label class="field">レコル用ユーザID(社員番号など・空なら表示名)<input type="text" id="st-recoru" value="${esc(s.recoruUserId || '')}" placeholder="例: 1001"></label>
@@ -1141,12 +1159,99 @@ function teamOvertimeHTML(roster) {
   }).sort((a, b) => b.ot - a.ot);
   const lv = (m) => m >= limit ? '<span class="chip LOW">超過</span>' : m >= limit * 0.8 ? '<span class="chip UNSURE">80%以上</span>' : '';
   return `<div class="card"><h2>今月の残業(みなし ${fmtDur(limit)})</h2>
-    <table><thead><tr><th>メンバー</th><th>残業</th><th>休日労働(日曜)</th><th></th></tr></thead>
-    <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td><b>${fmtDur(r.ot)}</b></td><td>${fmtDur(r.hol)}</td><td>${lv(r.ot)}</td></tr>`).join('')}</tbody></table>
+    <table><thead><tr><th>メンバー</th><th>残業</th><th>休日労働(日曜)</th><th></th><th></th></tr></thead>
+    <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td><b>${fmtDur(r.ot)}</b></td><td>${fmtDur(r.hol)}</td><td>${lv(r.ot)}</td>
+      <td><button class="btn sm ghost" data-act="admin-member" data-name="${esc(r.name)}">詳細</button></td></tr>`).join('')}</tbody></table>
     <div class="muted mt8">PC稼働からの推定値です。各メンバーが最新版に更新すると推定の不具合修正が反映されます。</div></div>`;
 }
 
+/** 総管理者モードのロック画面 */
+function adminLockHTML() {
+  if (!state.adminConfigured) {
+    return `<h1>管理者ビュー</h1>
+      <div class="card" style="max-width:520px">
+        <h2>🔐 総管理者パスワードの設定</h2>
+        <p class="muted">管理者ビュー(各スタッフの勤怠詳細・承認・会社ポリシー)はパスワードで保護されます。
+        まだ設定されていないため、<b>最初に設定した人が総管理者</b>になります。チーム同期中はチーム全体に適用されます。</p>
+        <label class="field">新しいパスワード(8文字以上)<input type="password" id="adm-pw1" autocomplete="new-password"></label>
+        <label class="field">もう一度<input type="password" id="adm-pw2" autocomplete="new-password"></label>
+        <button class="btn primary mt8" data-act="admin-setup">設定してロック解除</button>
+      </div>`;
+  }
+  return `<h1>管理者ビュー</h1>
+    <div class="card" style="max-width:520px">
+      <h2>🔒 総管理者モード</h2>
+      <p class="muted">各スタッフの勤怠詳細の閲覧、承認・差し戻し、会社ポリシーの変更には総管理者パスワードが必要です。30分操作がないと自動でロックされます。</p>
+      <label class="field">パスワード<input type="password" id="adm-pw" autocomplete="current-password"></label>
+      <button class="btn primary mt8" data-act="admin-unlock">ロック解除</button>
+    </div>`;
+}
+
+/** 総管理者: スタッフ別の勤怠詳細(月) */
+function memberDetailHTML(roster) {
+  const name = renderAdmin.member;
+  if (!name) return '';
+  const m = roster.find(r => r.name === name);
+  if (!m) return '';
+  const ym = (state.overtime && state.overtime.ym) || state.todayKey.slice(0, 7);
+  const keys = Object.keys(m.days || {}).filter(k => k.slice(0, 7) === ym).sort();
+  const wdName = (k) => '日月火水木金土'[new Date(k).getDay()];
+  const rows = keys.map(k => {
+    const d = m.days[k];
+    const e = d.submitted || d.correction || d.estimation || d;
+    if (!e || e.start == null) return '';
+    const wd = new Date(k).getDay(), hol = (state.holidays || []).includes(k);
+    const ot = wd === 0 ? 0 : (wd === 6 || hol) ? (e.workMin || 0) : Math.max(0, (e.workMin || 0) - 480);
+    const top = Object.entries(d.projectMin || {}).sort((a, b) => b[1] - a[1]).slice(0, 2)
+      .map(([pid, min]) => `${esc(projName(pid))} ${fmtDur(Math.round(min))}`).join('、');
+    return `<tr><td>${fmtDate(k)}${wd === 0 || wd === 6 || hol ? ' <span class="tag">休日</span>' : ''}</td>
+      <td>${fmtTime(e.start)}</td><td>${fmtTime(e.end)}</td><td>${fmtDur(e.breakMin)}</td><td><b>${fmtDur(e.workMin)}</b></td>
+      <td>${ot ? fmtDur(ot) : '-'}</td><td>${d.privateMin ? fmtDur(Math.round(d.privateMin)) : '-'}</td>
+      <td><span class="chip status-${esc(d.status || '')}">${STATUS[d.status] || d.status || ''}</span>${d.correction ? ' <span class="tag">本人修正</span>' : ''}</td>
+      <td class="muted" style="font-size:12px">${top || '-'}</td></tr>`;
+  }).join('');
+  return `<div class="card"><div class="row"><h2 class="grow">${esc(name)} の勤怠詳細(${esc(ym)})</h2>
+      <button class="btn sm ghost" data-act="admin-member" data-name="">閉じる</button></div>
+    <table class="mt8"><thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>残業</th><th>私用除外</th><th>状態</th><th>主な案件</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="9" class="muted">記録がありません</td></tr>'}</tbody></table>
+    <div class="muted mt8">他のメンバーは同期された直近35日分を表示します。</div></div>`;
+}
+
+/** 総管理者: 会社ポリシー(検知パラメータ・勤務時間帯・アプリ一覧・パスワード変更) */
+function policyCardHTML() {
+  const p = state.policy || { params: {} };
+  const hm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  return `<div class="card">
+    <h2>会社ポリシー(総管理者のみ変更可・チーム全員に適用)</h2>
+    ${p.updatedBy ? `<div class="muted">最終更新: ${esc(p.updatedBy)} ${p.updatedAt ? new Date(p.updatedAt).toLocaleString('ja-JP') : ''}</div>` : ''}
+    <div class="field-row mt8">
+      <label class="field">無操作とみなす秒数<input type="number" id="pol-idle" value="${p.params.idleThresholdSec}" min="30" max="600"></label>
+      <label class="field">休憩とみなす空白(分)<input type="number" id="pol-break" value="${p.params.breakThresholdMin}" min="5" max="120"></label>
+      <label class="field">日付の切替時刻(時)<input type="number" id="pol-daystart" value="${p.params.dayStartHour}" min="0" max="12"></label>
+    </div>
+    <div class="field-row">
+      <label class="field">勤務時間帯 開始<input type="time" id="pol-ws" value="${hm(p.workStartMin)}"></label>
+      <label class="field">勤務時間帯 終了<input type="time" id="pol-we" value="${hm(p.workEndMin)}"></label>
+    </div>
+    <div class="muted">平日のこの時間帯は従来どおり記録します。時間外と土日祝は、下の「仕事用アプリ」・案件フォルダ・会議など<b>仕事の証拠がある時間だけ</b>記録します。</div>
+    <div class="field-row mt8">
+      <label class="field">仕事用アプリ(1行に1つ。アプリ名・タブタイトルに含まれる語)<textarea id="pol-work" rows="8" style="width:100%">${esc((p.workApps || []).join('\n'))}</textarea></label>
+      <label class="field">私用アプリ・サイト(1行に1つ。勤務時間内でも記録しない)<textarea id="pol-private" rows="8" style="width:100%">${esc((p.privateApps || []).join('\n'))}</textarea></label>
+    </div>
+    <div class="muted">5文字以下の語(Code, Word など)はアプリ名だけに一致します。YouTube・SNSは業務で使うことも多いため初期値に入れていません。</div>
+    <button class="btn primary mt8" data-act="policy-save">ポリシーを保存して全員に適用</button>
+    <details class="mt16"><summary class="muted" style="cursor:pointer">総管理者パスワードを変更</summary>
+      <div class="field-row mt8">
+        <label class="field">現在のパスワード<input type="password" id="adm-old"></label>
+        <label class="field">新しいパスワード(8文字以上)<input type="password" id="adm-new"></label>
+      </div>
+      <button class="btn mt8" data-act="admin-change">変更</button>
+    </details>
+  </div>`;
+}
+
 function renderAdmin() {
+  if (!state.adminUnlocked) { $('#tab-admin').innerHTML = adminLockHTML(); return; }
   const team = state.team || { members: [] };
   const sel = renderAdmin.date || (() => {
     const d = new Date(Date.now() - 86400000);
@@ -1182,7 +1287,9 @@ function renderAdmin() {
   alerts.sort((a, b) => b.key.localeCompare(a.key));
 
   $('#tab-admin').innerHTML = `
-    <h1>管理者ビュー</h1>
+    <div class="row"><h1 class="grow">管理者ビュー</h1>
+      <span class="tag work">総管理者モード(${fmtTime(state.adminUntil)}まで)</span>
+      <button class="btn sm ghost" data-act="admin-lock">ロック</button></div>
     <div class="page-sub">催促も、言い訳も、いらない毎日へ。月末の乖離チェック業務を大幅に削減します。</div>
     <div class="kpis">
       <div class="kpi"><div class="num">${submitted}/${rows.length}</div><div class="lbl">提出済み(${fmtDate(sel)})</div></div>
@@ -1191,6 +1298,7 @@ function renderAdmin() {
       <div class="kpi"><div class="num" style="color:${alerts.length ? 'var(--red)' : 'inherit'}">${alerts.length}</div><div class="lbl">乖離アラート(30分超)</div></div>
     </div>
     ${teamOvertimeHTML([{ name: state.settings.userName + '(あなた)', days: state.days }, ...roster])}
+    ${memberDetailHTML([{ name: state.settings.userName + '(あなた)', days: state.days }, ...roster])}
     <div class="card">
       <div class="row"><h2 class="grow">メンバー勤怠</h2>
         <input type="date" id="adm-date" value="${sel}" style="width:170px;margin:0"></div>
@@ -1249,7 +1357,8 @@ function renderAdmin() {
         <tbody>${alerts.slice(0, 10).map(a => `<tr><td>${fmtDate(a.key)}</td><td>${esc(a.name)}</td>
         <td class="disc-warn">${a.min}分</td></tr>`).join('')}</tbody></table>`
       : '<div class="muted">乖離はありません。勤怠データに客観的な根拠が紐づいています。</div>'}
-    </div>`;
+    </div>
+    ${policyCardHTML()}`;
 }
 
 /** レコル取込用CSV: ユーザID,日付,勤務区分,開始,終了,休憩時間,メモ(生成はメインプロセスの src/recoru.js) */
@@ -1675,6 +1784,37 @@ document.addEventListener('click', async (e) => {
     state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
     renderSettings(); toast('この端末の連携URLを保存しました');
   }
+  if (act === 'private-set') {
+    state = await window.api.setPrivate(+btn.dataset.min);
+    renderToday(); toast(+btn.dataset.min ? '私用モードにしました(この間は記録しません)' : '私用モードを解除しました');
+  }
+  if (act === 'admin-setup') {
+    const a = $('#adm-pw1').value, b = $('#adm-pw2').value;
+    if (a !== b) { toast('パスワードが一致しません'); return; }
+    const r = await window.api.adminSetup(a);
+    if (r.ok) { state = r.state; renderAdmin(); toast('総管理者パスワードを設定しました'); } else toast(`エラー: ${r.error}`);
+  }
+  if (act === 'admin-unlock') {
+    const r = await window.api.adminUnlock($('#adm-pw').value);
+    if (r.ok) { state = r.state; renderAdmin(); } else toast(r.error);
+  }
+  if (act === 'admin-lock') { state = await window.api.adminLock(); renderAdmin(); }
+  if (act === 'admin-member') { renderAdmin.member = btn.dataset.name || null; renderAdmin(); }
+  if (act === 'admin-change') {
+    const r = await window.api.adminChange({ oldPassword: $('#adm-old').value, newPassword: $('#adm-new').value });
+    toast(r.ok ? 'パスワードを変更しました' : `エラー: ${r.error}`);
+    if (r.ok) { state = r.state; renderAdmin(); }
+  }
+  if (act === 'policy-save') {
+    const toMin = (v) => { const [h, m] = String(v || '0:0').split(':').map(Number); return h * 60 + (m || 0); };
+    const lines = (id) => $(id).value.split('\n').map(x => x.trim()).filter(Boolean);
+    const r = await window.api.adminSavePolicy({
+      params: { idleThresholdSec: +$('#pol-idle').value, breakThresholdMin: +$('#pol-break').value, dayStartHour: +$('#pol-daystart').value },
+      workStartMin: toMin($('#pol-ws').value), workEndMin: toMin($('#pol-we').value),
+      workApps: lines('#pol-work'), privateApps: lines('#pol-private')
+    });
+    if (r.ok) { state = r.state; renderAdmin(); toast('会社ポリシーを保存しました(チーム全員に次回同期で反映)'); } else toast(`エラー: ${r.error}`);
+  }
   if (act === 'folder-dismiss') {
     e.preventDefault();
     state = await window.api.dismissFolderHint(btn.dataset.code);
@@ -1738,8 +1878,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'autolaunch') { state = await window.api.updateSettings({ autoLaunch: !state.settings.autoLaunch }); renderSettings(); }
   if (act === 'save-settings') {
     state = await window.api.updateSettings({
-      idleThresholdSec: +$('#st-idle').value, breakThresholdMin: +$('#st-break').value,
-      dayStartHour: +$('#st-daystart').value, userName: $('#st-name').value || 'あなた',
+      userName: $('#st-name').value || 'あなた',
       hourlyRate: +($('#st-rate') ? $('#st-rate').value : 5000) || 5000,
       recoruUserId: ($('#st-recoru') ? $('#st-recoru').value : '').trim()
     });
