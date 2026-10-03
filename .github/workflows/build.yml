@@ -64,6 +64,22 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12"
           security find-identity -v -p codesigning "$KEYCHAIN"
 
+      # macOS: 公証(Apple)の認証を事前確認。失敗時はAppleの応答をそのままアノテーションに出す
+      - name: Check notarization credentials (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if out=$(xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" 2>&1); then
+            echo "notarytool: 認証OK"
+          else
+            echo "$out" | grep -v '^\s*$' | head -n 8 | while IFS= read -r l; do echo "::error title=Apple公証の認証エラー::${l:0:900}"; done
+            exit 1
+          fi
+
       # macOS: 署名(上で取り込んだ証明書を自動検出) + 公証
       - name: Build macOS (signed & notarized)
         if: matrix.platform == 'mac'
