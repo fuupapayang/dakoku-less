@@ -30,7 +30,11 @@ assert.strictEqual(R.nightMin('2026-09-04', { start: at(21, 0, 4), end: at(1, 0,
 assert.strictEqual(R.nightMin('2026-09-04', { start: at(21, 0, 4), end: at(1, 0, 5), breaks: [{ s: at(23, 0, 4), e: at(0, 0, 5) }] }), 120);
 // ---- 取込行・集計
 const e4 = { start: at(9, 0, 4), end: at(23, 0, 4), breakMin: 60, workMin: 780, breaks: [{ s: at(12, 0, 4), e: at(13, 0, 4) }] };
-assert.deepStrictEqual(R.importRow('U1', '2026-09-04', e4, 'm'), ['U1', '2026/09/04', '出勤', '09:00', '23:00', '01:00', 'm']);
+assert.deepStrictEqual(R.IMPORT_HEADERS, ['名前', 'ユーザID', '日付', '勤務区分', '開始', '終了', '休憩時間', 'メモ']);
+assert.deepStrictEqual(R.importRow('山田 太郎', 'U1', '2026-09-04', e4, 'm'), ['山田 太郎', 'U1', '2026/09/04', '出勤', '09:00', '23:00', '01:00', 'm']);
+// ユーザID未設定: 名前で代用せず空欄、メモで知らせる
+assert.deepStrictEqual(R.importRow('山田 太郎', '', '2026-09-04', e4, 'm'), ['山田 太郎', '', '2026/09/04', '出勤', '09:00', '23:00', '01:00', 'm / ユーザID未設定']);
+assert.strictEqual(R.importRow('山田 太郎', '  ', '2026-09-04', e4)[7], 'ユーザID未設定');
 const sm = R.summarize('2026-09-04', e4);
 assert.strictEqual(sm[R.SUMMARY_HEADERS.indexOf('法定外残業')], '05:00');
 assert.strictEqual(sm[R.SUMMARY_HEADERS.indexOf('深夜')], '01:00');
@@ -69,5 +73,58 @@ assert.strictEqual(R.recordOf(pend).workMin, 480);
 assert.strictEqual(R.recordOf({ ...pend, status: 'approved' }).workMin, 600);
 assert.strictEqual(R.recordOf({ start: 1, workMin: 600, estWorkMin: 480, needsApproval: true, status: 'submitted' }).workMin, 480); // 同期サマリー
 assert.strictEqual(R.monthOvertime({ '2026-09-01': pend }, '2026-09', '2026-09-30').overtimeMin, 0);
+
+// ---- 勤怠履歴CSV
+const H = (name) => R.HISTORY_HEADERS.indexOf(name);
+const SL = { pending: '未提出', submitted: '提出済み', approved: '承認済み' };
+const hDays = {
+  // 平日・承認済み・深夜跨ぎ(9:00〜翌1:00、休憩1h → 実働15h)
+  '2026-09-04': { status: 'approved', estimation: { start: at(9, 0, 4), end: at(1, 0, 5), breakMin: 60, workMin: 900 },
+    submitted: { start: at(9, 0, 4), end: at(1, 0, 5), breakMin: 60, workMin: 900 },
+    meetingMin: 45, privateMin: 20.4, categoryMin: { internal: 30, shoot: 90 } },
+  // 土曜・未提出・要確認
+  '2026-09-05': { status: 'pending', reviewReasons: ['休日の稼働'], estimation: { start: at(10, 0, 5), end: at(13, 0, 5), breakMin: 0, workMin: 180 } },
+  // 日曜 → 残業0
+  '2026-09-06': { status: 'submitted', estimation: { start: at(10, 0, 6), end: at(12, 0, 6), breakMin: 0, workMin: 120 },
+    submitted: { start: at(10, 0, 6), end: at(12, 0, 6), breakMin: 0, workMin: 120 } },
+  // 平日・+2hの修正で承認待ち → 推定値で出力、修正値は別列
+  '2026-09-07': { status: 'submitted', estimation: { start: at(9, 0, 7), end: at(18, 0, 7), breakMin: 60, workMin: 480 },
+    correction: { start: at(9, 0, 7), end: at(20, 0, 7), breakMin: 60, workMin: 600 },
+    submitted: { start: at(9, 0, 7), end: at(20, 0, 7), breakMin: 60, workMin: 600, needsApproval: true } },
+  // 平日・未提出で-15分の修正 → 修正値をそのまま
+  '2026-09-08': { status: 'pending', estimation: { start: at(9, 0, 8), end: at(18, 0, 8), breakMin: 60, workMin: 480 },
+    correction: { start: at(9, 0, 8), end: at(17, 45, 8), breakMin: 60, workMin: 465 } },
+  // 未提出で+1hの修正 → 承認前の値として推定値
+  '2026-09-09': { status: 'pending', estimation: { start: at(9, 0, 9), end: at(18, 0, 9), breakMin: 60, workMin: 480 },
+    correction: { start: at(9, 0, 9), end: at(19, 0, 9), breakMin: 60, workMin: 540 } },
+  '2026-09-10': { status: 'pending', estimation: null }, // 記録なしは出力しない
+  '2026-10-01': { status: 'pending', estimation: { start: new Date(2026, 9, 1, 9).getTime(), end: new Date(2026, 9, 1, 18).getTime(), breakMin: 60, workMin: 480 } }
+};
+const hr = R.historyRows(hDays, { from: '2026-09-01', to: '2026-09-30', statusLabel: SL });
+assert.strictEqual(hr.length, 6);
+assert.ok(hr.every(r => r.length === R.HISTORY_HEADERS.length));
+assert.deepStrictEqual(hr[0], ['2026/09/04', '金', '出勤', '09:00', '25:00', '01:00', '15:00', '07:00', '00:45', '00:20', '00:30', '01:30', '承認済み', '', '', '']);
+assert.strictEqual(hr[1][H('区分')], '所定休日出勤');
+assert.strictEqual(hr[1][H('残業')], '03:00');                        // 土曜は全部残業
+assert.strictEqual(hr[1][H('備考')], '要確認: 休日の稼働');
+assert.strictEqual(hr[2][H('区分')], '法定休日出勤');
+assert.strictEqual(hr[2][H('残業')], '00:00');                        // 日曜は休日労働(残業0)
+assert.strictEqual(hr[3][H('実働')], '08:00');                        // 承認待ち → 推定値
+assert.strictEqual(hr[3][H('終業')], '18:00');
+assert.strictEqual(hr[3][H('本人修正')], '+02:00');
+assert.strictEqual(hr[3][H('修正後(承認待ち)')], '09:00〜20:00 休憩01:00 実働10:00');
+assert.ok(hr[3][H('備考')].includes('承認待ち'));
+assert.strictEqual(hr[4][H('実働')], '07:45');
+assert.strictEqual(hr[4][H('本人修正')], '-00:15');
+assert.strictEqual(hr[4][H('修正後(承認待ち)')], '');
+assert.strictEqual(hr[5][H('実働')], '08:00');                        // +1hの未提出修正は推定値
+assert.strictEqual(hr[5][H('修正後(承認待ち)')], '09:00〜19:00 休憩01:00 実働09:00');
+// 承認後は修正値
+const appr = R.historyRows({ '2026-09-07': { ...hDays['2026-09-07'], status: 'approved' } }, { statusLabel: SL });
+assert.strictEqual(appr[0][H('実働')], '10:00');
+assert.strictEqual(appr[0][H('修正後(承認待ち)')], '');
+// 期間未指定は全件
+assert.strictEqual(R.historyRows(hDays).length, 7);
+assert.ok(R.toCSV([R.HISTORY_HEADERS, ...hr]).startsWith('日付,曜日,区分,'));
 
 console.log('✓ all recoru tests passed');

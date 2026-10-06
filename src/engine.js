@@ -139,8 +139,9 @@ function estimate(day, rules = [], settings = {}) {
     if (ev) {
       const s0 = Math.max(gapS, ev.s), e0 = Math.min(gapE, ev.e);
       const summary = ev.summary || '';
-      const isTravel = /移動|外出|直行|直帰|出張/.test(summary);
-      const isExcluded = /通院|私用|中抜け|離席/.test(summary);
+      // 案件外の区分(社内会議・撮影/ロケハン)は明示的な業務予定なので、語句に関係なく稼働扱い
+      const isTravel = !ev.kind && /移動|外出|直行|直帰|出張/.test(summary);
+      const isExcluded = !ev.kind && /通院|私用|中抜け|離席/.test(summary);
       if (isTravel && settings.travelAsWork !== false) {
         segments.push({ s: s0, e: e0, kind: 'work', label: `移動: ${summary}` });
         notes.push(`${fmtTime(s0)}〜${fmtTime(e0)} 「${summary}」を移動(稼働)として計上`);

@@ -26,7 +26,7 @@ class Store {
         hourlyRate: 5000,    // 原価単価(円/h) 収益性計算用
         travelAsWork: true,  // カレンダーの「移動・外出」予定を稼働として計上
         detectMeetings: true,// オンライン会議(Teams/Zoom/Meet等)を会議として記録
-        recoruUserId: '',    // レコルCSV用のユーザID(空なら表示名)
+        recoruUserId: '',    // レコルCSV用のユーザID(空ならユーザID欄は空欄)
         sheetsUrl: '',       // Google Apps Script ウェブアプリの /exec URL
         sheetsToken: '',     // 連携用の合言葉(GAS側と一致)
         autoExportSheets: false, // 毎月自動で書き出す

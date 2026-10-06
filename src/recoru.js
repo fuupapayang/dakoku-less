@@ -77,11 +77,13 @@ function nightMin(key, est) {
   return Math.max(0, Math.round(ms / MIN));
 }
 
-const IMPORT_HEADERS = ['ユーザID', '日付', '勤務区分', '開始', '終了', '休憩時間', 'メモ'];
+const IMPORT_HEADERS = ['名前', 'ユーザID', '日付', '勤務区分', '開始', '終了', '休憩時間', 'メモ'];
 
-/** 取込用の1行 */
-function importRow(uid, key, est, memo = '') {
-  return [uid, key.replace(/-/g, '/'), KUBUN[dayType(key)], clock(key, est.start), clock(key, est.end), hhmm(est.breakMin), memo];
+/** 取込用の1行。ユーザIDが空の場合は管理者が気付けるようメモに「ユーザID未設定」を付ける */
+function importRow(name, uid, key, est, memo = '') {
+  uid = String(uid || '').trim();
+  if (!uid) memo = [memo, 'ユーザID未設定'].filter(Boolean).join(' / ');
+  return [name || '', uid, key.replace(/-/g, '/'), KUBUN[dayType(key)], clock(key, est.start), clock(key, est.end), hhmm(est.breakMin), memo];
 }
 
 /** 確認用: レコルの集計列を試算 */
@@ -154,6 +156,67 @@ function overtimeLevel(ot, limitMin) {
   return 'ok';
 }
 
+/** +01:30 / -00:15 のような符号付き HH:MM */
+function signedHhmm(min) {
+  min = Math.round(min || 0);
+  return (min > 0 ? '+' : min < 0 ? '-' : '') + hhmm(Math.abs(min));
+}
+
+/**
+ * 勤怠履歴CSV(履歴タブの「CSVダウンロード」)。
+ * 値は集計と同じ扱い: 提出済み・承認済みの日は recordOf(実働を30分以上増やす修正は承認まで推定値)。
+ * 未提出・差し戻しの日は画面と同じ修正値(なければ推定値)だが、30分以上増やす修正は推定値で出し、修正値は別列に出す。
+ */
+const HISTORY_HEADERS = ['日付', '曜日', '区分', '始業', '終業', '休憩', '実働', '残業', '会議', '私用除外',
+  '社内会議（案件外）', '撮影・ロケハン', '状態', '本人修正', '修正後(承認待ち)', '備考'];
+
+/** @returns {rec, pending, note, delta} rec=出力する値 / pending=承認待ちの修正値(なければnull) */
+function historyRecord(d) {
+  if (!d) return { rec: null, pending: null, note: '', delta: 0 };
+  const delta = d.correction && d.estimation ? Math.round((d.correction.workMin || 0) - (d.estimation.workMin || 0)) : 0;
+  if (d.status === 'submitted' || d.status === 'approved') {
+    const pend = !!(d.submitted && d.submitted.needsApproval && d.status !== 'approved');
+    return { rec: recordOf(d), pending: pend ? d.submitted : null, note: pend ? '承認待ち(承認までは推定値)' : '', delta };
+  }
+  if (delta >= 30) {
+    return { rec: d.estimation, pending: d.correction, note: '実働を30分以上増やす修正(提出後に承認が必要・承認までは推定値)', delta };
+  }
+  return { rec: d.correction || d.estimation, pending: null, note: '', delta };
+}
+
+/**
+ * @param days {key: day}  @param from/to 'YYYY-MM-DD'(空なら制限なし)
+ * @param statusLabel 状態コード → 表示名
+ * @returns 行の配列(ヘッダーは含まない。記録のない日は出力しない)
+ */
+function historyRows(days, { from = '', to = '', statusLabel = {} } = {}) {
+  const rows = [];
+  for (const k of Object.keys(days || {}).sort()) {
+    if ((from && k < from) || (to && k > to)) continue;
+    const d = days[k];
+    const { rec, pending, note, delta } = historyRecord(d);
+    if (!rec || rec.start == null) continue;
+    const t = dayType(k);
+    const w = Math.round(rec.workMin || 0);
+    // 残業は monthOvertime と同じ: 平日は8h超、所定休日(土・祝)は全部、法定休日(日)は休日労働のため0
+    const overtime = t === 'work' ? Math.max(0, w - SCHEDULED_MIN) : t === 'scheduledHoliday' ? w : 0;
+    const cat = d.categoryMin || {};
+    const notes = [];
+    if ((d.reviewReasons || []).length && (d.status === 'pending' || d.status === 'rejected')) notes.push('要確認: ' + d.reviewReasons.join('・'));
+    if (note) notes.push(note);
+    rows.push([
+      k.replace(/-/g, '/'), '日月火水木金土'[weekdayOf(k)], KUBUN[t],
+      clock(k, rec.start), clock(k, rec.end), hhmm(rec.breakMin), hhmm(w), hhmm(overtime),
+      hhmm(d.meetingMin), hhmm(d.privateMin), hhmm(cat.internal), hhmm(cat.shoot),
+      statusLabel[d.status] || d.status || '',
+      d.correction && d.estimation ? signedHhmm(delta) : '',
+      pending && pending.start != null ? `${clock(k, pending.start)}〜${clock(k, pending.end)} 休憩${hhmm(pending.breakMin)} 実働${hhmm(pending.workMin)}` : '',
+      notes.join(' / ')
+    ]);
+  }
+  return rows;
+}
+
 function toCSV(rows) {
   return rows.map(r => r.map(v => {
     const s = String(v == null ? '' : v);
@@ -162,6 +225,7 @@ function toCSV(rows) {
 }
 
 module.exports = {
-  HOLIDAYS, SCHEDULED_MIN, KUBUN, IMPORT_HEADERS, SUMMARY_HEADERS,
-  dayType, clock, hhmm, reviewReasons, nightMin, importRow, summarize, toCSV, monthOvertime, overtimeLevel, recordOf
+  HOLIDAYS, SCHEDULED_MIN, KUBUN, IMPORT_HEADERS, SUMMARY_HEADERS, HISTORY_HEADERS,
+  dayType, clock, hhmm, signedHhmm, reviewReasons, nightMin, importRow, summarize, toCSV, monthOvertime, overtimeLevel, recordOf,
+  historyRecord, historyRows
 };

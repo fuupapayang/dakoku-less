@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell, Notification, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('./src/store');
@@ -7,6 +7,7 @@ const engine = require('./src/engine');
 const projectsLib = require('./src/projects');
 const learnLib = require('./src/learn');
 const calendarLib = require('./src/calendar');
+const meetingsLib = require('./src/meetings');
 const sheetsLib = require('./src/sheets');
 const recoruLib = require('./src/recoru');
 const collisionsLib = require('./src/collisions');
@@ -117,8 +118,17 @@ function isMeetingFg(fg) {
   return MEETING_APP.test(fg.app || '') || MEETING_TITLE.test(fg.title || '');
 }
 function isMeetingCal(combinedCal, now) {
-  return (combinedCal || []).some(ev => ev.s <= now && now < ev.e &&
-    /(会議|ミーティング|mtg|打ち合わせ|打合せ|定例|meeting|オンライン)/i.test(ev.summary || ''));
+  return (combinedCal || []).some(ev => ev.s <= now && now < ev.e && (ev.kind === 'internal' ||
+    /(会議|ミーティング|mtg|打ち合わせ|打合せ|定例|meeting|オンライン)/i.test(ev.summary || '')));
+}
+
+/** 案件外の予定(社内会議・撮影/ロケハン)中なら、その区分の時間として day.categoryMin に計上。計上したら区分を返す */
+function addCategoryMin(day, now, combinedCal) {
+  const kind = calendarLib.activeKindAt(combinedCal || dayCalendar(day, day.date), now);
+  if (!kind) return null;
+  day.categoryMin = day.categoryMin || {};
+  day.categoryMin[kind] = (day.categoryMin[kind] || 0) + SAMPLE_MIN;
+  return kind;
 }
 
 let lastLearnMin = 0;
@@ -171,6 +181,13 @@ function trackWork(day, now, fg) {
         tokens: projectsLib.tokenize(text), ts: now, projectId: hit.id, weight: viaFolder ? 2 : 1
       });
     }
+    return;
+  }
+  // 案件が判定できず、案件外の予定(社内会議・撮影/ロケハン)中 → その区分として計上(推論より予定を優先)
+  const kind = addCategoryMin(day, now, combinedCal);
+  if (kind) {
+    currentWork = { projectId: null, category: kind, app: fg ? fg.app : '' };
+    flushUnclassified(day);
     return;
   }
   currentWork = { projectId: null, app: fg ? fg.app : '' };
@@ -330,6 +347,7 @@ async function savePolicy(next) {
 function privateReason(now, key, fg, day) {
   const p = pol();
   if ((settings().privateUntil || 0) > now) return 'mode';                // C) 私用モード
+  if (day && meetingsLib.openMeeting(day.calendar)) return null;          // 社内会議を記録中は仕事(明示操作を優先)
   if (policyLib.privateAppHit(fg, p)) return 'app';                       // B) 私用アプリ・サイト
   if (policyLib.inWorkWindow(now, key, p)) return null;                   // 勤務時間帯は従来どおり
   // A) 時間外・休日は「仕事の証拠」がある時だけ稼働
@@ -409,10 +427,31 @@ function persistInterval(day) {
   else day.intervals.push({ ...currentInterval });
 }
 
-/** ICSインポート分 + 共有カレンダー(自分に関係する予定)を結合 */
+/** この端末の利用者ID(チーム未設定時の予定作成者ID)。初回に生成して保存 */
+function localUserId() {
+  const s = settings();
+  if (!s.localUserId) { s.localUserId = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); store.save(); }
+  return s.localUserId;
+}
+/** 予定の作成者情報: チーム同期中はそのチームの memberId、未設定ならローカルID */
+function calCreator() {
+  const sy = settings().sync || {};
+  const id = (sy.enabled && sy.memberId) || localUserId();
+  const used = settings().calCreatorIds = settings().calCreatorIds || [];
+  if (!used.includes(id)) used.push(id); // チーム脱退後も自分の予定を本人として扱えるよう記録
+  return { id, name: settings().userName };
+}
+/** 本人判定用: ローカルID + 参加した全チームの memberId(チーム参加前に作った予定も本人として編集できる) */
+function calMe() {
+  const s = settings();
+  const ids = [localUserId(), (s.sync || {}).memberId, ...(s.teamProfiles || []).map(t => t.memberId), ...(s.calCreatorIds || [])].filter(Boolean);
+  return { ids: [...new Set(ids)], name: s.userName };
+}
+
+/** ICSインポート分・突発の社内会議(記録中は終了=今) + 共有カレンダー(自分に関係する予定)を結合 */
 function dayCalendar(day, key) {
   return [
-    ...(day.calendar || []),
+    ...meetingsLib.forEngine(day.calendar, Date.now(), meetingsLib.MAX_MIN, SAMPLE_MS),
     ...calendarLib.eventsForEngine(store.data.calEvents, key, settings().userName, store.data.projects)
   ];
 }
@@ -420,8 +459,13 @@ function dayCalendar(day, key) {
 function reestimate(key) {
   const day = store.day(key);
   const prev = day.estimation;
+  const calendar = dayCalendar(day, key);
+  // 突発の社内会議がPC稼働の範囲の外へはみ出す分(会議から直帰した等)も勤務に含める
+  const nowTs = Date.now();
+  const spans = calendar.filter(meetingsLib.isAdhoc).map(ev => ({ s: ev.s, e: Math.min(ev.e, nowTs) }));
+  const extra = meetingsLib.extraIntervals(spans, day.intervals);
   day.estimation = engine.estimate(
-    { ...day, calendar: dayCalendar(day, key) }, store.data.rules, settings());
+    { ...day, intervals: [...(day.intervals || []), ...extra], calendar }, store.data.rules, settings());
   if (!prev && day.estimation.start) logEvent(day, `始業を検知(${engine.fmtTime(day.estimation.start)} PC稼働)`);
   return day.estimation;
 }
@@ -437,6 +481,7 @@ function pushUpdate() {
 function finalizeDay(key, stale = false) {
   const day = store.day(key);
   if (day.status !== 'recording') return;
+  autoCloseMeeting(day, key, '日付が変わったため自動終了'); // 念のため(通常は closeStaleMeetings で終了済み)
   reestimate(key);
   day.status = 'pending';
   const est = day.estimation;
@@ -532,9 +577,13 @@ async function sample() {
       const prev = store.day(currentKey);
       if (currentInterval) { persistInterval(prev); currentInterval = null; }
       flushUnclassified(prev);
+      closeStaleMeetings(key, now, false); // 終了し忘れの社内会議は前日のうちに閉じる(翌日へまたがせない)
       finalizeDay(currentKey);
     }
-    if (key !== currentKey) finalizeStaleDays(key); // 起動直後・日付変更時に取りこぼしを確定
+    if (key !== currentKey) {
+      if (!currentKey) closeStaleMeetings(key, now, true); // 起動直後: 前回から残っている社内会議を整理
+      finalizeStaleDays(key); // 起動直後・日付変更時に取りこぼしを確定
+    }
     currentKey = key;
     const day = store.day(key);
 
@@ -571,7 +620,11 @@ async function sample() {
     } else if (!active) {
       flushUnclassified(day);
       currentWork = null;
+      // 無操作(私用判定ではない)でも、案件外の予定中はPCを離れて会議・撮影している時間として区分に計上
+      // (突発の社内会議を記録中は trackAdhocMeeting が計上するので二重に数えない)
+      if (!inputActive && settings().trackWork && !meetingsLib.openMeeting(day.calendar)) addCategoryMin(day, now);
     }
+    trackAdhocMeeting(day, now, active);
 
     reestimate(key);
     store.save();
@@ -592,6 +645,211 @@ function startTracker() {
 function noteSystem(msg) {
   if (!currentKey) return;
   logEvent(store.day(currentKey), msg);
+}
+
+// ---- 突発の社内会議(今日の勤務 / トレイの 開始・終了) -----------------------
+// 記録は本人の day.calendar に {adhoc:true} の予定として保存(チーム共有カレンダーには載せない)。
+// 記録中(open)は終了=今として推定エンジン・会議判定・区分計上に効く。詳細は src/meetings.js
+const MEETING_MAX_MS = meetingsLib.MAX_MIN * 60000;
+
+function todayKeyNow() { return currentKey || engine.dayKey(Date.now(), settings().dayStartHour); }
+/** 今日の記録中の社内会議(日データを新規作成しない) */
+function todayOpenMeeting() {
+  const d = store && store.data.days[todayKeyNow()];
+  return d ? meetingsLib.openMeeting(d.calendar) : null;
+}
+function meetingProject(mt) {
+  return mt.projectId ? store.data.projects.find(p => p.id === mt.projectId) || null : null;
+}
+function meetingLabel(mt) {
+  const p = meetingProject(mt);
+  return p ? `社内会議[${p.code}]` : '社内会議';
+}
+
+/**
+ * この会議のために計上した分数を delta 分だけ増減(削除・時刻修正用)。減らすのは計上済みの分まで。
+ * 計上先: 会議時間(meetingMin) と、案件(projectMin) または 社内会議（案件外）(categoryMin.internal)
+ */
+function adjustMeetingCredit(day, mt, delta) {
+  const c = mt.credit = mt.credit || { meetingMin: 0, min: 0 };
+  const dm = Math.max(-c.meetingMin, delta);
+  c.meetingMin += dm;
+  day.meetingMin = Math.max(0, (day.meetingMin || 0) + dm);
+  const db = Math.max(-c.min, delta);
+  c.min += db;
+  const p = meetingProject(mt);
+  if (p) {
+    day.projectMin = day.projectMin || {};
+    day.projectMin[p.id] = Math.max(0, (day.projectMin[p.id] || 0) + db);
+  } else {
+    day.categoryMin = day.categoryMin || {};
+    day.categoryMin.internal = Math.max(0, (day.categoryMin.internal || 0) + db);
+  }
+}
+
+/** 会議を end で終了して記録。1分未満は記録せず取り消す。記録したエントリ(取り消し時は null)を返す */
+function closeMeeting(day, mt, end, how) {
+  mt.e = Math.max(mt.s, end);
+  delete mt.open; delete mt.seenAt;
+  if (!meetingsLib.recordable(mt.s, mt.e)) {
+    adjustMeetingCredit(day, mt, -Infinity);
+    day.calendar = (day.calendar || []).filter(ev => ev !== mt);
+    logEvent(day, `${meetingLabel(mt)}(${engine.fmtTime(mt.s)}〜)は${meetingsLib.MIN_RECORD_MIN}分未満のため記録しませんでした`);
+    return null;
+  }
+  const min = Math.round((mt.e - mt.s) / 60000);
+  logEvent(day, `${meetingLabel(mt)} ${engine.fmtTime(mt.s)}〜${engine.fmtTime(mt.e)}（${min}分）を記録${how ? `(${how})` : ''}`);
+  return mt;
+}
+
+/** 終了し忘れの会議を「もっともらしい時刻」(開始+上限 / 最後の記録・稼働 / 勤務日の終わり の早い方)で閉じる */
+function autoCloseMeeting(day, key, how) {
+  const mt = meetingsLib.openMeeting(day.calendar);
+  if (!mt) return null;
+  const end = meetingsLib.plausibleEnd(mt, day.intervals, meetingsLib.dayBounds(key, settings().dayStartHour).end);
+  return { mt, rec: closeMeeting(day, mt, end, how) };
+}
+
+/**
+ * 起動直後・日付変更時: 記録中のまま残った社内会議を閉じる。
+ * 今日の会議は、アップデート等の短い再起動(最後の記録から RESUME_GRACE_MIN 分以内)なら継続する。
+ */
+function closeStaleMeetings(todayKey, now, startup) {
+  const closed = [];
+  for (const [k, d] of Object.entries(store.data.days)) {
+    const mt = meetingsLib.openMeeting(d.calendar);
+    if (!mt || k > todayKey) continue;
+    if (k === todayKey) {
+      if (!startup) continue;
+      if (now - (mt.seenAt || mt.s) <= meetingsLib.RESUME_GRACE_MIN * 60000 && now - mt.s < MEETING_MAX_MS) {
+        logEvent(d, `${meetingLabel(mt)}(${engine.fmtTime(mt.s)}〜)の記録を継続します(アプリ再起動)`);
+        continue;
+      }
+    }
+    const r = autoCloseMeeting(d, k, k === todayKey ? 'アプリ再起動のため自動終了' : '日付が変わったため自動終了');
+    if (k !== todayKey && d.status !== 'recording') reestimate(k); // 確定済みの日も推定を更新(記録中の日は確定処理で再計算)
+    if (r && r.rec) closed.push(r.rec);
+  }
+  if (closed.length) {
+    const m = closed[0];
+    notify('社内会議を自動で終了しました',
+      `終了し忘れの社内会議を ${engine.fmtTime(m.s)}〜${engine.fmtTime(m.e)} として記録しました。実際と違う場合は修正してください。`);
+    store.save();
+    if (tray) buildTrayMenu();
+  }
+}
+
+/** サンプルごと: 記録中の会議の時間を会議・区分(または選んだ案件)に計上。上限を超えたら自動終了 */
+function trackAdhocMeeting(day, now, active) {
+  const mt = meetingsLib.openMeeting(day.calendar);
+  if (!mt) return;
+  if (now - mt.s >= MEETING_MAX_MS) {
+    const rec = closeMeeting(day, mt, mt.s + MEETING_MAX_MS, `${meetingsLib.MAX_MIN / 60}時間を超えたため自動終了`);
+    if (rec) notify('社内会議を自動で終了しました',
+      `${engine.fmtTime(rec.s)}に開始した社内会議が${meetingsLib.MAX_MIN / 60}時間を超えたため、${engine.fmtTime(rec.e)}で終了として記録しました。実際の終了時刻と違う場合は「今日の勤務」で修正してください。`);
+    buildTrayMenu();
+    return;
+  }
+  mt.seenAt = now;
+  const c = mt.credit = mt.credit || { meetingMin: 0, min: 0 };
+  const s = settings();
+  if (active && s.trackWork) {
+    // trackWork() が予定(会議・社内会議区分/案件)として計上済み。会議に入った分だけ控えておく
+    // (画面のタイトル等で別の案件が判定された分は、その案件の作業として計上される = 案件優先のルール)
+    if (s.detectMeetings === false) day.meetingMin = (day.meetingMin || 0) + SAMPLE_MIN; // 明示の会議は設定に関係なく会議時間に含める
+    c.meetingMin += SAMPLE_MIN;
+    const w = currentWork;
+    if (w && (mt.projectId ? w.projectId === mt.projectId : w.category === 'internal')) c.min += SAMPLE_MIN;
+    return;
+  }
+  // 無操作(会議室などでPCを離れている)/ 案件トラッキングがオフ → ここで計上
+  day.meetingMin = (day.meetingMin || 0) + SAMPLE_MIN;
+  c.meetingMin += SAMPLE_MIN;
+  const p = meetingProject(mt);
+  if (p) {
+    day.projectMin[p.id] = (day.projectMin[p.id] || 0) + SAMPLE_MIN;
+    if (!active) currentWork = { projectId: p.id, code: p.code, name: p.name, via: 'calendar', app: '' };
+  } else {
+    day.categoryMin = day.categoryMin || {};
+    day.categoryMin.internal = (day.categoryMin.internal || 0) + SAMPLE_MIN;
+    if (!active) currentWork = { projectId: null, category: 'internal', app: '' };
+  }
+  c.min += SAMPLE_MIN;
+}
+
+function afterMeetingChange(key) {
+  reestimate(key);
+  store.save();
+  buildTrayMenu(); updateTray(); pushUpdate();
+}
+
+/** 開始(今の時刻)。projectId を選んだ場合はその案件の会議として計上 */
+function startMeeting(projectId) {
+  const now = Date.now();
+  const key = todayKeyNow();
+  const day = store.day(key);
+  day.calendar = day.calendar || [];
+  const cur = meetingsLib.openMeeting(day.calendar);
+  if (cur) return { ok: false, error: `社内会議はすでに記録中です(${engine.fmtTime(cur.s)}〜)` };
+  let p = null;
+  if (projectId) {
+    p = store.data.projects.find(x => x.id === projectId && x.active !== false && (x.status || 'active') === 'active');
+    if (!p) return { ok: false, error: '選んだ案件が見つかりません(削除・納品完了の可能性があります)' };
+  }
+  if ((settings().privateUntil || 0) > now) { // 会議 = 仕事なので私用モードは終了
+    settings().privateUntil = 0;
+    logEvent(day, '私用モードを解除(社内会議を開始)');
+  }
+  const mt = meetingsLib.createMeeting(now, p);
+  day.calendar.push(mt);
+  logEvent(day, `${meetingLabel(mt)}を開始(${engine.fmtTime(now)}〜)`);
+  afterMeetingChange(key);
+  return { ok: true, s: mt.s };
+}
+
+/** 終了(今の時刻)。記録した時間帯を返す */
+function endMeeting() {
+  const key = todayKeyNow();
+  const day = store.data.days[key];
+  const mt = day && meetingsLib.openMeeting(day.calendar);
+  if (!mt) return { ok: false, error: '記録中の社内会議はありません' };
+  const rec = closeMeeting(day, mt, meetingsLib.effectiveEnd(mt, Date.now()), '');
+  afterMeetingChange(key);
+  return rec ? { ok: true, recorded: true, s: rec.s, e: rec.e, min: Math.round((rec.e - rec.s) / 60000) } : { ok: true, recorded: false };
+}
+
+/** 今日の会議だけ、本人が削除/時刻修正できる */
+function findTodayMeeting(key, id) {
+  if (key !== todayKeyNow()) return { error: '修正・削除できるのは今日の社内会議だけです(過去の日は履歴タブの「修正」を使ってください)' };
+  const day = store.data.days[key];
+  const mt = day && (day.calendar || []).find(ev => meetingsLib.isAdhoc(ev) && ev.id === id);
+  if (!mt) return { error: '社内会議の記録が見つかりません' };
+  return { day, mt };
+}
+function deleteMeeting(key, id) {
+  const f = findTodayMeeting(key, id);
+  if (f.error) return { ok: false, error: f.error };
+  const { day, mt } = f;
+  adjustMeetingCredit(day, mt, -Infinity);
+  day.calendar = day.calendar.filter(ev => ev !== mt);
+  logEvent(day, `${meetingLabel(mt)} ${engine.fmtTime(mt.s)}〜${mt.open ? '(記録中)' : engine.fmtTime(mt.e)} の記録を削除`);
+  afterMeetingChange(key);
+  return { ok: true };
+}
+function updateMeeting(key, id, sMin, eMin) {
+  const f = findTodayMeeting(key, id);
+  if (f.error) return { ok: false, error: f.error };
+  const { day, mt } = f;
+  if (mt.open) return { ok: false, error: '記録中の会議は「社内会議 終了」を押してから修正してください' };
+  const v = meetingsLib.validateEdit(key, sMin, eMin, Date.now(), settings().dayStartHour);
+  if (v.error) return { ok: false, error: v.error };
+  const before = `${engine.fmtTime(mt.s)}〜${engine.fmtTime(mt.e)}`;
+  // 長さの差分だけ 会議時間・区分(案件) の計上も増減(短くする場合は計上済みの分まで)
+  adjustMeetingCredit(day, mt, Math.round((v.e - v.s) / 60000) - Math.round((mt.e - mt.s) / 60000));
+  mt.s = v.s; mt.e = v.e;
+  logEvent(day, `${meetingLabel(mt)}の時刻を修正(${before} → ${engine.fmtTime(mt.s)}〜${engine.fmtTime(mt.e)})`);
+  afterMeetingChange(key);
+  return { ok: true };
 }
 
 // ---- Firebaseチーム同期(複数チーム対応) --------------------------------
@@ -849,7 +1107,8 @@ function buildState() {
     days,
     rules: store.data.rules,
     projects: store.data.projects,
-    calEvents: (store.data.calEvents || []).filter(ev => !ev.deleted),
+    calEvents: (() => { const me = calMe(); return (store.data.calEvents || []).filter(ev => !ev.deleted)
+      .map(ev => ({ ...ev, canEdit: calendarLib.canEdit(ev, me) })); })(),
     currentWork,
     learnN: store.data.learnStats ? store.data.learnStats.n : 0,
     team: store.data.team,
@@ -862,6 +1121,7 @@ function buildState() {
     adminUnlocked: adminUnlocked(),
     adminUntil,
     privateUntil: settings().privateUntil || 0,
+    meetingMaxMin: meetingsLib.MAX_MIN,
     appVersion: app.getVersion(),
     update: updateState,
     holidays: [...recoruLib.HOLIDAYS],
@@ -881,8 +1141,15 @@ function buildState() {
 
 // ---- ウィンドウ / トレイ ------------------------------------------------
 function createWindow() {
+  // 画面の作業領域に合わせて大きめに開く(13インチMacBook ≒1440x900 でも収まる)
+  let width = 1280, height = 840;
+  try {
+    const wa = screen.getPrimaryDisplay().workAreaSize;
+    width = Math.max(960, Math.min(1400, Math.round(wa.width * 0.92)));
+    height = Math.max(640, Math.min(920, Math.round(wa.height * 0.92)));
+  } catch (e) { /* 取得できない場合は既定値 */ }
   win = new BrowserWindow({
-    width: 1180, height: 780, minWidth: 900, minHeight: 600,
+    width, height, minWidth: 960, minHeight: 640, center: true,
     title: '全自動勤怠管理くん',
     backgroundColor: '#f5f7f6',
     icon: path.join(__dirname, 'assets/icon.png'),
@@ -906,7 +1173,7 @@ function updateTray() {
     if (currentKey) logEvent(store.day(currentKey), '私用モードが終了しました(自動)');
     buildTrayMenu();
   }
-  const status = (settings().privateUntil || 0) > Date.now() ? '私用モード' : currentInterval ? '記録中' : '待機中';
+  const status = (settings().privateUntil || 0) > Date.now() ? '私用モード' : todayOpenMeeting() ? '社内会議中' : currentInterval ? '記録中' : '待機中';
   tray.setToolTip(`全自動勤怠管理くん ${status}` + (est && est.start ? ` | ${engine.fmtTime(est.start)}〜 稼働 ${engine.fmtDur(est.workMin)}` : ''));
 }
 
@@ -954,6 +1221,9 @@ function setPrivate(minutes) {
   const s = settings();
   const day = currentKey ? store.day(currentKey) : null;
   if (minutes > 0) {
+    // 私用モード = 仕事ではない → 記録中の社内会議は今の時刻で終了
+    const mt = day && meetingsLib.openMeeting(day.calendar);
+    if (mt) { closeMeeting(day, mt, meetingsLib.effectiveEnd(mt, Date.now()), '私用モードを開始したため終了'); reestimate(currentKey); }
     s.privateUntil = Date.now() + minutes * 60000;
     if (day) logEvent(day, `私用モードを開始(${engine.fmtTime(s.privateUntil)}まで)`);
   } else {
@@ -967,12 +1237,23 @@ function buildTrayMenu() {
   if (!tray) return;
   const until = settings().privateUntil || 0;
   const on = until > Date.now();
+  const mt = todayOpenMeeting();
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '全自動勤怠管理くんを開く', click: () => { win.show(); win.focus(); } },
     { type: 'separator' },
     on
       ? { label: `私用モード中(${engine.fmtTime(until)}まで)— 解除する`, click: () => setPrivate(0) }
       : { label: '私用モード(この間は記録しない)', submenu: [30, 60, 120, 240].map(m => ({ label: `${m < 60 ? m + '分' : m / 60 + '時間'}`, click: () => setPrivate(m) })) },
+    mt
+      ? { label: `社内会議を終了(${engine.fmtTime(mt.s)}〜)`, click: () => {
+        const r = endMeeting();
+        if (r.ok) notify('社内会議を終了しました', r.recorded ? `${engine.fmtTime(r.s)}〜${engine.fmtTime(r.e)}(${r.min}分)を勤務として記録しました。` : '1分未満のため記録しませんでした。');
+      } }
+      : { label: '社内会議を開始', click: () => {
+        const r = startMeeting(null);
+        if (r.ok) notify('社内会議を開始しました', `終わったらトレイメニューか「今日の勤務」の「社内会議 終了」を押してください(${meetingsLib.MAX_MIN / 60}時間で自動終了)。`);
+        else notify('社内会議を開始できません', r.error);
+      } },
     { type: 'separator' },
     { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
     ...(updateState.status === 'downloaded'
@@ -999,6 +1280,7 @@ function registerIpc() {
     // 検知パラメータは会社ポリシーで固定(総管理者モードでも、ここではなくポリシー保存で変更する)
     for (const k of Object.keys(policyLib.DEFAULT_PARAMS)) delete patch[k];
     delete patch.privateUntil;
+    delete patch.localUserId; delete patch.calCreatorIds; // 予定の本人判定に使うIDは画面から変更させない
     Object.assign(store.data.settings, patch);
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
@@ -1027,6 +1309,11 @@ function registerIpc() {
   // C) 私用モード(minutes=0で解除)
   ipcMain.handle('update:install', () => { installUpdateNow(); return { ok: true }; });
   ipcMain.handle('private:set', (e, minutes) => { setPrivate(minutes); return buildState(); });
+  // 突発の社内会議(開始/終了/削除/時刻修正)。記録は本人の day.calendar のみ(チーム共有カレンダーには載せない)
+  ipcMain.handle('meeting:start', (e, { projectId } = {}) => ({ ...startMeeting(projectId || null), state: buildState() }));
+  ipcMain.handle('meeting:end', () => ({ ...endMeeting(), state: buildState() }));
+  ipcMain.handle('meeting:delete', (e, { key, id } = {}) => ({ ...deleteMeeting(key, id), state: buildState() }));
+  ipcMain.handle('meeting:update', (e, { key, id, sMin, eMin } = {}) => ({ ...updateMeeting(key, id, sMin, eMin), state: buildState() }));
 
   // 総管理者
   ipcMain.handle('admin:setup', async (e, password) => {
@@ -1140,7 +1427,8 @@ function registerIpc() {
   // レコル取込用CSV(提出・承認済みの日のみ)。範囲 [from,to] は YYYY-MM-DD
   ipcMain.handle('recoru:csv', (e, { from, to }) => {
     const rows = [recoruLib.IMPORT_HEADERS];
-    const add = (uid, days) => {
+    // 名前 = 表示名、ユーザID = レコルのユーザID(未設定なら空欄。メモに「ユーザID未設定」が付く)
+    const add = (name, uid, days) => {
       for (const k of Object.keys(days).sort()) {
         if (k < from || k > to) continue;
         const d = days[k];
@@ -1148,15 +1436,27 @@ function registerIpc() {
         const est = recoruLib.recordOf(d);
         if (!est || est.start == null) continue;
         const reasons = recoruLib.reviewReasons(k, est, { longMin: settings().reviewLongMin || 720 });
-        rows.push(recoruLib.importRow(uid, k, est, ['全自動勤怠管理くん', ...reasons].join(' / ')));
+        rows.push(recoruLib.importRow(name, uid, k, est, ['全自動勤怠管理くん', ...reasons].join(' / ')));
       }
     };
-    add((settings().recoruUserId || '').trim() || settings().userName, store.data.days);
+    add(settings().userName, (settings().recoruUserId || '').trim(), store.data.days);
     const myId = (settings().sync || {}).memberId;
     for (const m of ((store.data.remoteTeam && store.data.remoteTeam.members) || [])) {
-      if (m.id !== myId) add(m.recoruUserId || m.name, m.days || {});
+      if (m.id !== myId) add(m.name, (m.recoruUserId || '').trim(), m.days || {});
     }
     return { rows: rows.length - 1, csv: recoruLib.toCSV(rows) };
+  });
+
+  // 勤怠履歴CSV(履歴タブ)。本人の全日付から [from,to](YYYY-MM-DD、空なら制限なし)を出力。
+  // レンダラーは直近62日しか持たないため、メインプロセスで全データから作る
+  ipcMain.handle('history:csv', (e, { from, to } = {}) => {
+    const data = recoruLib.historyRows(store.data.days, { from: from || '', to: to || '', statusLabel: STATUS_LABEL });
+    const csv = recoruLib.toCSV([recoruLib.HISTORY_HEADERS, ...data]);
+    const keyOf = (r) => r[0].replace(/\//g, '-');
+    return {
+      rows: data.length, csv, name: settings().userName || '',
+      from: from || (data.length ? keyOf(data[0]) : ''), to: to || (data.length ? keyOf(data[data.length - 1]) : '')
+    };
   });
 
   // 要確認の工数(ID衝突修復で振り分けできなかった分)を案件へ割り当て
@@ -1302,24 +1602,34 @@ function registerIpc() {
     return buildState();
   });
 
-  // 共有カレンダー
+  // 共有カレンダー(編集・削除は登録者本人のみ。UIだけでなくここでも検証する)
   ipcMain.handle('cal:add', (e, ev) => {
-    store.data.calEvents.push({
-      id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      date: ev.date, sMin: ev.sMin, eMin: ev.eMin,
-      title: String(ev.title || '予定').slice(0, 80),
-      projectId: ev.projectId || null,
-      members: ev.members || [],
-      createdBy: settings().userName,
-      updatedAt: Date.now(), deleted: false
-    });
+    const f = calendarLib.sanitizeInput(ev, store.data.projects.map(p => p.id));
+    if (f.error) return { ok: false, error: f.error };
+    store.data.calEvents.push(calendarLib.createEvent(f, calCreator()));
+    if (currentKey) reestimate(currentKey);
+    store.save(); pushUpdate();
+    return buildState();
+  });
+  ipcMain.handle('cal:update', (e, { id, patch }) => {
+    const idx = store.data.calEvents.findIndex(ev => ev.id === id && !ev.deleted);
+    if (idx < 0) return { ok: false, error: '予定が見つかりません(削除された可能性があります)' };
+    const cur = store.data.calEvents[idx];
+    if (!calendarLib.canEdit(cur, calMe())) return { ok: false, error: '予定を修正できるのは登録者本人だけです' };
+    const f = calendarLib.sanitizeInput({ ...cur, ...(patch || {}) }, store.data.projects.map(p => p.id));
+    if (f.error) return { ok: false, error: f.error };
+    store.data.calEvents[idx] = calendarLib.applyEdit(cur, f, calCreator());
     if (currentKey) reestimate(currentKey);
     store.save(); pushUpdate();
     return buildState();
   });
   ipcMain.handle('cal:delete', (e, id) => {
     const ev = store.data.calEvents.find(ev => ev.id === id);
-    if (ev) { ev.deleted = true; ev.updatedAt = Date.now(); }
+    // 削除も登録者本人のみ(作成者不明の旧データ整理用に、総管理者モード中は削除可)
+    if (ev && !calendarLib.canEdit(ev, calMe()) && !adminUnlocked()) {
+      return { ok: false, error: '予定を削除できるのは登録者本人だけです' };
+    }
+    if (ev) { ev.deleted = true; ev.updatedAt = Math.max(Date.now(), (ev.updatedAt || 0) + 1); ev.updatedBy = settings().userName; }
     if (currentKey) reestimate(currentKey);
     store.save(); pushUpdate();
     return buildState();

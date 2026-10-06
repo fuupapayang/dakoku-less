@@ -14,6 +14,10 @@ const MODES = [
   { id: 'strict', name: 'きっちり', desc: '安定した日のみ自動提出。微妙な日は確認します。' },
   { id: 'manual', name: 'マニュアル', desc: 'すべて確認してから提出。自動提出しません。' }
 ];
+/** 案件外の予定区分(src/calendar.js の EVENT_KINDS と揃える)。カレンダー登録・今日の工数内訳で共通利用 */
+const EVENT_KINDS = { internal: '社内会議（案件外）', shoot: '撮影・ロケハン' };
+const KIND_COLORS = { internal: '#3577d4', shoot: '#8a5cd0' };
+const kindLabel = (k) => EVENT_KINDS[k] || '';
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
 function fmtTime(ts) {
@@ -29,6 +33,13 @@ function fmtDate(key) {
   const [y, m, d] = key.split('-').map(Number);
   const wd = WD[new Date(y, m - 1, d).getDay()];
   return `${m}/${d} (${wd})`;
+}
+/** ms タイムスタンプ → YYYY/MM/DD(未設定は '-') */
+function fmtYMD(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  if (isNaN(d)) return '-';
+  return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
 }
 function hm(min) { return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`; }
 function toast(msg) {
@@ -68,7 +79,8 @@ function timelineSegs(est) {
   return segs;
 }
 
-function timelineHTML(est) {
+/** marks: 帯の上に重ねて表示する時間帯 [{s,e,label}](突発の社内会議) */
+function timelineHTML(est, marks = []) {
   if (!est || est.start == null) return '<div class="muted">まだ稼働が検知されていません</div>';
   const segs = timelineSegs(est);
   const d0 = new Date(est.start);
@@ -82,6 +94,10 @@ function timelineHTML(est) {
     const l = x(s.s), w = Math.max(0.4, x(s.e) - l);
     bars += `<div class="tl-seg ${esc(s.kind)}" style="left:${l}%;width:${w}%" title="${esc(s.label || s.kind)} ${fmtTime(s.s)}〜${fmtTime(s.e)}"></div>`;
   }
+  for (const m of marks) {
+    const l = x(m.s), w = Math.max(0.4, x(m.e) - l);
+    bars += `<div style="position:absolute;top:2px;height:5px;left:${l}%;width:${w}%;background:${KIND_COLORS.internal};border-radius:3px" title="${esc(m.label)} ${fmtTime(m.s)}〜${fmtTime(m.e)}"></div>`;
+  }
   const ticks = [];
   for (let h = fromH; h <= toH; h += Math.ceil((toH - fromH) / 5)) ticks.push(`<span>${h}:00</span>`);
   return `<div class="timeline">${bars}</div><div class="tl-axis">${ticks.join('')}</div>
@@ -90,7 +106,94 @@ function timelineHTML(est) {
       <span><i style="background:#c3cdc6"></i>休憩</span>
       <span><i style="background:var(--amber)"></i>微妙な空白</span>
       <span><i style="background:repeating-linear-gradient(45deg,#c3cdc6,#c3cdc6 3px,#aab6ad 3px,#aab6ad 6px)"></i>対象外(移動等)</span>
+      ${marks.length ? `<span><i style="background:${KIND_COLORS.internal}"></i>社内会議(ボタンで記録)</span>` : ''}
     </div>`;
+}
+
+/* 突発の社内会議(main.js の startMeeting/endMeeting。記録は本人の day.calendar の adhoc 予定) */
+function adhocMeetings(day) {
+  return ((day && day.calendar) || []).filter(ev => ev.adhoc).sort((a, b) => a.s - b.s);
+}
+function meetingProj(m) {
+  return m.projectId ? (state.projects || []).find(p => p.id === m.projectId) || null : null;
+}
+function meetingTagHTML(m) {
+  const p = meetingProj(m);
+  return p ? `<span class="tag work">${esc(p.code)}</span> ${esc(p.name)}`
+    : `<span class="tag" style="background:#eef3fb;color:${KIND_COLORS.internal}">${esc(kindLabel('internal'))}</span>`;
+}
+/** タイムラインに重ねる会議の時間帯(記録中は今まで) */
+function meetingMarks(day) {
+  return adhocMeetings(day).map(m => ({ s: m.s, e: m.open ? Math.max(m.s, Date.now()) : m.e, label: '社内会議' }))
+    .filter(m => m.e > m.s);
+}
+function meetingCardHTML(day) {
+  const list = adhocMeetings(day);
+  const open = list.find(m => m.open);
+  const maxH = (state.meetingMaxMin || 240) / 60;
+  let head;
+  if (open) {
+    const el = Math.max(0, Math.floor((Date.now() - open.s) / 60000));
+    head = `<div class="grow"><b>🗣 社内会議中（${fmtTime(open.s)}〜、経過 ${el}分）</b> ${meetingTagHTML(open)}
+        <div class="muted">PCを離れていても、この間は勤務(会議)として記録します。終了を押し忘れても${maxH}時間で自動終了します。</div></div>
+      <button class="btn sm ghost danger" data-act="meeting-del" data-id="${esc(open.id)}" title="間違えて開始した場合">取り消し</button>
+      <button class="btn primary" data-act="meeting-end">社内会議 終了</button>`;
+  } else {
+    const actives = (state.projects || []).filter(p => p.active !== false && (p.status || 'active') === 'active');
+    const sel = actives.some(p => p.id === renderToday.meetingPid) ? renderToday.meetingPid : '';
+    head = `<div class="grow"><b>突然始まった社内会議も、ボタンで勤務として記録</b>
+        <div class="muted">始まったら「開始」、終わったら「終了」。PCを離れている間も会議の時間として記録します(トレイメニューからも操作できます)。</div></div>
+      <select id="mt-proj" style="width:190px;margin:0" title="会議の時間を計上する先(案件の会議なら案件を選択)">
+        <option value="">${esc(kindLabel('internal'))}</option>
+        ${actives.map(p => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.code)} ${esc(p.name)}</option>`).join('')}
+      </select>
+      <button class="btn primary" data-act="meeting-start">社内会議 開始</button>`;
+  }
+  const done = list.filter(m => !m.open);
+  const rows = done.map(m => `<div class="rule-item">
+      <div class="grow"><b>${fmtTime(m.s)}〜${fmtTime(m.e)}</b>(${Math.round((m.e - m.s) / 60000)}分) ${meetingTagHTML(m)}</div>
+      <button class="btn sm" data-act="meeting-edit" data-id="${esc(m.id)}">時刻を修正</button>
+      <button class="btn sm ghost danger" data-act="meeting-del" data-id="${esc(m.id)}">削除</button>
+    </div>`).join('');
+  return `<div class="card" ${open ? `style="border-color:#b9cff0;background:#f3f7fd"` : ''}>
+    <div class="row">${head}</div>
+    ${rows ? `<div class="mt8"><div class="muted">今日記録した社内会議</div>${rows}</div>` : ''}
+  </div>`;
+}
+
+function openMeetingEditModal(id) {
+  const key = state.todayKey;
+  const m = adhocMeetings(state.days[key]).find(x => x.id === id && !x.open);
+  if (!m) return;
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="overlay"><div class="modal">
+    <h2>社内会議の時刻を修正</h2>
+    <div class="muted">${meetingTagHTML(m)}</div>
+    <div class="field-row mt8">
+      <label class="field">開始<input type="time" id="mt-s" value="${fmtTime(m.s)}"></label>
+      <label class="field">終了<input type="time" id="mt-e" value="${fmtTime(m.e)}"></label>
+    </div>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">キャンセル</button>
+      <button class="btn primary" data-act="mt-save">修正を保存</button>
+    </div>
+  </div></div>`;
+  // 勤務日は dayStartHour 時から翌日の同時刻まで(それより前の時刻は翌日の深夜として扱う)
+  const ds = (state.settings.dayStartHour ?? 4) * 60;
+  const toMin = (v) => { const [h, mm] = String(v || '').split(':').map(Number); const t = h * 60 + mm; return t < ds ? t + 1440 : t; };
+  root.onclick = async (e) => {
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'mt-save') {
+      const sMin = toMin($('#mt-s').value), eMin = toMin($('#mt-e').value);
+      if (!Number.isFinite(sMin) || !Number.isFinite(eMin)) { toast('時刻を入力してください'); return; }
+      const r = await window.api.updateMeeting(key, id, sMin, eMin);
+      if (!r.ok) { toast(r.error); return; }
+      state = r.state;
+      root.innerHTML = ''; root.onclick = null;
+      renderToday(); toast('社内会議の時刻を修正しました');
+    }
+  };
 }
 
 function suggestionHTML(sug, key, idx) {
@@ -182,6 +285,7 @@ function renderToday() {
     <div class="page-sub">${fmtDate(key)} ｜ ただ仕事に集中するだけで、出退勤ログをそっと整えます。</div>
     ${folderBannerHTML()}
     ${privateCardHTML(day)}
+    ${meetingCardHTML(day)}
     ${overtimeCardHTML()}
 
     <div class="card">
@@ -195,7 +299,7 @@ function renderToday() {
       <div class="big-time">${fmtTime(est && est.start)} — ${fmtTime(est && est.end)}
         <small>／ 休憩 ${fmtDur(est ? est.breakMin : null)} ／ 実働 ${fmtDur(est ? est.workMin : null)}${day && day.meetingMin ? ` ／ <span style="color:#3577d4">会議 ${fmtDur(day.meetingMin)}</span>` : ''}</small></div>
       ${day && day.correction ? '<div class="muted">✎ 手動修正が適用されています(HITL: この修正はAIの次回推定に反映されます)</div>' : ''}
-      ${timelineHTML(est)}
+      ${timelineHTML(est, meetingMarks(day))}
       <div class="row mt16">
         <button class="btn primary" data-act="submit-today" ${canSubmit ? '' : 'disabled'}>勤怠を確定・提出</button>
         <button class="btn" data-act="correct-today" ${est && est.start != null ? '' : 'disabled'}>修正する</button>
@@ -419,11 +523,38 @@ function renderHistory() {
           <input type="date" id="hist-from" value="${esc(rr.from || '')}" style="width:150px;margin:0">
           <span class="muted">〜</span>
           <input type="date" id="hist-to" value="${esc(rr.to || '')}" style="width:150px;margin:0">` : ''}
+        <button class="btn sm" data-act="csv-history" title="選択中の期間の勤怠履歴をCSVで保存">CSVダウンロード</button>
       </div>
       <table class="mt8">
       <thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>信頼度</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="8" class="muted">この期間の記録はありません</td></tr>'}</tbody>
     </table></div>`;
+}
+
+/** ms → YYYY-MM-DD(ローカル日付) */
+function keyOfTs(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** 履歴CSV: 履歴タブで選択中の期間を出力(生成はメインプロセス。レンダラーは直近62日しか持たないため) */
+async function exportHistoryCSV() {
+  const hr = historyRange();
+  const rr = renderHistory.range;
+  // 全期間は制限なし、期間指定は入力値そのまま、それ以外はプリセットの開始〜終了日
+  const from = hr.preset === 'all' ? '' : hr.preset === 'custom' ? (rr.from || '') : keyOfTs(hr.fromTs);
+  const to = hr.preset === 'all' ? '' : hr.preset === 'custom' ? (rr.to || '') : keyOfTs(hr.toTs);
+  if (from && to && from > to) { toast('開始日が終了日より後になっています'); return; }
+  if (!window.api.historyCSV) { toast('ブラウザデモではCSVダウンロードは無効です'); return; }
+  const r = await window.api.historyCSV({ from, to });
+  if (!r || !r.rows) { toast('この期間の記録はありません'); return; }
+  const safeName = String(r.name || '').replace(/[\\/:*?"<>|\s]+/g, '_') || 'user';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\ufeff' + r.csv], { type: 'text/csv' }));
+  a.download = `勤怠履歴_${safeName}_${r.from || 'all'}_${r.to || 'all'}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`勤怠履歴をCSVで保存しました(${r.rows}日分)`);
 }
 
 /* ---------- 案件 ---------- */
@@ -438,15 +569,18 @@ function workLineHTML() {
   let label;
   if (!w) label = '<span class="muted">計測待機中</span>';
   else if (w.projectId) label = `<b>${esc(projName(w.projectId))}</b> <span class="muted">(${{ code: 'コード', keyword: 'キーワード', calendar: '会議', folder: 'フォルダ', ai: 'AI', 'ai-tool': 'AIツール操作中・直前の案件を継続' }[w.via] || ''}判定${w.app ? ' ・ ' + esc(w.app) : ''})</span>`;
+  else if (w.category) label = `<b>${esc(kindLabel(w.category))}</b> <span class="muted">(カレンダー予定より${w.app ? ' ・ ' + esc(w.app) : ''})</span>`;
   else label = `<span class="muted">案件未判定${w.app ? '(' + esc(w.app) + ')' : ''}</span>`;
   return `<div class="mt8">現在の作業: ${label}</div>`;
 }
 
-function projBarsHTML(projectMin, unclassifiedMin) {
+function projBarsHTML(projectMin, unclassifiedMin, categoryMin) {
   const rows = Object.entries(projectMin || {})
     .map(([id, min]) => ({ id, min: Math.round(min) }))
     .filter(r => r.min > 0).sort((a, b) => b.min - a.min);
-  const total = rows.reduce((a, r) => a + r.min, 0) + (unclassifiedMin || 0);
+  const cats = Object.keys(EVENT_KINDS)
+    .map(k => ({ k, min: Math.round((categoryMin || {})[k] || 0) })).filter(r => r.min > 0);
+  const total = rows.reduce((a, r) => a + r.min, 0) + cats.reduce((a, r) => a + r.min, 0) + (unclassifiedMin || 0);
   if (total === 0) return '<div class="muted">まだ計測データがありません</div>';
   const bar = (label, min, cls) => `
     <div class="row" style="margin-bottom:8px">
@@ -457,6 +591,7 @@ function projBarsHTML(projectMin, unclassifiedMin) {
       <div style="width:56px;text-align:right;font-variant-numeric:tabular-nums"><b>${fmtDur(min)}</b></div>
     </div>`;
   return rows.map(r => bar(esc(projName(r.id)), r.min, 'var(--green)')).join('') +
+    cats.map(r => bar(esc(kindLabel(r.k)), r.min, KIND_COLORS[r.k])).join('') +
     (unclassifiedMin > 0 ? bar('未分類', unclassifiedMin, 'var(--amber)') : '');
 }
 
@@ -491,15 +626,18 @@ function projListCardHTML() {
   if (!showDone) list = list.filter(p => (p.status || 'active') === 'active');
   if (f === 'mine') list = list.filter(isMyProject);
   if (f === 'team') list = list.filter(p => !isMyProject(p));
-  list.sort((a, b) => String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''), 'ja') * sort.dir);
+  list.sort((a, b) => (sort.key === 'createdAt'
+    ? (a.createdAt || 0) - (b.createdAt || 0) // 登録日は数値比較(未設定は最古扱い)
+    : String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''), 'ja')) * sort.dir);
   const arrow = (k) => sort.key === k ? (sort.dir === 1 ? ' ▲' : ' ▼') : '';
   const rows = list.map(p => `
     <tr>
-      <td><b>${esc(p.code)}</b></td>
+      <td class="nowrap"><b>${esc(p.code)}</b></td>
       <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}${p.keywordsReview ? ' <span class="tag" title="ID重複の修復対象でした。キーワードが他案件と混ざっている可能性があります。編集して保存すると消えます">キーワード要確認</span>' : ''}${budgetBadge(p)}</td>
       <td>${esc(p.client || '-')}</td>
       <td>${(p.sales || []).map(esc).join('、') || '-'}</td>
       <td>${(p.makers || []).map(esc).join('、') || '-'}</td>
+      <td class="nowrap">${fmtYMD(p.createdAt)}</td>
       <td>${nextEventLabel(p.id)}</td>
       <td>${p.boxUrl ? `<button class="btn sm" data-act="box-open" data-url="${esc(p.boxUrl)}">Box</button>` : '-'}</td>
       <td>
@@ -519,15 +657,17 @@ function projListCardHTML() {
         <button class="fchip ${f === 'team' ? 'on' : ''}" data-act="plist-filter" data-f="team">チーム案件</button>
       </div>
     </div>
-    <table class="mt8">
+    <div class="table-wrap mt8"><table>
       <thead><tr>
         <th class="sortable" data-act="plist-sort" data-k="code">コード${arrow('code')}</th>
         <th class="sortable" data-act="plist-sort" data-k="name">案件名${arrow('name')}</th>
         <th class="sortable" data-act="plist-sort" data-k="client">顧客${arrow('client')}</th>
-        <th>担当営業</th><th>制作</th><th>次の予定</th><th>データ</th><th></th>
+        <th>担当営業</th><th>制作</th>
+        <th class="sortable" data-act="plist-sort" data-k="createdAt">登録日${arrow('createdAt')}</th>
+        <th>次の予定</th><th>データ</th><th></th>
       </tr></thead>
-      <tbody>${rows || `<tr><td colspan="8" class="muted">${f === 'mine' ? '担当に自分(' + esc(state.settings.userName) + ')が含まれる案件がありません' : '該当する案件がありません'}</td></tr>`}</tbody>
-    </table>
+      <tbody>${rows || `<tr><td colspan="9" class="muted">${f === 'mine' ? '担当に自分(' + esc(state.settings.userName) + ')が含まれる案件がありません' : '該当する案件がありません'}</td></tr>`}</tbody>
+    </table></div>
     <div class="row mt8">
       <span class="muted">「自分の案件」= 担当営業/制作に自分の表示名を含む案件。</span>
       <span class="grow"></span>
@@ -636,7 +776,7 @@ function renderProjects() {
 
     <div class="card">
       <h2>今日の案件別作業時間</h2>
-      ${projBarsHTML(day.projectMin, uncMin)}
+      ${projBarsHTML(day.projectMin, uncMin, day.categoryMin)}
     </div>
 
     ${unc.length ? `<div class="card"><h2>未分類の作業 <span class="tag exclude">HITL</span></h2>
@@ -649,6 +789,18 @@ function renderProjects() {
           ${b.hint ? `<button class="btn sm primary" data-act="assign-hint" data-idx="${(day.unclassified || []).indexOf(b)}" data-pid="${esc(b.hint.pid)}">候補で割り当て</button>` : ''}
           <button class="btn sm ${b.hint ? '' : 'primary'}" data-act="assign" data-idx="${(day.unclassified || []).indexOf(b)}">選んで割り当て</button>
         </div>`).join('')}</div>` : ''}
+
+    <div class="row">
+      <button class="btn" data-act="goto-tab" data-tab="projadd">＋ 案件を追加</button>
+      <span class="muted">案件の新規登録・フォルダからの一括インポートは「案件追加」メニューから行えます。</span>
+    </div>`;
+}
+
+/* ---------- 案件追加 ---------- */
+function renderProjAdd() {
+  $('#tab-projadd').innerHTML = `
+    <h1>案件追加</h1>
+    <div class="page-sub">新しい案件を登録します。登録した案件は「案件」タブの案件リストに表示されます。</div>
 
     <div class="card">
       <h2>案件を追加</h2>
@@ -672,7 +824,14 @@ function renderProjects() {
       <div class="row">
         <button class="btn primary" data-act="proj-add">案件を追加</button>
         <button class="btn" data-act="proj-import">📁 フォルダから一括インポート</button>
+        <span class="grow"></span>
+        <button class="btn ghost" data-act="goto-tab" data-tab="projects">案件リストを見る →</button>
       </div>
+      ${renderProjAdd.last ? `<div class="suggestion mt16">
+        <div class="who">追加しました</div>
+        <div>${renderProjAdd.last}</div>
+        <div class="actions"><button class="btn sm primary" data-act="goto-tab" data-tab="projects">案件タブで確認する</button></div>
+      </div>` : ''}
       <p class="muted mt8">一括インポート: 「F599_D&Dホールディングス」のような案件フォルダが並ぶ親フォルダを選ぶと、
       コード=F599、案件名・キーワード=D&Dホールディングス として自動登録します(登録済みコードはスキップ)。<br>
       運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須)。macOSでアクセシビリティを許可すると、案件フォルダ内のファイルはファイル名を問わず自動判定されます。</p>
@@ -695,8 +854,9 @@ function renderCalendarTab() {
     const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const evs = (evByDate[k] || []).sort((a, b) => a.sMin - b.sMin);
     const shown = evs.slice(0, 3).map(ev => {
-      const p = ev.projectId ? byId[ev.projectId] : null;
-      return `<div class="cal-ev ${p ? '' : 'noproj'}" title="${esc((p ? p.code + '_' : '') + ev.title)}">${hm(ev.sMin)} ${esc(p ? p.code : '')}${p ? '_' : ''}${esc(ev.title)}</div>`;
+      const pre = calEvPrefix(ev, byId);
+      const kindStyle = ev.kind ? ` style="background:#eef3fb;color:${KIND_COLORS[ev.kind] || 'var(--sub)'}"` : '';
+      return `<div class="cal-ev ${pre ? '' : 'noproj'}"${kindStyle} title="${esc(pre + ev.title)}">${hm(ev.sMin)} ${esc(pre)}${esc(ev.title)}</div>`;
     }).join('');
     cells += `<div class="cal-cell ${d.getMonth() !== st.m ? 'other' : ''} ${k === state.todayKey ? 'today-cell' : ''}"
       data-act="cal-day" data-date="${k}">
@@ -722,57 +882,89 @@ function renderCalendarTab() {
     </div>`;
 }
 
-function openDayModal(dateKey) {
+/** 予定の表示ラベル(案件コード or 案件外区分を前置) */
+function calEvPrefix(ev, byId) {
+  const p = !ev.kind && ev.projectId ? byId[ev.projectId] : null;
+  if (p) return p.code + '_';
+  return ev.kind ? kindLabel(ev.kind) + '_' : '';
+}
+
+function openDayModal(dateKey, editId) {
   const byId = Object.fromEntries((state.projects || []).map(p => [p.id, p]));
   const evs = (state.calEvents || []).filter(ev => ev.date === dateKey).sort((a, b) => a.sMin - b.sMin);
   const root = $('#modal-root');
   const actives = (state.projects || []).filter(p => p.active !== false && (p.status || 'active') === 'active');
+  // 編集モード: 登録者本人の予定だけ(main側でも検証)
+  const edit = editId ? evs.find(ev => ev.id === editId && ev.canEdit) : null;
+  // 編集中の予定の案件が非アクティブでも選択肢から消えないようにする
+  const projOpts = edit && edit.projectId && byId[edit.projectId] && !actives.some(p => p.id === edit.projectId)
+    ? [...actives, byId[edit.projectId]] : actives;
+  const selVal = edit ? (edit.kind ? 'kind:' + edit.kind : (edit.projectId || '')) : '';
   root.innerHTML = `<div class="overlay"><div class="modal">
     <h2>${fmtDate(dateKey)} の予定</h2>
     ${evs.map(ev => {
-      const p = ev.projectId ? byId[ev.projectId] : null;
-      return `<div class="rule-item">
-        <div class="grow"><b>${hm(ev.sMin)}〜${hm(ev.eMin)}</b> ${p ? `<span class="tag work">${esc(p.code)}</span>` : ''} ${esc(ev.title)}
-          <div class="meta">${ev.members && ev.members.length ? '参加: ' + ev.members.map(esc).join('、') : '全員'} ／ 作成: ${esc(ev.createdBy || '-')}</div></div>
-        <button class="btn sm ghost danger" data-act="cal-del" data-id="${esc(ev.id)}">削除</button>
+      const p = !ev.kind && ev.projectId ? byId[ev.projectId] : null;
+      const creator = ev.createdByName || ev.createdBy || '不明';
+      return `<div class="rule-item"${edit && edit.id === ev.id ? ' style="outline:2px solid var(--green);border-radius:8px"' : ''}>
+        <div class="grow"><b>${hm(ev.sMin)}〜${hm(ev.eMin)}</b> ${p ? `<span class="tag work">${esc(p.code)}</span>` : ''}${ev.kind ? `<span class="tag" style="background:#eef3fb;color:${KIND_COLORS[ev.kind] || 'var(--sub)'}">${esc(kindLabel(ev.kind))}</span>` : ''} ${esc(ev.title)}
+          <div class="meta">${ev.members && ev.members.length ? '参加: ' + ev.members.map(esc).join('、') : '全員'} ／ 登録: ${esc(creator)}${ev.updatedBy && ev.updatedAt && ev.createdAt && ev.updatedAt > ev.createdAt ? ` ／ 修正: ${esc(ev.updatedBy)} ${new Date(ev.updatedAt).toLocaleString('ja-JP')}` : ''}${ev.canEdit ? '' : ' ／ <span class="muted">閲覧のみ(修正は登録者のみ)</span>'}</div></div>
+        ${ev.canEdit ? `<button class="btn sm" data-act="cal-edit" data-id="${esc(ev.id)}">編集</button>
+        <button class="btn sm ghost danger" data-act="cal-del" data-id="${esc(ev.id)}">削除</button>` : ''}
       </div>`;
     }).join('') || '<div class="muted">予定はありません</div>'}
-    <h2 class="mt16">予定を追加</h2>
+    <h2 class="mt16">${edit ? '予定を修正' : '予定を追加'}</h2>
+    ${edit ? `<label class="field">日付<input type="date" id="ce-date" value="${esc(edit.date)}"></label>` : ''}
     <div class="field-row">
-      <label class="field">開始<input type="time" id="ce-from" value="10:00"></label>
-      <label class="field">終了<input type="time" id="ce-to" value="11:00"></label>
+      <label class="field">開始<input type="time" id="ce-from" value="${edit ? hm(edit.sMin) : '10:00'}"></label>
+      <label class="field">終了<input type="time" id="ce-to" value="${edit ? hm(edit.eMin) : '11:00'}"></label>
     </div>
     <div class="field-row">
-      <label class="field">タイトル<input type="text" id="ce-title" placeholder="例: 定例会議、納品、先方訪問"></label>
+      <label class="field">タイトル<input type="text" id="ce-title" placeholder="例: 定例会議、納品、先方訪問" value="${edit ? esc(edit.title) : ''}"></label>
       <label class="field">案件<select id="ce-proj"><option value="">(案件なし)</option>
-        ${actives.map(p => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join('')}</select></label>
+        <optgroup label="案件外">
+          ${Object.entries(EVENT_KINDS).map(([k, label]) => `<option value="kind:${k}">${esc(label)}</option>`).join('')}
+        </optgroup>
+        <optgroup label="案件">
+          ${projOpts.map(p => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join('')}
+        </optgroup></select></label>
     </div>
-    <label class="field">参加メンバー(カンマ区切り・空欄=チーム全員)<input type="text" id="ce-members" placeholder="例: 佐藤, 田中"></label>
+    <label class="field">参加メンバー(カンマ区切り・空欄=チーム全員)<input type="text" id="ce-members" placeholder="例: 佐藤, 田中" value="${edit ? esc((edit.members || []).join(', ')) : ''}"></label>
     <div class="foot">
+      ${edit ? '<button class="btn" data-act="ce-cancel">修正をやめる</button>' : ''}
       <button class="btn" data-act="modal-close">閉じる</button>
-      <button class="btn primary" data-act="ce-save">予定を追加</button>
+      <button class="btn primary" data-act="ce-save">${edit ? '修正を保存' : '予定を追加'}</button>
     </div>
   </div></div>`;
+  $('#ce-proj').value = selVal;
+  const done = (r, msg) => {
+    if (r && r.error) { toast(r.error); return false; }
+    state = r;
+    root.innerHTML = ''; root.onclick = null;
+    renderCalendarTab(); toast(msg);
+    return true;
+  };
   root.onclick = async (e) => {
     const act = e.target.dataset.act;
     if (act === 'modal-close' || e.target.classList.contains('overlay')) { root.innerHTML = ''; root.onclick = null; return; }
+    if (act === 'cal-edit') { openDayModal(dateKey, e.target.dataset.id); return; }
+    if (act === 'ce-cancel') { openDayModal(dateKey); return; }
     if (act === 'cal-del') {
-      state = await window.api.deleteCalEvent(e.target.dataset.id);
-      root.innerHTML = ''; root.onclick = null;
-      renderCalendarTab(); toast('予定を削除しました');
+      done(await window.api.deleteCalEvent(e.target.dataset.id), '予定を削除しました');
     }
     if (act === 'ce-save') {
       const toMin = (v) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
+      if (!$('#ce-from').value || !$('#ce-to').value) { toast('開始・終了を入力してください'); return; }
       const sMin = toMin($('#ce-from').value), eMin = toMin($('#ce-to').value);
       const title = $('#ce-title').value.trim();
-      if (!title) { toast('タイトルを入力してください'); return; }
+      const sel = $('#ce-proj').value;
+      const kind = sel.startsWith('kind:') ? sel.slice(5) : null;
+      if (!title && !kind) { toast('タイトルを入力してください'); return; }
       if (eMin <= sMin) { toast('終了は開始より後にしてください'); return; }
       const members = $('#ce-members').value.split(/[,、]/).map(s => s.trim()).filter(Boolean);
-      state = await window.api.addCalEvent({
-        date: dateKey, sMin, eMin, title, projectId: $('#ce-proj').value || null, members
-      });
-      root.innerHTML = ''; root.onclick = null;
-      renderCalendarTab(); toast('予定を追加しました');
+      const date = edit ? ($('#ce-date').value || edit.date) : dateKey;
+      const fields = { date, sMin, eMin, title: title || kindLabel(kind), projectId: kind ? null : (sel || null), kind, members };
+      if (edit) done(await window.api.updateCalEvent(edit.id, fields), '予定を修正しました');
+      else done(await window.api.addCalEvent(fields), '予定を追加しました');
     }
   };
 }
@@ -1019,7 +1211,7 @@ function renderSettings() {
       <div class="muted">🔒 検知パラメータは会社ポリシーで固定されています(変更は総管理者のみ: 管理者ビュー →「会社ポリシー」)。</div>
       <div class="field-row">
         <label class="field">表示名<input type="text" id="st-name" value="${esc(s.userName)}"></label>
-        <label class="field">レコル用ユーザID(社員番号など・空なら表示名)<input type="text" id="st-recoru" value="${esc(s.recoruUserId || '')}" placeholder="例: 1001"></label>
+        <label class="field">レコル用ユーザID(社員番号など・空ならCSVのユーザID欄は空欄)<input type="text" id="st-recoru" value="${esc(s.recoruUserId || '')}" placeholder="例: 1001"></label>
       </div>
       <div class="row">
         <div class="toggle ${s.autoLaunch ? 'on' : ''}" data-act="autolaunch"></div>
@@ -1355,13 +1547,9 @@ function renderAdmin() {
     </div>
     <div class="card">
       <div class="row"><h2 class="grow">勤怠エクスポート(レコル取込用)</h2>
-        <select id="rep-preset2" style="width:130px;margin:0">
-          <option value="30d" ${reportRange().preset === '30d' ? 'selected' : ''}>直近30日</option>
-          <option value="thisMonth" ${reportRange().preset === 'thisMonth' ? 'selected' : ''}>今月</option>
-          <option value="lastMonth" ${reportRange().preset === 'lastMonth' ? 'selected' : ''}>先月</option>
-        </select>
-        <button class="btn sm primary" data-act="csv-recoru">レコル向けCSV出力</button></div>
-      <p class="muted mt8">出力列: ユーザID / 日付 / 勤務区分(出勤・所定休日出勤・法定休日出勤) / 開始 / 終了(翌日は25:30のような24時超え表記) / 休憩時間 / メモ。提出済み・承認済みの勤怠のみ。休日・長時間の日はメモに「要確認」理由が入ります。管理者がレコルの「打刻データCSVインポート」に取り込んでください。</p>
+        ${recoruRangeHTML()}
+        <button class="btn sm primary" data-act="csv-recoru" ${recoruRange().error ? 'disabled' : ''}>レコル向けCSV出力</button></div>
+      <p class="muted mt8">出力列: 名前 / ユーザID(設定タブの「レコル用ユーザID」。未設定の人は空欄になり、メモに「ユーザID未設定」が入ります) / 日付 / 勤務区分(出勤・所定休日出勤・法定休日出勤) / 開始 / 終了(翌日は25:30のような24時超え表記) / 休憩時間 / メモ。提出済み・承認済みの勤怠のみ。休日・長時間の日はメモに「要確認」理由が入ります。管理者がレコルの「打刻データCSVインポート」に取り込んでください。</p>
       <div class="row mt8">
         <label style="display:flex;align-items:center;gap:8px" title="準備中の機能です">
           <input type="checkbox" data-act="recoru-send-dummy" disabled> レコルへ自動送信(準備中)
@@ -1379,16 +1567,54 @@ function renderAdmin() {
     ${policyCardHTML()}`;
 }
 
-/** レコル取込用CSV: ユーザID,日付,勤務区分,開始,終了,休憩時間,メモ(生成はメインプロセスの src/recoru.js) */
+/**
+ * レコル勤怠エクスポートの期間(工数レポートの期間とは独立)。
+ * preset: thisMonth | lastMonth | 30d | custom。既定は先月(月次の取込が基本のため)
+ * @returns {from, to, label, error, preset}  from/to は YYYY-MM-DD
+ */
+function recoruRange() {
+  const r = renderAdmin.recoruRange || { preset: 'lastMonth', from: '', to: '' };
+  renderAdmin.recoruRange = r;
+  const now = new Date();
+  let from, to;
+  switch (r.preset) {
+    case 'thisMonth': from = keyOfTs(new Date(now.getFullYear(), now.getMonth(), 1)); to = keyOfTs(now); break;
+    case '30d': from = keyOfTs(Date.now() - 30 * 86400000); to = keyOfTs(now); break;
+    case 'custom': from = r.from || ''; to = r.to || ''; break;
+    default: // lastMonth
+      from = keyOfTs(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      to = keyOfTs(new Date(now.getFullYear(), now.getMonth(), 0));
+  }
+  let error = '';
+  if (!from || !to) error = '開始日と終了日を指定してください';
+  else if (from > to) error = '開始日が終了日より後になっています';
+  const label = from && to ? `${from.replace(/-/g, '/')}〜${to.replace(/-/g, '/')}` : '';
+  return { from, to, label, error, preset: r.preset };
+}
+
+function recoruRangeHTML() {
+  const rr = recoruRange();
+  const opt = (v, t) => `<option value="${v}" ${rr.preset === v ? 'selected' : ''}>${t}</option>`;
+  return `<select id="rec-preset" style="width:130px;margin:0">
+      ${opt('thisMonth', '今月')}${opt('lastMonth', '先月')}${opt('30d', '直近30日')}${opt('custom', '任意期間')}
+    </select>
+    ${rr.preset === 'custom' ? `
+      <input type="date" id="rec-from" value="${esc(rr.from)}" title="開始日" style="width:150px;margin:0">
+      <span class="muted">〜</span>
+      <input type="date" id="rec-to" value="${esc(rr.to)}" title="終了日" style="width:150px;margin:0">` : ''}
+    ${rr.error ? `<span style="color:var(--red)">${esc(rr.error)}</span>` : `<span class="muted">${esc(rr.label)}</span>`}`;
+}
+
+/** レコル取込用CSV: 名前,ユーザID,日付,勤務区分,開始,終了,休憩時間,メモ(生成はメインプロセスの src/recoru.js) */
 async function exportRecoruCSV() {
-  const { fromTs, toTs } = reportRange();
-  const key = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  const { from, to, error } = recoruRange();
+  if (error) { toast(error); return; }
   if (!window.api.recoruCSV) { toast('ブラウザデモではCSV出力は無効です'); return; }
-  const r = await window.api.recoruCSV({ from: key(fromTs), to: key(toTs) });
+  const r = await window.api.recoruCSV({ from, to });
   if (!r.rows) { toast('対象期間に提出済みの勤怠がありません'); return; }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['\ufeff' + r.csv], { type: 'text/csv' }));
-  a.download = `レコル勤怠_${key(fromTs)}_${key(toTs)}.csv`;
+  a.download = `レコル勤怠_${from}_${to}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
   toast(`レコル向けCSVを書き出しました(${r.rows}行)`);
@@ -1723,8 +1949,11 @@ document.addEventListener('click', async (e) => {
     });
     if (res.error) { toast(res.error); return; }
     state = res;
-    renderProjects(); toast('案件を追加しました');
+    // 同じページに留まり、フォームをクリアして続けて登録できるようにする
+    renderProjAdd.last = `<b>${esc(code)}</b> ${esc(name)} を案件リストに登録しました。`;
+    renderProjAdd(); toast('案件を追加しました');
   }
+  if (act === 'goto-tab') { showTab(btn.dataset.tab); return; }
   if (act === 'plist-filter') { renderProjects.filter = btn.dataset.f; renderProjects(); }
   if (act === 'plist-sort') {
     const cur = renderProjects.sort || { key: 'code', dir: 1 };
@@ -1784,7 +2013,8 @@ document.addEventListener('click', async (e) => {
     if (r.canceled) return;
     if (!r.ok) { toast(r.error || 'インポートできませんでした'); return; }
     state = await window.api.getState();
-    renderProjects();
+    if (r.added) renderProjAdd.last = `フォルダから${r.added}件の案件を登録しました。`;
+    renderTab(activeTab);
     toast(`${r.added}件の案件を登録しました` + (r.skipped ? `(既存${r.skipped}件はスキップ)` : ''));
   }
   if (act === 'assign') openAssignModal(+btn.dataset.idx);
@@ -1810,6 +2040,25 @@ document.addEventListener('click', async (e) => {
     state = await window.api.setPrivate(+btn.dataset.min);
     renderToday(); toast(+btn.dataset.min ? '私用モードにしました(この間は記録しません)' : '私用モードを解除しました');
   }
+  if (act === 'meeting-start') {
+    const sel = $('#mt-proj');
+    const wasPrivate = (state.privateUntil || 0) > Date.now();
+    const r = await window.api.startMeeting(sel ? sel.value || null : null);
+    state = r.state; renderToday();
+    toast(r.ok ? `社内会議を開始しました(${fmtTime(r.s)}〜)${wasPrivate ? '。私用モードは解除しました' : ''}` : r.error);
+  }
+  if (act === 'meeting-end') {
+    const r = await window.api.endMeeting();
+    state = r.state; renderToday();
+    toast(!r.ok ? r.error : r.recorded ? `社内会議 ${fmtTime(r.s)}〜${fmtTime(r.e)}(${r.min}分)を記録しました` : '1分未満のため記録しませんでした');
+  }
+  if (act === 'meeting-del') {
+    if (!confirm('この社内会議の記録を削除しますか?')) return;
+    const r = await window.api.deleteMeeting(state.todayKey, btn.dataset.id);
+    state = r.state; renderToday();
+    toast(r.ok ? '社内会議の記録を削除しました' : r.error);
+  }
+  if (act === 'meeting-edit') openMeetingEditModal(btn.dataset.id);
   if (act === 'admin-setup') {
     const a = $('#adm-pw1').value, b = $('#adm-pw2').value;
     if (a !== b) { toast('パスワードが一致しません'); return; }
@@ -1923,6 +2172,7 @@ document.addEventListener('click', async (e) => {
     toast('レコル自動送信は準備中です。当面は「レコル向けCSV出力」をご利用ください');
   }
   if (act === 'csv-recoru') exportRecoruCSV();
+  if (act === 'csv-history') exportHistoryCSV();
   if (act === 'import-ics') {
     const r = await window.api.importCalendar();
     if (r.ok) toast(`予定を ${r.count} 件取り込みました`);
@@ -1936,9 +2186,18 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'mt-proj') renderToday.meetingPid = e.target.value; // 自動更新で選択が戻らないよう保持
   if (e.target.id === 'adm-date') { renderAdmin.date = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-preset') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
-  if (e.target.id === 'rep-preset2') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
+  if (e.target.id === 'rec-preset') {
+    // 任意期間に切り替えたときは、直前のプリセットの期間を初期値にする
+    const prev = recoruRange();
+    const r = renderAdmin.recoruRange;
+    if (e.target.value === 'custom' && (!r.from || !r.to)) { r.from = r.from || prev.from; r.to = r.to || prev.to; }
+    r.preset = e.target.value; renderAdmin();
+  }
+  if (e.target.id === 'rec-from') { renderAdmin.recoruRange.from = e.target.value; renderAdmin(); }
+  if (e.target.id === 'rec-to') { renderAdmin.recoruRange.to = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-from') { renderAdmin.range.from = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-to') { renderAdmin.range.to = e.target.value; renderAdmin(); }
   if (e.target.id === 'hist-preset') { renderHistory.range.preset = e.target.value; renderHistory(); }
@@ -1950,15 +2209,23 @@ document.addEventListener('change', (e) => {
 $('#nav').addEventListener('click', (e) => {
   const btn = e.target.closest('.nav-btn');
   if (!btn) return;
-  activeTab = btn.dataset.tab;
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b === btn));
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + activeTab));
-  renderTab(activeTab);
+  showTab(btn.dataset.tab);
 });
+
+/** タブ切替(サイドバー以外のボタンからも使う) */
+function showTab(tab) {
+  if (tab !== activeTab) renderProjAdd.last = null; // 追加完了メッセージは画面を離れたら消す
+  activeTab = tab;
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + tab));
+  $('.main').scrollTop = 0;
+  renderTab(tab);
+}
 
 function renderTab(tab) {
   if (tab === 'today') renderToday();
   if (tab === 'dashboard') renderDashboard();
+  if (tab === 'projadd') renderProjAdd();
   if (tab === 'history') renderHistory();
   if (tab === 'projects') renderProjects();
   if (tab === 'calendar') renderCalendarTab();

@@ -23,7 +23,8 @@
   const calEvents = [
     { id: 'c1', date: calKey(0), sMin: 840, eMin: 870, title: '定例会議', projectId: 'p1', members: [], createdBy: '佐藤 美咲', updatedAt: 1 },
     { id: 'c2', date: calKey(1), sMin: 600, eMin: 660, title: '先方訪問', projectId: 'p2', members: ['佐藤 美咲', '高橋 大和'], createdBy: '佐藤 美咲', updatedAt: 1 },
-    { id: 'c3', date: calKey(3), sMin: 900, eMin: 960, title: '納品', projectId: 'p1', members: [], createdBy: 'あなた', updatedAt: 1 }
+    { id: 'c3', date: calKey(3), sMin: 900, eMin: 960, title: '納品', projectId: 'p1', members: [], createdBy: 'あなた', updatedAt: 1 },
+    { id: 'c4', date: calKey(2), sMin: 780, eMin: 960, title: '商品撮影', projectId: null, kind: 'shoot', members: [], createdById: 'demo', createdByName: 'あなた', createdBy: 'あなた', createdAt: 1, updatedAt: 1 }
   ];
 
   function makeToday() {
@@ -33,7 +34,8 @@
     return {
       date: todayKey,
       intervals: [{ s, e: b1 }, { s: b2, e }],
-      calendar: [{ s: dayMs(now, 14, 0), e: dayMs(now, 14, 30), summary: 'F000_定例会議' }],
+      calendar: [{ s: dayMs(now, 14, 0), e: dayMs(now, 14, 30), summary: 'F000_定例会議' },
+        { id: 'm0', s: dayMs(now, 10, 30), e: dayMs(now, 11, 0), adhoc: true, kind: 'internal', summary: '社内会議（案件外）' }],
       estimation: {
         start: s, end: e, workMin: Math.round((e - s - 55 * MIN) / MIN), breakMin: 55,
         confidence: 'STABLE',
@@ -59,7 +61,7 @@
         { t: b2, msg: '稼働を再検知(13:05)' },
         { t: dayMs(now, 14, 0), msg: 'カレンダー予定「F000_定例会議」を稼働に反映' }
       ],
-      projectMin: { p1: 190, p2: 85 }, meetingMin: 65,
+      projectMin: { p1: 190, p2: 85 }, categoryMin: { internal: 30 }, meetingMin: 65,
       unclassified: [{
         s: dayMs(now, 13, 5), e: dayMs(now, 13, 50),
         tokens: ['請求書2026', '山田商事', '7月分'], hint: { pid: 'p1', pct: 78 }
@@ -149,7 +151,7 @@
     },
     overtime: { ym: todayKey.slice(0, 7), overtimeMin: 2280, legalHolidayMin: 300, forecastMin: 3100, elapsed: 22, daysInMonth: 31, limitMin: 2700, level: 'warn' },
     holidays: [],
-    adminConfigured: true, adminUnlocked: false, adminUntil: 0, privateUntil: 0,
+    adminConfigured: true, adminUnlocked: false, adminUntil: 0, privateUntil: 0, meetingMaxMin: 240,
     policy: { params: { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4 }, workStartMin: 540, workEndMin: 1320,
       workApps: ['Figma', 'Photoshop', 'Illustrator', 'Excel', 'Slack', 'ChatGPT', 'Claude', 'Antigravity'], privateApps: ['Netflix', 'Prime Video', 'Steam'], updatedBy: '' },
     todayKey, days,
@@ -165,8 +167,33 @@
     screenPermission: 'granted', recording: true, platform: 'demo'
   };
 
-  const S = () => JSON.parse(JSON.stringify(state));
+  // 予定の本人判定(main.js の calendarLib.canEdit と同じ規則。デモの自分のID = 'demo')
+  const canEditCal = (ev) => ev.createdById ? ev.createdById === 'demo'
+    : (ev.createdByName || ev.createdBy) === state.settings.userName;
+  const S = () => JSON.parse(JSON.stringify({ ...state, calEvents: state.calEvents.map(ev => ({ ...ev, canEdit: canEditCal(ev) })) }));
   const listeners = [];
+
+  // 突発の社内会議(デモ用ヘルパー)
+  const hhmm = (ts) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const openMt = () => (state.days[todayKey].calendar || []).find(ev => ev.adhoc && ev.open) || null;
+  const creditMt = (day, mt, delta) => {
+    day.meetingMin = Math.max(0, (day.meetingMin || 0) + delta);
+    if (mt.projectId) day.projectMin[mt.projectId] = Math.max(0, (day.projectMin[mt.projectId] || 0) + delta);
+    else { day.categoryMin = day.categoryMin || {}; day.categoryMin.internal = Math.max(0, (day.categoryMin.internal || 0) + delta); }
+  };
+  const closeMt = (mt, t) => {
+    const day = state.days[todayKey];
+    mt.e = Math.min(t, mt.s + 240 * MIN); delete mt.open;
+    if (mt.e - mt.s < MIN) {
+      day.calendar = day.calendar.filter(ev => ev !== mt);
+      day.events.push({ t, msg: '社内会議は1分未満のため記録しませんでした' });
+      return null;
+    }
+    const min = Math.round((mt.e - mt.s) / MIN);
+    creditMt(day, mt, min);
+    day.events.push({ t, msg: `社内会議 ${hhmm(mt.s)}〜${hhmm(mt.e)}（${min}分）を記録` });
+    return mt;
+  };
 
   window.api = {
     getState: async () => S(),
@@ -204,10 +231,23 @@
       return S();
     },
     addCalEvent: async (ev) => {
-      state.calEvents.push({ id: 'c' + ++calSeq, createdBy: state.settings.userName, updatedAt: Date.now(), deleted: false, ...ev });
+      const name = state.settings.userName, t = Date.now();
+      state.calEvents.push({ ...ev, id: 'c' + ++calSeq, createdById: 'demo', createdByName: name, createdBy: name, createdAt: t, updatedAt: t, updatedBy: name, deleted: false });
       return S();
     },
-    deleteCalEvent: async (id) => { state.calEvents = state.calEvents.filter(ev => ev.id !== id); return S(); },
+    updateCalEvent: async (id, patch) => {
+      const ev = state.calEvents.find(ev => ev.id === id);
+      if (!ev) return { ok: false, error: '予定が見つかりません' };
+      if (!canEditCal(ev)) return { ok: false, error: '予定を修正できるのは登録者本人だけです' };
+      Object.assign(ev, patch, { kind: patch.kind || null, projectId: patch.kind ? null : (patch.projectId || null),
+        createdById: ev.createdById || 'demo', updatedAt: Math.max(Date.now(), (ev.updatedAt || 0) + 1), updatedBy: state.settings.userName });
+      return S();
+    },
+    deleteCalEvent: async (id) => {
+      const ev = state.calEvents.find(ev => ev.id === id);
+      if (ev && !canEditCal(ev)) return { ok: false, error: '予定を削除できるのは登録者本人だけです' };
+      state.calEvents = state.calEvents.filter(ev => ev.id !== id); return S();
+    },
     openUrl: async (url) => { window.open(url, '_blank'); return true; },
     importFolderProjects: async () => ({ ok: false, error: 'ブラウザデモでは利用できません(デスクトップ版の機能です)' }),
     addWatchRoot: async () => ({ ok: false, canceled: true }),
@@ -231,7 +271,51 @@
     saveSheets: async (patch) => { Object.assign(state.settings, patch); return S(); },
     exportSheets: async () => ({ ok: false, error: 'ブラウザデモでは書き出しは無効です(デスクトップ版でご利用ください)' }),
     shareSheets: async () => ({ ok: false, error: 'ブラウザデモではチーム共有は無効です(デスクトップ版でご利用ください)' }),
-    setPrivate: async (m) => { state.privateUntil = m ? Date.now() + m * 60000 : 0; return S(); },
+    setPrivate: async (m) => {
+      const t = Date.now();
+      if (m) { const mt = openMt(); if (mt) closeMt(mt, t); } // 私用モード = 仕事ではない → 社内会議は終了
+      state.privateUntil = m ? t + m * 60000 : 0; return S();
+    },
+    // 突発の社内会議(本番は main.js startMeeting 等。デモは終了時に会議時間・区分へまとめて計上する簡易版)
+    startMeeting: async (projectId) => {
+      const day = state.days[todayKey], t = Date.now();
+      if (openMt()) return { ok: false, error: '社内会議はすでに記録中です', state: S() };
+      const p = projectId ? state.projects.find(p => p.id === projectId) : null;
+      state.privateUntil = 0;
+      day.calendar.push(p
+        ? { id: 'm' + t.toString(36), s: t, e: t, adhoc: true, open: true, projectId: p.id, summary: p.code + '_社内会議' }
+        : { id: 'm' + t.toString(36), s: t, e: t, adhoc: true, open: true, kind: 'internal', summary: '社内会議（案件外）' });
+      day.events.push({ t, msg: `社内会議を開始(${hhmm(t)}〜)` });
+      return { ok: true, s: t, state: S() };
+    },
+    endMeeting: async () => {
+      const mt = openMt();
+      if (!mt) return { ok: false, error: '記録中の社内会議はありません', state: S() };
+      const rec = closeMt(mt, Date.now());
+      return rec ? { ok: true, recorded: true, s: rec.s, e: rec.e, min: Math.round((rec.e - rec.s) / MIN), state: S() } : { ok: true, recorded: false, state: S() };
+    },
+    deleteMeeting: async (k, id) => {
+      const day = state.days[k];
+      const mt = day && day.calendar.find(ev => ev.adhoc && ev.id === id);
+      if (!mt) return { ok: false, error: '社内会議の記録が見つかりません', state: S() };
+      if (!mt.open) creditMt(day, mt, -Math.round((mt.e - mt.s) / MIN));
+      day.calendar = day.calendar.filter(ev => ev !== mt);
+      day.events.push({ t: Date.now(), msg: '社内会議の記録を削除' });
+      return { ok: true, state: S() };
+    },
+    updateMeeting: async (k, id, sMin, eMin) => {
+      const day = state.days[k];
+      const mt = day && day.calendar.find(ev => ev.adhoc && ev.id === id);
+      if (!mt || mt.open) return { ok: false, error: '修正できる社内会議の記録がありません', state: S() };
+      const [y, mo, d] = k.split('-').map(Number), base = new Date(y, mo - 1, d).getTime();
+      const s = base + sMin * MIN, e = base + eMin * MIN;
+      if (e <= s) return { ok: false, error: '終了は開始より後にしてください', state: S() };
+      if (e > Date.now() + MIN) return { ok: false, error: '終了をこれから先の時刻にはできません', state: S() };
+      creditMt(day, mt, Math.round((e - s) / MIN) - Math.round((mt.e - mt.s) / MIN));
+      mt.s = s; mt.e = e;
+      day.events.push({ t: Date.now(), msg: `社内会議の時刻を修正(${hhmm(s)}〜${hhmm(e)})` });
+      return { ok: true, state: S() };
+    },
     adminSetup: async () => { state.adminConfigured = true; state.adminUnlocked = true; state.adminUntil = Date.now() + 1800000; return { ok: true, state: S() }; },
     adminUnlock: async () => { state.adminUnlocked = true; state.adminUntil = Date.now() + 1800000; return { ok: true, state: S() }; },
     adminLock: async () => { state.adminUnlocked = false; return S(); },
@@ -261,6 +345,29 @@
       return S();
     },
     reseedDemo: async () => { state.team = seedTeam(); return S(); },
+    // 勤怠履歴CSV(簡易版。本番は main.js の 'history:csv' → src/recoru.js historyRows。デモは祝日・承認待ちの扱いを省略)
+    historyCSV: async ({ from, to } = {}) => {
+      const HEAD = ['日付', '曜日', '区分', '始業', '終業', '休憩', '実働', '残業', '会議', '私用除外',
+        '社内会議（案件外）', '撮影・ロケハン', '状態', '本人修正', '修正後(承認待ち)', '備考'];
+      const STATUS = { recording: '記録中', pending: '未提出', submitted: '提出済み', approved: '承認済み', rejected: '差し戻し' };
+      const hh = (m) => { m = Math.max(0, Math.round(m || 0)); return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
+      const clk = (k, ts) => { const [y, mo, d] = k.split('-').map(Number); return hh((ts - new Date(y, mo - 1, d).getTime()) / MIN); };
+      const rows = [];
+      for (const k of Object.keys(state.days).sort()) {
+        if ((from && k < from) || (to && k > to)) continue;
+        const d = state.days[k], est = d.correction || d.estimation;
+        if (!est || est.start == null) continue;
+        const wd = new Date(k.replace(/-/g, '/')).getDay();
+        const w = Math.round(est.workMin || 0);
+        const ot = wd === 0 ? 0 : wd === 6 ? w : Math.max(0, w - 480);
+        const cat = d.categoryMin || {};
+        rows.push([k.replace(/-/g, '/'), '日月火水木金土'[wd], wd === 0 ? '法定休日出勤' : wd === 6 ? '所定休日出勤' : '出勤',
+          clk(k, est.start), clk(k, est.end), hh(est.breakMin), hh(w), hh(ot), hh(d.meetingMin), hh(d.privateMin),
+          hh(cat.internal), hh(cat.shoot), STATUS[d.status] || d.status, '', '', '']);
+      }
+      const csv = [HEAD, ...rows].map(r => r.map(v => /[",\r\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v).join(',')).join('\r\n') + '\r\n';
+      return { rows: rows.length, csv, name: state.settings.userName, from: from || (rows[0] ? rows[0][0].replace(/\//g, '-') : ''), to: to || (rows.length ? rows[rows.length - 1][0].replace(/\//g, '-') : '') };
+    },
     openScreenSettings: async () => true,
     relaunchApp: async () => { location.reload(); },
     onUpdate: (cb) => listeners.push(cb)

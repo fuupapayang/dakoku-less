@@ -207,6 +207,10 @@ class Sync {
         needsApproval: !!(d.submitted && d.submitted.needsApproval),
         projectMin: Object.fromEntries(
           Object.entries(d.projectMin || {}).map(([k, v]) => [k, Math.round(v)])
+        ),
+        // 案件外の予定区分の時間 { internal: 社内会議(案件外), shoot: 撮影・ロケハン }
+        categoryMin: Object.fromEntries(
+          Object.entries(d.categoryMin || {}).map(([k, v]) => [k, Math.round(v)])
         )
       };
     }
