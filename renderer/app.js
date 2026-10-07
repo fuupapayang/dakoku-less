@@ -1376,6 +1376,68 @@ function selfRow(dateKey) {
   };
 }
 
+/** 総管理者: キーワード整理(複数の案件に混ざったキーワード) */
+function keywordCleanupHTML() {
+  const list = state.keywordDuplicates || [];
+  const projOpts = (sel) => `<option value="">(付け直さない)</option>` + (state.projects || [])
+    .filter(p => p.active !== false && (p.status || 'active') === 'active')
+    .sort((a, b) => String(a.code).localeCompare(String(b.code)))
+    .map(p => `<option value="${esc(p.id)}" ${p.id === sel ? 'selected' : ''}>${esc(p.code)} ${esc(p.name)}</option>`).join('');
+  return `<div class="card"><div class="row"><h2 class="grow">キーワード整理</h2>
+      ${list.length ? `<span class="chip LOW">重複 ${list.length}語</span>` : '<span class="chip STABLE">重複なし</span>'}</div>
+    <p class="muted">同じキーワードが複数の案件に付いていると、最初に一致した案件に工数が入り、チーム全員の記録がずれます。
+    ✓の付いた案件にだけキーワードを残します(初期値は自動の整理案)。「付け直し先」を選ぶと、その案件にキーワードを付けます。反映すると全員に配られます。</p>
+    ${list.length ? `<div class="table-wrap"><table class="mt8"><thead><tr><th>キーワード</th><th>残す案件(✓)</th><th>付け直し先</th><th>整理案の理由</th></tr></thead><tbody>
+      ${list.map((d, i) => `<tr data-kw="${i}"><td class="nowrap"><b>${esc(d.keyword)}</b></td>
+        <td>${d.projects.map(p => `<label style="display:inline-flex;gap:4px;margin-right:10px;white-space:nowrap"><input type="checkbox" class="kw-keep" value="${esc(p.id)}" ${d.keep.includes(p.id) ? 'checked' : ''}>${esc(p.code)}${p.review ? '<span class="muted">*</span>' : ''}</label>`).join('')}</td>
+        <td><select class="kw-add" style="min-width:160px;margin:0">${projOpts('')}</select></td>
+        <td class="muted" style="font-size:12px">${esc(d.reason)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="muted mt8">* = 以前ID重複があった案件(混入元の可能性)</div>
+    <button class="btn primary mt8" data-act="kw-apply">この内容で整理して全員に反映</button>` : '<div class="muted">複数の案件に付いているキーワードはありません。</div>'}
+  </div>`;
+}
+
+/** 総管理者: 工数の付け替え指示 */
+function reassignCardHTML() {
+  const ra = state.reassign || { orders: [], done: {} };
+  const myId = (state.settings.sync && state.settings.sync.memberId) || 'self';
+  const members = [{ id: myId, name: state.settings.userName + '(あなた)' },
+    ...((state.remoteTeam && state.remoteTeam.members) || []).filter(m => m.id !== myId).map(m => ({ id: m.id, name: m.name }))];
+  const f = renderAdmin.ra = renderAdmin.ra || { memberId: myId, from: '2026-07-01', to: state.todayKey, fromPid: '', toPid: '' };
+  const projs = (state.projects || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code)));
+  const pOpts = (sel, extra) => extra + projs.map(p => `<option value="${esc(p.id)}" ${p.id === sel ? 'selected' : ''}>${esc(p.code)} ${esc(p.name)}</option>`).join('');
+  const byId = Object.fromEntries(projs.map(p => [p.id, p]));
+  const lbl = (pid) => pid ? `${esc((byId[pid] || {}).code || pid)} ${esc((byId[pid] || {}).name || '')}` : '<span class="muted">工数から外す</span>';
+  const memName = (id) => (members.find(m => m.id === id) || {}).name || id;
+  return `<div class="card"><h2>工数の付け替え</h2>
+    <p class="muted">誤った案件に記録された工数を、正しい案件へ移します(例: T724 → F709)。工数の元データは各メンバーのPCにあるため、
+    指示は同期で本人のアプリに届き、<b>本人のアプリが自動で反映</b>します(本人の操作は不要。古い版のアプリは更新後に反映)。勤怠時間は変わりません。</p>
+    <div class="field-row mt8">
+      <label class="field">メンバー<select id="ra-member">${members.map(m => `<option value="${esc(m.id)}" ${m.id === f.memberId ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>
+      <label class="field">期間 開始<input type="date" id="ra-from" value="${esc(f.from)}"></label>
+      <label class="field">期間 終了<input type="date" id="ra-to" value="${esc(f.to)}"></label>
+    </div>
+    <div class="field-row">
+      <label class="field">元の案件(誤り)<select id="ra-fromPid">${pOpts(f.fromPid, '<option value="">選択してください</option>')}</select></label>
+      <label class="field">付け替え先(正しい案件)<select id="ra-toPid">${pOpts(f.toPid, '<option value="">工数から外す(どの案件か不明)</option>')}</select></label>
+    </div>
+    <div class="row">
+      <button class="btn" data-act="ra-preview">対象を確認</button>
+      ${f.preview ? `<span class="muted">対象: <b>${fmtDur(f.preview.min)}</b>(${f.preview.days}日)${f.preview.local ? '' : '・同期データ(直近35日)からの見込み。それより前の分も本人のPCで反映されます'}</span>` : ''}
+      <span class="grow"></span>
+      <button class="btn primary" data-act="ra-create">付け替えを指示する</button>
+    </div>
+    ${(ra.orders || []).length ? `<div class="table-wrap"><table class="mt16"><thead><tr><th>メンバー</th><th>元 → 先</th><th>期間</th><th>状況</th><th></th></tr></thead><tbody>
+      ${ra.orders.slice().reverse().map(o => { const d = (ra.done[o.memberId] || {})[o.id];
+        return `<tr><td>${esc(o.memberName || memName(o.memberId))}</td><td>${lbl(o.fromPid)} → ${lbl(o.toPid)}</td>
+        <td class="nowrap">${esc(o.from)}〜${esc(o.to)}</td>
+        <td>${d ? `<span class="chip STABLE">反映済み ${fmtDur(d.min)}</span>` : '<span class="chip UNSURE">未反映(本人のアプリの同期待ち)</span>'}</td>
+        <td><button class="btn sm ghost" data-act="ra-delete" data-id="${esc(o.id)}" title="指示を消します(反映済みの付け替えは元に戻りません)">削除</button></td></tr>`; }).join('')}
+    </tbody></table></div>` : ''}
+  </div>`;
+}
+
 /** 管理者: メンバーのアプリのバージョン(古い版の人を見つける) */
 function memberVersionsHTML() {
   const myId = (state.settings.sync && state.settings.sync.memberId) || '';
@@ -1524,7 +1586,12 @@ function policyCardHTML() {
   </div>`;
 }
 
+['input', 'change'].forEach(ev => document.addEventListener(ev, (e) => {
+  if (e.target.closest && e.target.closest('#tab-admin') && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) renderAdmin.dirty = true;
+}, true));
+
 function renderAdmin() {
+  renderAdmin.dirty = false;
   if (!state.adminUnlocked) { $('#tab-admin').innerHTML = adminLockHTML(); return; }
   const team = state.team || { members: [] };
   const sel = renderAdmin.date || (() => {
@@ -1629,6 +1696,8 @@ function renderAdmin() {
         <td class="disc-warn">${a.min}分</td></tr>`).join('')}</tbody></table>`
       : '<div class="muted">乖離はありません。勤怠データに客観的な根拠が紐づいています。</div>'}
     </div>
+    ${keywordCleanupHTML()}
+    ${reassignCardHTML()}
     ${policyCardHTML()}`;
 }
 
@@ -2100,6 +2169,30 @@ document.addEventListener('click', async (e) => {
     state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
     renderSettings(); toast('この端末の連携URLを保存しました');
   }
+  if (act === 'kw-apply') {
+    const decisions = [...document.querySelectorAll('tr[data-kw]')].map(tr => {
+      const d = (state.keywordDuplicates || [])[+tr.dataset.kw];
+      return { keyword: d.keyword, keep: [...tr.querySelectorAll('.kw-keep:checked')].map(c => c.value), addTo: tr.querySelector('.kw-add').value || null };
+    });
+    if (!confirm(`${decisions.length}語のキーワードを整理して、チーム全員に反映します。よろしいですか?`)) return;
+    const r = await window.api.keywordsApply(decisions);
+    if (r.ok) { state = r.state; renderAdmin(); toast(`キーワードを整理しました(${r.changed}案件)`); } else toast(`エラー: ${r.error}`);
+  }
+  if (act === 'ra-preview' || act === 'ra-create') {
+    const f = renderAdmin.ra;
+    Object.assign(f, { memberId: $('#ra-member').value, from: $('#ra-from').value, to: $('#ra-to').value, fromPid: $('#ra-fromPid').value, toPid: $('#ra-toPid').value });
+    if (!f.fromPid) { toast('元の案件を選んでください'); return; }
+    if (act === 'ra-preview') { f.preview = await window.api.reassignPreview(f); renderAdmin(); return; }
+    const sel = $('#ra-member'); const memberName = sel.options[sel.selectedIndex].text.replace('(あなた)', '');
+    if (!confirm(`${memberName} の ${f.from}〜${f.to} の工数を付け替えます。よろしいですか?(反映後は元に戻せません。逆向きの指示で戻せます)`)) return;
+    const r = await window.api.reassignCreate({ ...f, memberName, toPid: f.toPid || null });
+    if (r.ok) { state = r.state; f.preview = null; renderAdmin(); toast('付け替えを指示しました(本人のアプリが次回同期で反映します)'); } else toast(`エラー: ${r.error}`);
+  }
+  if (act === 'ra-delete') {
+    if (!confirm('この指示を削除しますか?(反映済みの付け替えは元に戻りません)')) return;
+    const r = await window.api.reassignDelete(btn.dataset.id);
+    if (r.ok) { state = r.state; renderAdmin(); } else toast(`エラー: ${r.error}`);
+  }
   if (act === 'rs-root-add') {
     const picked = await window.api.restorePickFolder();
     const r = renderProjects.restore;
@@ -2332,6 +2425,8 @@ function renderAll() { renderTab(activeTab); }
 window.api.onUpdate((s) => {
   state = s;
   // 入力中のフォームを壊さないよう、閲覧系タブのみ自動更新
+  // 管理者ビューで入力・選択を始めたら、次の操作まで自動更新しない(チェックや入力が消えないように)
+  if (activeTab === 'admin' && renderAdmin.dirty) return;
   if (['today', 'dashboard', 'history', 'admin', 'calendar'].includes(activeTab) && !$('#modal-root').innerHTML) renderTab(activeTab);
 });
 

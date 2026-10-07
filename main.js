@@ -13,6 +13,8 @@ const recoruLib = require('./src/recoru');
 const collisionsLib = require('./src/collisions');
 const policyLib = require('./src/policy');
 const restoreLib = require('./src/restore');
+const keywordsLib = require('./src/keywords');
+const reassignLib = require('./src/reassign');
 const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
@@ -387,6 +389,36 @@ function trackNoEvidence(day, now, key, fg, counted) {
   } else if (counted) {
     noEv = null; // 証拠あり → 区間リセット(判定不能時は維持)
   }
+}
+
+// ---- 工数の付け替え指示 -------------------------------------------------
+async function applyReassignOrders() {
+  if (!sync || !sync.enabled()) return;
+  const myId = (settings().sync || {}).memberId;
+  const doc = (await sync.getDoc('meta/reassign')) || { orders: [] };
+  const orders = doc.orders || [];
+  const s = settings();
+  const todo = reassignLib.pendingFor(orders, myId, s.appliedReassign);
+  if (todo.length) {
+    const report = (await sync.getDoc(`reassignDone/${myId}`)) || {};
+    const byId = Object.fromEntries(store.data.projects.map(p => [p.id, p]));
+    const lbl = (pid) => pid ? `${(byId[pid] || {}).code || pid}` : '工数から外す';
+    for (const o of todo) {
+      const moved = reassignLib.applyOrder(store.data.days, o);
+      s.appliedReassign = [...(s.appliedReassign || []), o.id];
+      report[o.id] = { min: moved, at: Date.now() };
+      const day = store.day(currentKey || engine.dayKey(Date.now(), s.dayStartHour));
+      logEvent(day, `総管理者の指示で工数を付け替えました: ${lbl(o.fromPid)} → ${lbl(o.toPid)}(${o.from}〜${o.to}・${engine.fmtDur(moved)})`);
+    }
+    store.save();
+    await sync.setDoc(`reassignDone/${myId}`, report);
+    await sync.pushSummary(store.data.days, null, store.data.rules);
+    notify('工数が付け替えられました', `総管理者の指示で ${todo.length}件の工数の付け替えを反映しました。`);
+  }
+  // 総管理者の画面用(指示一覧と各メンバーの反映状況)
+  const done = {};
+  for (const r of await sync.listDocs('reassignDone')) done[r.id] = r.data;
+  store.data.reassign = { orders, done };
 }
 
 /** みなし残業(既定45h)に対する当月の残業状況 */
@@ -968,6 +1000,8 @@ async function runSync(force) {
     // 3) チーム全体をpull
     const pulled = await sync.pullAll();
     teamStatsCache = pulled.teamStats;
+    // 工数の付け替え指示(総管理者 → 各メンバー): 自分宛てで未反映のものを反映して報告
+    await applyReassignOrders();
     // 会社ポリシー: チームにあれば採用。無く端末側に総管理者設定があれば初回だけチームへ登録
     const remotePolicy = await sync.getDoc('meta/policy');
     if (remotePolicy) store.data.policy = remotePolicy;
@@ -1123,6 +1157,8 @@ function buildState() {
     policy: (() => { const p = pol(); return { params: p.params, workStartMin: p.workStartMin, workEndMin: p.workEndMin, workApps: p.workApps, privateApps: p.privateApps, updatedBy: p.updatedBy || '', updatedAt: p.updatedAt || 0 }; })(),
     adminConfigured: !!pol().adminHash,
     adminUnlocked: adminUnlocked(),
+    keywordDuplicates: adminUnlocked() ? keywordsLib.findDuplicates(store.data.projects) : [],
+    reassign: adminUnlocked() ? (store.data.reassign || { orders: [], done: {} }) : null,
     adminUntil,
     privateUntil: settings().privateUntil || 0,
     meetingMaxMin: meetingsLib.MAX_MIN,
@@ -1340,7 +1376,7 @@ function registerIpc() {
     // 検知パラメータは会社ポリシーで固定(総管理者モードでも、ここではなくポリシー保存で変更する)
     for (const k of Object.keys(policyLib.DEFAULT_PARAMS)) delete patch[k];
     delete patch.privateUntil;
-    delete patch.localUserId; delete patch.calCreatorIds; // 予定の本人判定に使うIDは画面から変更させない
+    delete patch.localUserId; delete patch.calCreatorIds; delete patch.appliedReassign; // 予定の本人判定に使うIDは画面から変更させない
     Object.assign(store.data.settings, patch);
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
@@ -1398,6 +1434,53 @@ function registerIpc() {
   ipcMain.handle('restore:pickFolder', async () => {
     const res = await dialog.showOpenDialog(win, { title: '案件フォルダが入っているフォルダを選択', properties: ['openDirectory', 'multiSelections'] });
     return res.canceled ? [] : res.filePaths;
+  });
+
+  // ① キーワード整理(総管理者)
+  ipcMain.handle('keywords:apply', async (e, decisions) => {
+    if (!adminUnlocked()) return { ok: false, error: '総管理者モードでのみ実行できます' };
+    const r = keywordsLib.applyCleanup(store.data.projects, decisions || []);
+    store.save(); pushUpdate();
+    if (sync && sync.enabled()) await runSync(true);
+    return { ok: true, changed: r.changed.length, state: buildState() };
+  });
+
+  // ② 工数の付け替え指示(総管理者)
+  ipcMain.handle('reassign:preview', (e, o) => {
+    const myId = (settings().sync || {}).memberId || 'self';
+    const m = o.memberId === myId || o.memberId === 'self'
+      ? { days: store.data.days, local: true }
+      : (((store.data.remoteTeam || {}).members || []).find(x => x.id === o.memberId) || { days: {} });
+    return { ...reassignLib.preview(m.days, o), local: !!m.local };
+  });
+  ipcMain.handle('reassign:create', async (e, input) => {
+    if (!adminUnlocked()) return { ok: false, error: '総管理者モードでのみ実行できます' };
+    const err = reassignLib.validate(input || {});
+    if (err) return { ok: false, error: err };
+    const myId = (settings().sync || {}).memberId;
+    const o = reassignLib.newOrder({ ...input, memberId: input.memberId === 'self' ? (myId || 'self') : input.memberId }, settings().userName);
+    if (!sync || !sync.enabled()) {
+      // チーム同期なし: 自分の分だけ即時反映
+      const moved = reassignLib.applyOrder(store.data.days, o);
+      store.save(); pushUpdate();
+      return { ok: true, moved, state: buildState() };
+    }
+    try {
+      const doc = (await sync.getDoc('meta/reassign')) || { orders: [] };
+      doc.orders = [...(doc.orders || []), o];
+      await sync.setDoc('meta/reassign', { orders: doc.orders, updatedAt: Date.now() });
+      await runSync(true); // 自分宛てならここで反映される
+      adminUntil = Date.now() + ADMIN_SESSION_MS;
+      return { ok: true, state: buildState() };
+    } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
+  });
+  ipcMain.handle('reassign:delete', async (e, id) => {
+    if (!adminUnlocked()) return { ok: false, error: '総管理者モードでのみ実行できます' };
+    if (!sync || !sync.enabled()) return { ok: false, error: 'チーム同期が未設定です' };
+    const doc = (await sync.getDoc('meta/reassign')) || { orders: [] };
+    await sync.setDoc('meta/reassign', { orders: (doc.orders || []).filter(o => o.id !== id), updatedAt: Date.now() });
+    await runSync(true);
+    return { ok: true, state: buildState() };
   });
 
   ipcMain.handle('update:install', () => { installUpdateNow(); return { ok: true }; });
