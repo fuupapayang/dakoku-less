@@ -134,6 +134,16 @@ function writeTab(ss, tab, headers, rows) {
 function out(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }`;
 }
 
+/** 「案件リスト」タブ: 工数按分スクリプトが制作・登録者を読む */
+function projectListSheet(projects) {
+  const ymd = (t) => { if (!t) return ''; const d = new Date(t); return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`; };
+  const rows = (projects || []).filter(p => p.code)
+    .sort((a, b) => String(a.code).localeCompare(String(b.code)))
+    .map(p => [p.code, p.name || '', (p.makers || []).join(', '), (p.sales || []).join(', '), p.createdBy || '',
+      (p.status || 'active') === 'active' ? '稼働中' : '納品完了', ymd(p.createdAt)]);
+  return { tab: '案件リスト', headers: ['案件コード', '案件名', '制作', '担当営業', '登録者', 'ステータス', '登録日'], rows };
+}
+
 /** GASウェブアプリへPOST */
 async function post(url, token, sheets, summaries) {
   const res = await fetch(url, {
@@ -149,4 +159,4 @@ async function post(url, token, sheets, summaries) {
   return json || { ok: true };
 }
 
-module.exports = { historyRows, reportRows, personalExport, safeTabName, gasScript, post, hhmm, fmtTime, GAS_VERSION };
+module.exports = { historyRows, reportRows, personalExport, projectListSheet, safeTabName, gasScript, post, hhmm, fmtTime, GAS_VERSION };

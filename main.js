@@ -1063,12 +1063,18 @@ function sheetsConfig() {
 }
 
 /** 指定月(YYYY-MM)の「自分の」履歴・工数を個人タブへ書き出し(チーム集計タブはGASが再構成) */
+/** 案件の登録者(工数按分で「制作が空の案件」の配分先に使う) */
+function projectCreator() {
+  return { createdBy: settings().userName, createdById: (settings().sync || {}).memberId || '' };
+}
+
 async function exportSheets(ym) {
   const cfg = sheetsConfig();
   if (!cfg.url) return { ok: false, error: 'スプレッドシート連携URLが未設定です' };
   const me = { name: settings().userName, days: store.data.days };
   const projById = Object.fromEntries((store.data.projects || []).map(p => [p.id, p]));
   const { sheets, summaries } = sheetsLib.personalExport(me, ym, projById, (st) => STATUS_LABEL[st] || st);
+  sheets.push(sheetsLib.projectListSheet(store.data.projects)); // 案件リスト(制作・登録者)も毎回最新に
   const res = await sheetsLib.post(cfg.url, cfg.token, sheets, summaries);
   const r = { ok: true, months: [ym], historyRows: sheets[0].rows.length, reportRows: sheets[1].rows.length };
   if (!res || res.v !== sheetsLib.GAS_VERSION) {
@@ -1587,7 +1593,7 @@ function registerIpc() {
     if (store.data.projects.some(x => x.code === code)) {
       return { error: `案件コード ${code} は既に登録されています` };
     }
-    store.addProject({ ...p, code });
+    store.addProject({ ...p, code, ...projectCreator() });
     pushUpdate(); return buildState();
   });
   ipcMain.handle('projects:update', (e, { id, patch }) => {
@@ -1830,7 +1836,7 @@ function registerIpc() {
         if (!m) continue;
         const code = m[1], name = m[2].trim();
         if (store.data.projects.some(p => p.code === code)) { skipped++; continue; }
-        store.addProject({ code, name, keywords: [name] });
+        store.addProject({ code, name, keywords: [name], ...projectCreator() });
         added++;
       }
     } catch (e) { return { ok: false, error: String(e.message || e) }; }

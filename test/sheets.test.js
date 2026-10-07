@@ -34,6 +34,13 @@ const hs = sh.historyRows([{ name: '福永', days: stale }], '2026-09', (s) => s
 assert.strictEqual(hs.rows[0][6], '06:40');      // 実働 = 推定値(400分)。提出値824分ではない
 assert.strictEqual(hs.rows[0][4], '25:50');      // 日をまたぐ終業は24時超え表記
 
+// 案件リストタブ(制作・登録者)
+const pl = sh.projectListSheet([{ code: 'T2', name: 'B', makers: [], sales: ['営業'], createdBy: '福永', createdAt: new Date(2026, 9, 7).getTime() }, { code: 'F1', name: 'A', makers: ['田部', '宮成'] }, { name: 'コードなし' }]);
+assert.strictEqual(pl.tab, '案件リスト');
+assert.deepStrictEqual(pl.rows.map(r => r[0]), ['F1', 'T2']);
+assert.deepStrictEqual(pl.rows[1], ['T2', 'B', '', '営業', '福永', '稼働中', '2026/10/07']);
+assert.strictEqual(pl.rows[0][2], '田部, 宮成');
+
 console.log('✓ all sheets tests passed');
 
 // ---- v0.12: 個人タブ + チーム集計(GASで再構成) ----
