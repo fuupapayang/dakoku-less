@@ -22,7 +22,17 @@ const rep = sh.reportRows(members, '2026-09', projById);
 assert.strictEqual(rep.tab, '工数_2026-09');
 assert.strictEqual(rep.rows.length, 2);
 const f = rep.rows.find(r => r[1] === 'F001');
-assert.deepStrictEqual(f, ['佐藤', 'F001', 'A案件', 300, '05:00']);
+assert.deepStrictEqual(f, ['佐藤', 'F001', 'A案件', 300, 5]);   // 時間(h)は小数
+
+// 回帰: 「未提出」に戻した日は古い提出値ではなく最新の推定値を書き出す
+const stale = { '2026-09-05': {
+  status: 'pending',
+  submitted: { start: new Date(2026, 8, 5, 4, 25).getTime(), end: new Date(2026, 8, 6, 1, 50).getTime(), workMin: 824, breakMin: 461, auto: true },
+  estimation: { start: new Date(2026, 8, 5, 4, 25).getTime(), end: new Date(2026, 8, 6, 1, 50).getTime(), workMin: 400, breakMin: 885 }
+} };
+const hs = sh.historyRows([{ name: '福永', days: stale }], '2026-09', (s) => s);
+assert.strictEqual(hs.rows[0][6], '06:40');      // 実働 = 推定値(400分)。提出値824分ではない
+assert.strictEqual(hs.rows[0][4], '25:50');      // 日をまたぐ終業は24時超え表記
 
 console.log('✓ all sheets tests passed');
 

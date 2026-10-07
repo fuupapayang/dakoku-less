@@ -11,6 +11,7 @@
  * これにより、複数人が同じスプレッドシートへ書き込んでも互いに上書きし合わない。
  */
 const GAS_VERSION = 2; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う
+const recoru = require('./recoru');
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
 function fmtTime(ts) {
@@ -32,11 +33,13 @@ function historyRows(members, ym, statusLabel) {
     for (const k of Object.keys(m.days || {}).sort()) {
       if (!inMonth(k, ym)) continue;
       const d = m.days[k];
-      const est = d.submitted || d.correction || d.estimation || d;
+      // 提出済みは提出値(承認待ちの水増し修正は推定値)、未提出・差し戻しは最新の推定/修正値。
+      // (以前は未提出に戻した日も古い提出値を書き出していた)
+      const est = d.estimation || d.submitted || d.correction ? recoru.historyRecord(d).rec : d;
       if (!est || est.start == null) continue;
       const wd = WD[new Date(k).getDay()];
       rows.push([
-        m.name, k, wd, fmtTime(est.start), fmtTime(est.end),
+        m.name, k, wd, recoru.clock(k, est.start), recoru.clock(k, est.end),
         hhmm(est.breakMin), hhmm(est.workMin), hhmm(d.meetingMin || 0),
         statusLabel(d.status) || d.status || ''
       ]);
@@ -45,9 +48,9 @@ function historyRows(members, ym, statusLabel) {
   return { tab: `履歴_${ym}`, headers, rows };
 }
 
-/** 工数タブの行: [ユーザ,案件コード,案件名,分,時間] */
+/** 工数タブの行: [ユーザ,案件コード,案件名,分,時間(h)]。時間は小数(時刻と誤認されないよう) */
 function reportRows(members, ym, projById) {
-  const headers = ['ユーザ', '案件コード', '案件名', '分', '時間'];
+  const headers = ['ユーザ', '案件コード', '案件名', '分', '時間(h)'];
   const rows = [];
   for (const m of members) {
     const agg = {}; // pid -> min
@@ -58,7 +61,7 @@ function reportRows(members, ym, projById) {
     for (const [pid, min] of Object.entries(agg)) {
       if (min <= 0) continue;
       const p = projById[pid];
-      rows.push([m.name, p ? p.code : pid, p ? p.name : '(削除済み)', min, hhmm(min)]);
+      rows.push([m.name, p ? p.code : pid, p ? p.name : '(削除済み)', min, Math.round(min / 60 * 100) / 100]);
     }
   }
   // 案件コード順で見やすく
