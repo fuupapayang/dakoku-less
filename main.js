@@ -12,6 +12,7 @@ const sheetsLib = require('./src/sheets');
 const recoruLib = require('./src/recoru');
 const collisionsLib = require('./src/collisions');
 const policyLib = require('./src/policy');
+const restoreLib = require('./src/restore');
 const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
 const { seedTeam } = require('./src/demo');
@@ -1220,6 +1221,61 @@ function setupAutoUpdater() {
   }, 60 * 1000);
 }
 
+// ---- 過去の工数の復元(ファイルの更新時刻から) ----------------------------
+/**
+ * roots 以下の「CODE_名称」フォルダ内で、[fromTs, toTs) に更新されたファイルの {t, path} を集める。
+ * ファイルの中身は読まない(パスと更新時刻のみ)。案件フォルダの外のファイルは stat もしない。
+ */
+async function scanFileTimes(roots, fromTs, toTs) {
+  const fsp = fs.promises;
+  const SKIP = /^(\.|node_modules$|__MACOSX$|\$RECYCLE\.BIN$|System Volume Information$)/;
+  const out = [];
+  let visited = 0;
+  const walk = async (dir, depth, inCase) => {
+    if (depth > 10 || visited > 400000) return;
+    let ents;
+    try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of ents) {
+      visited++;
+      if (SKIP.test(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) await walk(full, depth + 1, inCase || /^[A-Z]+\d+_/.test(e.name));
+      else if (inCase && e.isFile()) {
+        try {
+          const st = await fsp.stat(full);
+          const t = st.mtimeMs;
+          if (t >= fromTs && t < toTs) out.push({ t, path: full });
+        } catch (_) {}
+      }
+    }
+  };
+  for (const r of roots) {
+    if (!r || !fs.existsSync(r)) continue;
+    await walk(r, 0, !!restoreLib.codeInPath(r));
+  }
+  return { files: out, visited };
+}
+
+let restoreCache = null; // { ym, rootsKey, plan, files }
+async function restorePlan(ym, roots) {
+  const [y, m] = ym.split('-').map(Number);
+  const from = new Date(y, m - 1, 1).getTime() - 3600000;   // 前後1時間の余裕(月初・月末の継続計上用)
+  const to = new Date(y, m, 1).getTime() + 3600000 + settings().dayStartHour * 3600000;
+  const { files, visited } = await scanFileTimes(roots, from, to);
+  const saves = restoreLib.savesFromFiles(files);
+  const p = restoreLib.plan({ days: store.data.days, saves, projects: store.data.projects, ym, stickyMin: settings().folderStickyMin || 30 });
+  restoreCache = { ym, rootsKey: roots.join('\n'), plan: p };
+  const byId = Object.fromEntries(store.data.projects.map(x => [x.id, x]));
+  return {
+    ok: true, ym, files: saves.length, visited,
+    beforeMin: p.beforeMin, addMin: p.addMin, days: p.days,
+    byProject: Object.entries(p.byProject).sort((a, b) => b[1] - a[1])
+      .map(([pid, min]) => ({ code: (byId[pid] || {}).code || pid, name: (byId[pid] || {}).name || '', min })),
+    unregistered: Object.entries(p.unregistered).sort((a, b) => b[1] - a[1]).map(([code, min]) => ({ code, min })),
+    alreadyRestored: Object.entries(store.data.days).some(([k, d]) => k.slice(0, 7) === ym && d.restoredMin)
+  };
+}
+
 /** 私用モードを minutes 分オン(0で解除) */
 function setPrivate(minutes) {
   const s = settings();
@@ -1311,6 +1367,39 @@ function registerIpc() {
     return { ok: true, state: buildState() };
   });
   // C) 私用モード(minutes=0で解除)
+  // 過去の工数の復元(当月より前の月のみ)
+  ipcMain.handle('restore:preview', async (e, { ym, roots }) => {
+    const cur = (currentKey || engine.dayKey(Date.now(), settings().dayStartHour)).slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(ym || '') || ym >= cur) return { ok: false, error: '復元できるのは先月以前の月です' };
+    const list = (roots && roots.length ? roots : settings().watchRoots || []).filter(r => fs.existsSync(r));
+    if (!list.length) return { ok: false, error: '案件フォルダが見つかりません。フォルダを選択してください(外付けドライブ・NASは接続してから)' };
+    try { return await restorePlan(ym, list); } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
+  });
+  ipcMain.handle('restore:apply', async (e, { ym, roots }) => {
+    const list = (roots && roots.length ? roots : settings().watchRoots || []).filter(r => fs.existsSync(r));
+    if (!restoreCache || restoreCache.ym !== ym || restoreCache.rootsKey !== list.join('\n')) {
+      return { ok: false, error: '先にプレビューを実行してください' };
+    }
+    const n = restoreLib.apply(store.data.days, ym, restoreCache.plan);
+    const day = store.day(currentKey || engine.dayKey(Date.now(), settings().dayStartHour));
+    logEvent(day, `${ym} の工数をファイル記録から復元しました(+${engine.fmtDur(n)})`);
+    restoreCache = null;
+    store.save(); pushUpdate();
+    if (sync && sync.enabled()) runSync();
+    return { ok: true, addMin: n, state: buildState() };
+  });
+  ipcMain.handle('restore:undo', (e, { ym }) => {
+    const n = restoreLib.undo(store.data.days, ym);
+    if (n) logEvent(store.day(currentKey || engine.dayKey(Date.now(), settings().dayStartHour)), `${ym} の復元した工数を取り消しました(-${engine.fmtDur(n)})`);
+    store.save(); pushUpdate();
+    if (sync && sync.enabled()) runSync();
+    return { ok: true, removedMin: n, state: buildState() };
+  });
+  ipcMain.handle('restore:pickFolder', async () => {
+    const res = await dialog.showOpenDialog(win, { title: '案件フォルダが入っているフォルダを選択', properties: ['openDirectory', 'multiSelections'] });
+    return res.canceled ? [] : res.filePaths;
+  });
+
   ipcMain.handle('update:install', () => { installUpdateNow(); return { ok: true }; });
   ipcMain.handle('private:set', (e, minutes) => { setPrivate(minutes); return buildState(); });
   // 突発の社内会議(開始/終了/削除/時刻修正)。記録は本人の day.calendar のみ(チーム共有カレンダーには載せない)

@@ -271,6 +271,10 @@
     saveSheets: async (patch) => { Object.assign(state.settings, patch); return S(); },
     exportSheets: async () => ({ ok: false, error: 'ブラウザデモでは書き出しは無効です(デスクトップ版でご利用ください)' }),
     shareSheets: async () => ({ ok: false, error: 'ブラウザデモではチーム共有は無効です(デスクトップ版でご利用ください)' }),
+    restorePreview: async () => ({ ok: false, error: 'ブラウザデモでは復元は無効です(デスクトップ版でご利用ください)' }),
+    restoreApply: async () => ({ ok: false, error: 'デモでは無効です' }),
+    restoreUndo: async () => ({ ok: true, removedMin: 0, state: S() }),
+    restorePickFolder: async () => [],
     setPrivate: async (m) => {
       const t = Date.now();
       if (m) { const mt = openMt(); if (mt) closeMt(mt, t); } // 私用モード = 仕事ではない → 社内会議は終了

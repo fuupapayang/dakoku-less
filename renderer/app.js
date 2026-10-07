@@ -677,6 +677,43 @@ function projListCardHTML() {
 }
 
 /** ID重複の修復で振り分けできなかった工数(本人が選ぶ) */
+/** 過去の工数をファイル記録から復元 */
+function restoreCardHTML() {
+  const r = renderProjects.restore = renderProjects.restore || {};
+  const now = new Date();
+  const months = [1, 2, 3].map(i => { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
+  if (!r.ym) r.ym = months[0];
+  if (!r.roots) r.roots = [...(state.watchRoots || [])];
+  const p = r.preview && r.preview.ym === r.ym ? r.preview : null;
+  return `<div class="card">
+    <h2>過去の工数をファイル記録から復元</h2>
+    <p class="muted">案件フォルダ(F000_名称)内のファイルの<b>更新時刻</b>と、記録済みの<b>PC操作時間</b>を突き合わせて、取りこぼした工数を復元します
+    (保存の前後${state.settings.folderStickyMin || 30}分をその案件の作業とみなす、フォルダ監視と同じルール)。ファイルの中身は読みません。
+    すでに記録されている工数とは二重に数えず、先に結果を確認してから反映します。</p>
+    <div class="row mt8">
+      <span class="muted">対象月:</span>
+      <select id="rs-month" style="width:130px;margin:0">${months.map(m => `<option value="${m}" ${m === r.ym ? 'selected' : ''}>${m.replace('-', '年')}月</option>`).join('')}</select>
+    </div>
+    <div class="mt8"><b>調べるフォルダ</b> <span class="muted">(外付けドライブ・NASは接続した状態で。親フォルダを選ぶと中の案件フォルダをすべて調べます)</span>
+      ${r.roots.length ? r.roots.map((x, i) => `<div class="rule-item"><div class="grow meta">${esc(x)}</div>
+        <button class="btn sm ghost" data-act="rs-root-del" data-i="${i}">外す</button></div>`).join('') : '<div class="muted">未選択</div>'}
+      <button class="btn sm mt8" data-act="rs-root-add">📁 フォルダを追加</button>
+    </div>
+    <div class="row mt8">
+      <button class="btn primary" data-act="rs-preview" ${r.roots.length && !r.busy ? '' : 'disabled'}>${r.busy ? '調べています…' : '結果を確認(まだ反映しません)'}</button>
+      ${p && p.alreadyRestored ? '<button class="btn ghost" data-act="rs-undo">この月の復元を取り消す</button>' : ''}
+    </div>
+    ${p ? `<div class="suggestion mt8">
+      <div><b>${esc(p.ym.replace('-', '年'))}月</b> 案件フォルダ内の更新ファイル ${p.files}件から計算しました${p.alreadyRestored ? '(この月は復元済み。反映すると今回の結果に置き換えます)' : ''}</div>
+      <div class="mt8">工数: <b>${fmtDur(p.beforeMin)}</b> → <b>${fmtDur(p.beforeMin + p.addMin)}</b>(<b style="color:var(--green,#3aa76d)">+${fmtDur(p.addMin)}</b>・${p.days}日分)</div>
+      ${p.byProject.length ? `<div class="mt8">${p.byProject.map(x => `<span class="tag">${esc(x.code)} ${esc(x.name)} +${fmtDur(x.min)}</span>`).join(' ')}</div>` : '<div class="muted mt8">追加できる工数はありませんでした</div>'}
+      ${p.unregistered.length ? `<div class="muted mt8">⚠ 案件リストに未登録のコード(復元できません。案件追加してから再実行してください): ${p.unregistered.map(x => `${esc(x.code)}(${fmtDur(x.min)})`).join('、')}</div>` : ''}
+      <div class="muted mt8">ファイルは最後に保存した時刻しか残らないため、実際より少なめになります。Figma・ブラウザ・会議など、ファイルが残らない作業は復元できません。</div>
+      ${p.addMin ? '<div class="actions"><button class="btn sm primary" data-act="rs-apply">この内容で反映する</button></div>' : ''}
+    </div>` : ''}
+  </div>`;
+}
+
 function reviewCardHTML() {
   const items = state.reviewItems || [];
   if (!items.length) return '';
@@ -710,6 +747,7 @@ function renderProjects() {
     <div class="page-sub">誰が・何の案件を・どれだけ。カレンダー → 案件コード → キーワードの順で自動判定します。</div>
 
     ${reviewCardHTML()}
+    ${restoreCardHTML()}
     ${projListCardHTML()}
 
     <div class="card">
@@ -2062,6 +2100,34 @@ document.addEventListener('click', async (e) => {
     state = await window.api.saveSheets({ sheetsUrl: $('#sh-url').value.trim(), sheetsToken: $('#sh-token').value.trim() });
     renderSettings(); toast('この端末の連携URLを保存しました');
   }
+  if (act === 'rs-root-add') {
+    const picked = await window.api.restorePickFolder();
+    const r = renderProjects.restore;
+    for (const x of picked || []) if (!r.roots.includes(x)) r.roots.push(x);
+    r.preview = null; renderProjects();
+  }
+  if (act === 'rs-root-del') { const r = renderProjects.restore; r.roots.splice(+btn.dataset.i, 1); r.preview = null; renderProjects(); }
+  if (act === 'rs-preview') {
+    const r = renderProjects.restore;
+    r.busy = true; renderProjects();
+    const res = await window.api.restorePreview({ ym: r.ym, roots: r.roots });
+    r.busy = false;
+    if (res.ok) r.preview = res; else { r.preview = null; toast(`エラー: ${res.error}`); }
+    renderProjects();
+  }
+  if (act === 'rs-apply') {
+    const r = renderProjects.restore;
+    if (!confirm(`${r.ym} の工数に +${fmtDur(r.preview.addMin)} を反映します。よろしいですか?(あとで取り消せます)`)) return;
+    const res = await window.api.restoreApply({ ym: r.ym, roots: r.roots });
+    if (res.ok) { state = res.state; r.preview = null; renderProjects(); toast(`工数を復元しました(+${fmtDur(res.addMin)})。スプレッドシートは「先月」を書き出し直すと反映されます`); }
+    else toast(`エラー: ${res.error}`);
+  }
+  if (act === 'rs-undo') {
+    const r = renderProjects.restore;
+    if (!confirm(`${r.ym} に復元した工数を取り消します。よろしいですか?`)) return;
+    const res = await window.api.restoreUndo({ ym: r.ym });
+    state = res.state; r.preview = null; renderProjects(); toast(`取り消しました(-${fmtDur(res.removedMin)})`);
+  }
   if (act === 'update-install') { toast('更新して再起動します…'); await window.api.installUpdate(); }
   if (act === 'private-set') {
     state = await window.api.setPrivate(+btn.dataset.min);
@@ -2213,6 +2279,7 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'rs-month') { const r = renderProjects.restore; r.ym = e.target.value; r.preview = null; renderProjects(); }
   if (e.target.id === 'mt-proj') renderToday.meetingPid = e.target.value; // 自動更新で選択が戻らないよう保持
   if (e.target.id === 'adm-date') { renderAdmin.date = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-preset') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
