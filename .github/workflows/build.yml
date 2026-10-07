@@ -94,7 +94,7 @@ jobs:
             exit 1
           }
         env:
-          DEBUG: electron-osx-sign*
+          DEBUG: electron-osx-sign*,electron-notarize*,@electron/notarize*
           CSC_IDENTITY_AUTO_DISCOVERY: 'true'
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
