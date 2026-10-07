@@ -77,5 +77,16 @@ assert.strictEqual(inferLegacyVersion({ a: { workMin: 1 } }), 'v0.11以前');
   assert.deepStrictEqual(all.members[0].tracking, pushed.tracking);
   assert.strictEqual(all.members[1].tracking, null);
 
+  // tracking.missingFolders(制作担当なのに案件フォルダが無い件数・コード最大20件)
+  const s3 = new Sync(() => ({ enabled: true, projectId: 'x', apiKey: 'k', teamId: 't', memberId: 'm1', userName: '中村',
+    tracking: { trackWork: true, titleDetect: true, watchRoots: 1, rootsMissing: 0, missingFolders: 25,
+      missingFolderCodes: Array.from({ length: 25 }, (_, i) => 'T' + i) } }));
+  let pushed3 = null;
+  s3.setDoc = async (path, obj) => { pushed3 = obj; };
+  await s3.pushSummary(sdays, null, [], nowTs);
+  assert.strictEqual(pushed3.tracking.missingFolders, 25);
+  assert.strictEqual(pushed3.tracking.missingFolderCodes.length, 20);
+  assert.strictEqual(pushed3.tracking.missingFolderCodes[0], 'T0');
+
 console.log('✓ all sync tests passed');
 })().catch(e => { console.error(e); process.exit(1); });

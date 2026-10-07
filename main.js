@@ -14,6 +14,8 @@ const collisionsLib = require('./src/collisions');
 const policyLib = require('./src/policy');
 const restoreLib = require('./src/restore');
 const keywordsLib = require('./src/keywords');
+const projectEditLib = require('./src/projectEdit');
+const folderCheckLib = require('./src/folderCheck');
 const reassignLib = require('./src/reassign');
 const Watcher = require('./src/watcher');
 const { Sync } = require('./src/sync');
@@ -273,50 +275,69 @@ function checkBudgets() {
 }
 
 /**
- * 監視フォルダの点検: 未登録 / 見つからない(外付け・NAS未接続) / 担当案件のフォルダが監視範囲に無い
- * 監視範囲内のフォルダ名(CODE_名称)は30分ごとに浅く走査してキャッシュする
+ * 監視フォルダの点検: 未登録 / 見つからない(外付け・NAS未接続) / 制作担当の案件フォルダが監視範囲に無い
+ * 監視範囲内のフォルダ名(CODE_名称)は30分ごとに走査(深さ3まで)してキャッシュする。
+ * フォルダの登録・作成・制作から外れた直後は rescanFolders() で即再走査する。
  */
 let folderScan = { at: 0, codes: new Set() };
-function scanFolderCodes(roots) {
-  const codes = new Set();
-  const walk = (dir, depth) => {
-    const own = Watcher.projectFolderIn(path.basename(dir));
-    if (own) codes.add(own.split('_')[0]);
-    if (depth >= 2) return;
-    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
-    for (const e of ents) if (e.isDirectory() && !e.name.startsWith('.')) walk(path.join(dir, e.name), depth + 1);
-  };
-  for (const r of roots) walk(r, 0);
-  return codes;
+function existingRoots() {
+  return (settings().watchRoots || []).filter(r => { try { return r && fs.existsSync(r); } catch (_) { return false; } });
 }
-function folderStatus() {
-  const roots = settings().watchRoots || [];
-  const existing = roots.filter(r => { try { return fs.existsSync(r); } catch (_) { return false; } });
+function rescanFolders() { folderScan = { at: Date.now(), codes: folderCheckLib.scanCodes(existingRoots()) }; }
+function folderStatus({ maxAgeMs = 30 * 60000 } = {}) {
+  const roots = (settings().watchRoots || []).filter(Boolean);
+  const existing = existingRoots();
   const missing = roots.filter(r => !existing.includes(r));
-  if (Date.now() - folderScan.at > 30 * 60000) folderScan = { at: Date.now(), codes: scanFolderCodes(existing) };
-  const me = settings().userName;
-  const dismissed = new Set(settings().folderHintDismissed || []);
-  const since = engine.dayKey(Date.now() - 30 * 86400000, settings().dayStartHour);
-  const usedRecently = new Set();
-  for (const [k, d] of Object.entries(store.data.days)) if (k >= since) for (const pid of Object.keys(d.projectMin || {})) usedRecently.add(pid);
-  const mine = store.data.projects.filter(p => p.active !== false && (p.status || 'active') === 'active' && p.code &&
-    (collisionsLib.isMaker(p, me) || usedRecently.has(p.id)));
-  const unregistered = mine.filter(p => !folderScan.codes.has(String(p.code).toUpperCase()) && !dismissed.has(p.code))
-    .map(p => ({ code: p.code, name: p.name }));
-  return { noRoots: roots.length === 0, missing, unregistered, trackWork: !!settings().trackWork };
+  if (Date.now() - folderScan.at > maxAgeMs) rescanFolders();
+  const s = settings();
+  if (folderCheckLib.migrateSnooze(s)) store.save();
+  const all = folderCheckLib.missingFolderProjects(store.data.projects, s.userName, folderScan.codes, { snooze: s.folderSnooze, includeSnoozed: true });
+  const unregistered = all.filter(p => !p.snoozed);
+  return {
+    noRoots: roots.length === 0, missing, unregistered,
+    snoozedCount: all.length - unregistered.length,
+    allMissingCodes: all.map(p => p.code),
+    // 一部の監視フォルダが未接続のときは「無い」と断定できない(そのドライブ内にあるかもしれない)
+    reliable: roots.length > 0 && missing.length === 0,
+    defaultParent: existing[0] || '',
+    trackWork: !!s.trackWork
+  };
+}
+/** 案件の追加・同期で制作担当の案件が増えたときに、少し待ってから点検(新規分の個別通知) */
+function scheduleFolderCheck(ms = 15000) {
+  clearTimeout(scheduleFolderCheck.t);
+  scheduleFolderCheck.t = setTimeout(() => { try { checkFolders(); } catch (_) {} }, ms);
 }
 function checkFolders() {
-  const st = folderStatus();
-  const today = engine.dayKey(Date.now(), settings().dayStartHour);
-  if (settings().folderNoticeDay === today) return;
+  let st = folderStatus();
+  const s = settings();
+  const today = engine.dayKey(Date.now(), s.dayStartHour);
+  // 1) 新たに「フォルダなし」になった制作担当の案件を1件ずつ通知(最大3件+ほかN件)。再起動しても同じ案件は再通知しない
+  let sentNew = false;
+  if (st.reliable && s.userName) {
+    let plan = folderCheckLib.planNotifications(st.unregistered, s.folderNotified, today);
+    if (plan.toNotify.length && Date.now() - folderScan.at > 60000) { // 通知の前に最新の状態で確認
+      st = folderStatus({ maxAgeMs: 0 });
+      plan = folderCheckLib.planNotifications(st.unregistered, s.folderNotified, today);
+    }
+    for (const p of plan.toNotify) {
+      notify(`案件フォルダがありません: ${p.code} ${p.name}`.slice(0, 80),
+        `制作にあなたの名前がありますが、案件フォルダ(${p.code}_…)が監視フォルダ内に見つかりません。「今日の勤務」からフォルダを登録・作成するか、制作から外れてください。`);
+    }
+    if (plan.more) notify('案件フォルダがありません', `ほか${plan.more}件の制作担当の案件にもフォルダがありません。「今日の勤務」で確認してください。`);
+    sentNew = plan.toNotify.length > 0;
+    if (JSON.stringify(plan.notified) !== JSON.stringify(s.folderNotified || {})) { s.folderNotified = plan.notified; store.save(); }
+  }
+  // 2) 1日1回のまとめ通知(未登録・未接続・未作成が続いている状態)
+  if (s.folderNoticeDay === today) return;
   let msg = null;
   if (st.noRoots) msg = '監視する案件フォルダが未登録です。このままでは案件ごとの作業時間(工数)が記録されません。設定してください。';
   else if (st.missing.length) msg = `監視フォルダが見つかりません(外付けドライブ・NASが未接続?): ${st.missing.map(r => path.basename(r)).join(', ')}。接続するまで工数が記録されません。`;
-  else if (st.unregistered.length) msg = `担当案件のフォルダが監視範囲にありません: ${st.unregistered.slice(0, 5).map(p => p.code).join(', ')}${st.unregistered.length > 5 ? ' ほか' : ''}。工数が記録されない可能性があります。`;
-  if (!msg) return;
-  settings().folderNoticeDay = today;
+  else if (st.unregistered.length && !sentNew) msg = `制作担当の案件のフォルダが監視範囲にありません: ${st.unregistered.slice(0, 5).map(p => p.code).join(', ')}${st.unregistered.length > 5 ? ` ほか${st.unregistered.length - 5}件` : ''}。工数が記録されない可能性があります。`;
+  if (!msg && !sentNew) return;
+  s.folderNoticeDay = today;
   store.save();
-  notify('案件フォルダの登録をお願いします', msg);
+  if (msg) notify('案件フォルダの登録をお願いします', msg);
 }
 
 // ---- 会社ポリシー・総管理者 ------------------------------------------------
@@ -917,8 +938,17 @@ function trackingStatus() {
     trackWork: !!settings().trackWork,
     titleDetect: settings().titleDetect === true,
     watchRoots: roots.length,
-    rootsMissing: missing
+    rootsMissing: missing,
+    ...missingFoldersStatus()
   };
+}
+/** 制作担当なのに案件フォルダが無い件数(スヌーズ中も含む実数)。監視フォルダが未接続のときは判定不能なので送らない */
+function missingFoldersStatus() {
+  try {
+    const st = folderStatus();
+    if (st.noRoots || st.missing.length) return {};
+    return { missingFolders: st.allMissingCodes.length, missingFolderCodes: st.allMissingCodes.slice(0, 20) };
+  } catch (_) { return {}; }
 }
 
 /** 招待コード(base64のJSON)を作成/解析 */
@@ -966,6 +996,7 @@ async function runSync(force) {
       if (c) localByCode[c] = p.id;
     }
     const merged = await sync.syncProjects(store.data.projects);
+    scheduleFolderCheck();
     // コード同一でidが変わった案件は、工数/予定/学習の参照を新idへ付け替え(データ保全)
     const remapTo = {}; // 旧id -> 新idの集合
     for (const m of merged) {
@@ -1079,6 +1110,12 @@ function sheetsConfig() {
 /** 案件の登録者(工数按分で「制作が空の案件」の配分先に使う) */
 function projectCreator() {
   return { createdBy: settings().userName, createdById: (settings().sync || {}).memberId || '' };
+}
+
+/** 担当者名の照合用: 自分の表示名 + 同期中チームメンバーの表示名(空白区切りのフルネームを1名として扱うため) */
+function teamMemberNames() {
+  const names = [settings().userName, ...((store.data.remoteTeam && store.data.remoteTeam.members) || []).map(m => m.name)];
+  return [...new Set(names.map(n => String(n || '').trim()).filter(Boolean))];
 }
 
 async function exportSheets(ym) {
@@ -1439,11 +1476,12 @@ function registerIpc() {
     delete patch.privateUntil;
     delete patch.localUserId; delete patch.calCreatorIds; delete patch.appliedReassign; // 予定の本人判定に使うIDは画面から変更させない
     delete patch.lastExportMonth; delete patch.lastCurrentExportDay; delete patch.lastExportHash; // 自動書き出しの記録は画面から上書きさせない
+    delete patch.folderSnooze; delete patch.folderNotified; delete patch.folderNoticeDay; delete patch.folderHintDismissed; // 案件フォルダ通知の記録は専用IPCでのみ変更
     Object.assign(store.data.settings, patch);
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
     }
-    if ('watchRoots' in patch) startWatcher();
+    if ('watchRoots' in patch) { startWatcher(); rescanFolders(); }
     if (currentKey) reestimate(currentKey);
     store.save();
     return buildState();
@@ -1459,7 +1497,7 @@ function registerIpc() {
     const roots = new Set(settings().watchRoots || []);
     roots.add(res.filePaths[0]);
     settings().watchRoots = [...roots];
-    folderScan.at = 0; // 次回の点検で再走査
+    rescanFolders();
     startWatcher();
     store.save(); pushUpdate();
     return { ok: true, state: buildState() };
@@ -1589,13 +1627,91 @@ function registerIpc() {
     return { ok: true, state: buildState() };
   });
 
-  ipcMain.handle('folder:dismiss', (e, code) => {
+  // 制作担当の案件フォルダが無いアラート: 7日間通知しない(旧 folder:dismiss も同じ扱い)
+  const snoozeFolder = (e, code) => {
     const s = settings();
-    s.folderHintDismissed = [...new Set([...(s.folderHintDismissed || []), code])];
+    folderCheckLib.migrateSnooze(s);
+    const k = String(code || '').toUpperCase();
+    if (k) s.folderSnooze[k] = Date.now() + folderCheckLib.SNOOZE_MS;
     store.save(); pushUpdate(); return buildState();
+  };
+  ipcMain.handle('folder:snooze', snoozeFolder);
+  ipcMain.handle('folder:dismiss', snoozeFolder);
+  const addRoot = (dir) => {
+    const roots = settings().watchRoots || [];
+    if (roots.includes(dir)) return false;
+    settings().watchRoots = [...roots, dir];
+    startWatcher();
+    return true;
+  };
+  const codeFound = (code) => folderScan.codes.has(String(code || '').toUpperCase());
+  const projectByCode = (code) => store.data.projects.find(p => String(p.code).toUpperCase() === String(code || '').toUpperCase());
+  // a) 既存の案件フォルダ(またはその親)を選んで監視フォルダに追加
+  ipcMain.handle('folder:register', async (e, code) => {
+    const p = projectByCode(code);
+    const res = await dialog.showOpenDialog(win, {
+      title: p ? `${p.code} ${p.name} の案件フォルダ(または親フォルダ)を選択` : '案件フォルダを選択',
+      defaultPath: existingRoots()[0] || undefined,
+      properties: ['openDirectory']
+    });
+    if (res.canceled || !res.filePaths[0]) return { ok: false, canceled: true };
+    const dir = res.filePaths[0];
+    // 既存の監視範囲内で、しかも案件フォルダが見つかる(=もう解決している)なら重ねて登録しない
+    rescanFolders();
+    const inside = (settings().watchRoots || []).some(r => folderCheckLib.isInside(r, dir));
+    const added = inside && (!p || codeFound(p.code)) ? false : addRoot(dir);
+    if (added) rescanFolders();
+    store.save(); pushUpdate();
+    const found = !p || codeFound(p.code);
+    let warning = '';
+    if (!found) warning = `選んだフォルダ内に「${p.code}_…」のフォルダが見つかりませんでした(深さ3まで確認)。フォルダ名を「${p.code}_名称」にしてください。`;
+    else if (!added) warning = 'このフォルダは既に監視範囲に入っています。';
+    return { ok: true, added, found, warning, state: buildState() };
+  });
+  // b) 「CODE_案件名」フォルダを作成(既定は最初の監視フォルダ。無ければ親フォルダを選ぶ)。上書きはしない
+  ipcMain.handle('folder:create', async (e, code) => {
+    const p = projectByCode(code);
+    if (!p) return { ok: false, error: '案件が見つかりません' };
+    const name = folderCheckLib.folderNameFor(p.code, p.name);
+    const pickParent = async () => {
+      const r = await dialog.showOpenDialog(win, { title: `「${name}」を作成する親フォルダを選択`, properties: ['openDirectory', 'createDirectory'] });
+      return r.canceled || !r.filePaths[0] ? '' : r.filePaths[0];
+    };
+    let parent = existingRoots()[0] || await pickParent();
+    for (;;) {
+      if (!parent) return { ok: false, canceled: true };
+      const full = path.join(parent, name);
+      const watched = (settings().watchRoots || []).some(r => folderCheckLib.isInside(r, parent));
+      const c = await dialog.showMessageBox(win, {
+        type: 'question', buttons: ['作成する', '別の場所を選ぶ…', 'キャンセル'], defaultId: 0, cancelId: 2,
+        message: '案件フォルダを作成します', detail: `${full}${watched ? '' : '\n\n(この場所は監視フォルダに追加されます)'}`
+      });
+      if (c.response === 2) return { ok: false, canceled: true };
+      if (c.response === 1) { parent = await pickParent(); continue; }
+      if (fs.existsSync(full)) return { ok: false, error: `同じ名前のフォルダが既にあります: ${full}` };
+      try { fs.mkdirSync(full); } catch (err) { return { ok: false, error: `フォルダを作成できませんでした: ${String(err.message || err).slice(0, 160)}` }; }
+      rescanFolders();
+      if (!codeFound(p.code)) { addRoot(parent); rescanFolders(); } // 監視範囲外(または深すぎる場所)なら親を監視に追加
+      store.save(); pushUpdate();
+      return { ok: true, path: full, state: buildState() };
+    }
+  });
+  // c) 制作から自分の名前だけを外す(applyEdit で updatedAt を進めて同期で勝たせる。制作が空になる場合は不可)
+  ipcMain.handle('folder:leaveMakers', (e, projectId) => {
+    const p = store.data.projects.find(x => x.id === projectId);
+    if (!p) return { ok: false, error: '案件が見つかりません' };
+    const r = folderCheckLib.removeMeFromMakers(p, settings().userName);
+    if (r.error) return { ok: false, error: r.error, onlyMaker: !!r.onlyMaker };
+    const ed = projectEditLib.applyEdit(p, { makers: r.makers }, { userName: settings().userName, knownNames: teamMemberNames() });
+    if (ed.error) return { ok: false, error: ed.error };
+    rescanFolders();
+    store.save(); pushUpdate();
+    if (sync && sync.enabled()) runSync();
+    return { ok: true, state: buildState() };
   });
   ipcMain.handle('watch:removeRoot', (e, root) => {
     settings().watchRoots = (settings().watchRoots || []).filter(r => r !== root);
+    rescanFolders();
     startWatcher();
     store.save(); pushUpdate();
     return buildState();
@@ -1649,12 +1765,22 @@ function registerIpc() {
     if (store.data.projects.some(x => x.code === code)) {
       return { error: `案件コード ${code} は既に登録されています` };
     }
-    store.addProject({ ...p, code, ...projectCreator() });
+    // 担当営業・制作は必須(名前は区切り文字で分割・重複除去して保存)
+    const known = teamMemberNames();
+    const sales = projectEditLib.splitNames(p.sales, known), makers = projectEditLib.splitNames(p.makers, known);
+    const staffErr = projectEditLib.validateStaff(sales, makers);
+    if (staffErr) return { error: staffErr };
+    store.addProject({ ...p, code, sales, makers, ...projectCreator() });
+    scheduleFolderCheck();
     pushUpdate(); return buildState();
   });
+  // 案件の編集(誰でも可)。sales/makers を含むパッチは必須チェック+正規化。updatedAt を必ず進めて同期で勝たせる
   ipcMain.handle('projects:update', (e, { id, patch }) => {
     const p = store.data.projects.find(p => p.id === id);
-    if (p) { Object.assign(p, patch); delete p.keywordsReview; p.updatedAt = Date.now(); }
+    if (p) {
+      const r = projectEditLib.applyEdit(p, patch, { userName: settings().userName, knownNames: teamMemberNames() });
+      if (r.error) return { error: r.error };
+    }
     store.save(); pushUpdate(); return buildState();
   });
   ipcMain.handle('projects:delete', (e, id) => {
@@ -1878,7 +2004,12 @@ function registerIpc() {
   });
 
   // フォルダから案件マスターを一括インポート(F599_案件名 形式のフォルダ名を読み取り)
-  ipcMain.handle('projects:importFolder', async () => {
+  // staff = { sales, makers }: 取り込む全案件に付ける担当(必須。レンダラーのモーダルで入力)
+  ipcMain.handle('projects:importFolder', async (e, staff = {}) => {
+    const known = teamMemberNames();
+    const sales = projectEditLib.splitNames(staff.sales, known), makers = projectEditLib.splitNames(staff.makers, known);
+    const staffErr = projectEditLib.validateStaff(sales, makers);
+    if (staffErr) return { ok: false, error: staffErr };
     const res = await dialog.showOpenDialog(win, {
       title: '案件フォルダが並んでいる親フォルダを選択',
       properties: ['openDirectory']
@@ -1892,7 +2023,7 @@ function registerIpc() {
         if (!m) continue;
         const code = m[1], name = m[2].trim();
         if (store.data.projects.some(p => p.code === code)) { skipped++; continue; }
-        store.addProject({ code, name, keywords: [name], ...projectCreator() });
+        store.addProject({ code, name, keywords: [name], sales: [...sales], makers: [...makers], ...projectCreator() });
         added++;
       }
     } catch (e) { return { ok: false, error: String(e.message || e) }; }

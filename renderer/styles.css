@@ -224,3 +224,16 @@ th.sortable:hover { color: var(--green-dark); }
 
 .muted { color: var(--sub); font-size: 12.5px; line-height: 1.6; }
 .mt8 { margin-top: 8px; } .mt16 { margin-top: 16px; }
+
+/* 担当(担当営業・制作)入力: 必須表示・名前チップ・警告 */
+.staff-field { flex: 1; min-width: 0; margin-bottom: 12px; }
+.staff-field label.field { margin-bottom: 4px; }
+.req { font-size: 10px; font-weight: 800; color: var(--red); background: var(--red-bg); padding: 1px 6px; border-radius: 6px; }
+.name-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.name-chip { border: 1px solid var(--line); background: #fff; color: var(--sub); font-size: 11px; padding: 2px 8px; border-radius: 99px; cursor: pointer; }
+.name-chip:hover { border-color: var(--green); color: var(--green-dark); }
+.staff-msg { font-size: 11.5px; margin-top: 4px; min-height: 0; }
+.staff-msg.err { color: var(--red); font-weight: 700; }
+.staff-msg.warn { color: var(--amber); }
+.tag.missing { background: var(--red-bg); color: var(--red); }
+.staff-summary { background: var(--amber-bg); color: var(--amber); border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 600; }

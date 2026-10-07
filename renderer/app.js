@@ -210,25 +210,46 @@ function suggestionHTML(sug, key, idx) {
   </div>`;
 }
 
-/** 監視フォルダの登録を促すバナー */
+/** 監視フォルダの登録を促すバナー + 制作担当の案件フォルダが無い案件のアラート(1件ずつ) */
 function folderBannerHTML() {
   const f = state.folderStatus;
   if (!f) return '';
-  let title = '', body = '', extra = '';
+  let title = '', body = '';
   if (f.noRoots) {
     title = '監視する案件フォルダが未登録です';
     body = 'このままでは<b>案件ごとの作業時間(工数)が記録されません</b>(出退勤は記録されます)。案件フォルダ(F000_名称)が並んでいる<b>親フォルダ</b>を登録してください。親フォルダごと登録すると、今後追加される案件も自動で対象になります。';
-  } else if (f.missing.length) {
+  } else if ((f.missing || []).length) {
     title = '監視フォルダが見つかりません';
     body = `外付けドライブやNASが接続されていない可能性があります。接続するまで工数が記録されません: ${f.missing.map(esc).join(', ')}`;
-  } else if (f.unregistered.length) {
-    title = '担当案件のフォルダが監視範囲にありません';
-    body = '次の案件は監視フォルダ内に「コード_名称」のフォルダが見つからないため、工数が記録されない可能性があります。親フォルダを追加するか、フォルダ名を「T724_名称」の形式にしてください。';
-    extra = `<div class="mt8">${f.unregistered.slice(0, 8).map(p => `<span class="tag">${esc(p.code)} ${esc(p.name)} <a href="#" data-act="folder-dismiss" data-code="${esc(p.code)}" title="この案件はフォルダを使わない(今後表示しない)">×</a></span>`).join(' ')}${f.unregistered.length > 8 ? ` ほか${f.unregistered.length - 8}件` : ''}</div>`;
-  } else return '';
-  return `<div class="suggestion" style="background:var(--amber-bg);border-color:#f3ddb0;margin-bottom:12px">
-    <div class="who" style="color:var(--amber)">📁 ${title}</div><div>${body}</div>${extra}
+  }
+  const banner = title ? `<div class="suggestion" style="background:var(--amber-bg);border-color:#f3ddb0;margin-bottom:12px">
+    <div class="who" style="color:var(--amber)">📁 ${title}</div><div>${body}</div>
     <div class="actions"><button class="btn sm primary" data-act="watch-add">監視フォルダを追加</button></div>
+  </div>` : '';
+  // 監視フォルダが未接続のときは「無い」と断定できないので個別アラートは出さない
+  return banner + ((f.missing || []).length ? '' : missingFolderCardHTML(f));
+}
+
+/** 制作にあなたの名前がある案件で、案件フォルダ(CODE_名称)が監視フォルダ内に無いもの(1件ずつ・対処ボタン付き) */
+function missingFolderCardHTML(f) {
+  const list = f.unregistered || [];
+  if (!list.length) return '';
+  const MAX = 10;
+  const where = f.defaultParent ? `作成先: ${f.defaultParent}` : '作成先の親フォルダを選びます';
+  const rows = list.slice(0, MAX).map(p => `<div style="border-top:1px solid #f3ddb0;padding:8px 0">
+      <div><b>${esc(p.code)} ${esc(p.name)}</b> — 制作にあなたの名前がありますが、案件フォルダ(${esc(p.code)}_…)が監視フォルダ内に見つかりません</div>
+      <div class="actions" style="margin-top:6px;flex-wrap:wrap;align-items:center">
+        <button class="btn sm primary" data-act="folder-register" data-code="${esc(p.code)}" title="既にある案件フォルダ(またはその親フォルダ)を選んで監視対象にします">フォルダを登録</button>
+        <button class="btn sm" data-act="folder-create" data-code="${esc(p.code)}" title="「${esc(p.folderName || p.code + '_')}」を作成します(${esc(where)})。作成前に確認します">フォルダを作成</button>
+        <button class="btn sm ghost" data-act="folder-leave" data-id="${esc(p.id)}" data-code="${esc(p.code)}" data-name="${esc(p.name)}" title="この案件の制作からあなたの名前だけを外します">制作から外れる</button>
+        <a href="#" class="muted" style="font-size:12px" data-act="folder-snooze" data-code="${esc(p.code)}" title="この案件のアラートと通知を7日間止めます">今は通知しない(7日)</a>
+      </div></div>`).join('');
+  return `<div class="suggestion" style="background:var(--amber-bg);border-color:#f3ddb0;margin-bottom:12px">
+    <div class="who" style="color:var(--amber)">📁 制作担当の案件フォルダがありません(${list.length}件)</div>
+    <div class="muted">フォルダが無いと、その案件の作業時間(工数)が記録されない可能性があります。フォルダを登録・作成するか、担当でなければ制作から外れてください。</div>
+    <div class="mt8">${rows}</div>
+    ${list.length > MAX ? `<div class="muted">ほか${list.length - MAX}件(上から順に対処すると表示されます)</div>` : ''}
+    ${f.snoozedCount ? `<div class="muted" style="font-size:12px">7日間通知しない設定中: ${f.snoozedCount}件</div>` : ''}
   </div>`;
 }
 
@@ -618,6 +639,76 @@ function isMyProject(p) {
   });
 }
 
+/* ---- 担当(担当営業・制作)の入力補助。規則は src/projectEdit.js と同じ(main.js 側でも再検証) ---- */
+const staffKey = (n) => String(n || '').replace(/\s/g, '');
+const staffLoose = (a, b) => { const x = staffKey(a), y = staffKey(b); return !!x && !!y && (x.includes(y) || y.includes(x)); };
+/** 候補にする名前: 自分 + 同期中のチームメンバー(ブラウザデモではデモチーム) */
+function teamMemberNames() {
+  const members = (state.remoteTeam && state.remoteTeam.members) || (state.platform === 'demo' && state.team && state.team.members) || [];
+  const names = [state.settings.userName, ...members.map(m => m.name)].map(n => String(n || '').trim()).filter(Boolean);
+  return [...new Set(names)];
+}
+/** カンマ・読点・空白で分割→空白除去・重複除去。チームメンバーのフルネーム(「山岡 潤」)は1名として扱う */
+function splitStaffNames(v) {
+  const known = new Map(teamMemberNames().map(n => [staffKey(n), n]));
+  const out = [], seen = new Set();
+  const push = (n) => { const t = n.trim(), k = staffKey(t); if (k && !seen.has(k)) { seen.add(k); out.push(t); } };
+  for (const c of String(v || '').split(/[,、，;；\n]+/)) {
+    const t = c.trim();
+    if (!t) continue;
+    if (/\s/.test(t) && !known.has(staffKey(t))) t.split(/\s+/).forEach(push);
+    else push(known.get(staffKey(t)) || t);
+  }
+  return out;
+}
+const missingStaff = (p) => !(p.sales && p.sales.length) || !(p.makers && p.makers.length);
+/** 担当営業・制作の入力欄(候補datalist + 名前チップ + 必須/表記ゆれメッセージ)。id は `${prefix}-sales` / `${prefix}-makers` */
+function staffFieldsHTML(prefix, sales = [], makers = []) {
+  const names = teamMemberNames();
+  const field = (k, label, ph, vals) => `<div class="staff-field">
+      <label class="field">${label} <span class="req">必須</span>(複数はカンマ区切り)
+        <input type="text" id="${prefix}-${k}" data-staff="${k}" list="${prefix}-names" placeholder="${ph}" value="${esc(vals.join(', '))}"></label>
+      <div class="name-chips">${names.map(n => `<button type="button" class="name-chip" data-act="name-chip" data-target="${prefix}-${k}" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}</div>
+      <div class="staff-msg" id="${prefix}-${k}-msg"></div></div>`;
+  return `<div class="field-row">
+      ${field('sales', '担当営業', '例: 佐藤, 鈴木', sales)}
+      ${field('makers', '制作', '例: 田中, 高橋', makers)}
+    </div>
+    <datalist id="${prefix}-names">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
+}
+/** 入力欄の下に「必須」エラー/「チームメンバーにいない名前」警告を出す。showRequired=false なら未入力でもエラーにしない */
+function updateStaffMsg(input, showRequired) {
+  const msg = document.getElementById(input.id + '-msg');
+  if (!msg) return [];
+  const names = splitStaffNames(input.value);
+  const label = input.dataset.staff === 'sales' ? '担当営業' : '制作';
+  const members = teamMemberNames();
+  const unknown = names.filter(n => !members.some(m => staffLoose(n, m)));
+  if (!names.length) {
+    msg.className = 'staff-msg' + (showRequired ? ' err' : '');
+    msg.textContent = showRequired ? `${label}を1名以上入力してください` : '';
+  } else if (unknown.length) {
+    msg.className = 'staff-msg warn';
+    msg.textContent = `チームメンバーに見つからない名前: ${unknown.join('、')}(表記ゆれでなければそのままで登録できます)`;
+  } else { msg.className = 'staff-msg'; msg.textContent = ''; }
+  return names;
+}
+/** 担当欄2つを読み取り検証。エラーがあればメッセージを表示して null */
+function readStaffFields(prefix) {
+  const sales = updateStaffMsg($(`#${prefix}-sales`), true), makers = updateStaffMsg($(`#${prefix}-makers`), true);
+  return sales.length && makers.length ? { sales, makers } : null;
+}
+/** 名前チップ: 入力欄に名前を追加(重複は追加しない) */
+function addNameChip(btn) {
+  const input = document.getElementById(btn.dataset.target);
+  if (!input) return;
+  input.value = splitStaffNames(input.value + ', ' + btn.dataset.name).join(', ');
+  updateStaffMsg(input, false);
+}
+document.addEventListener('input', (e) => {
+  if (e.target && e.target.dataset && e.target.dataset.staff) updateStaffMsg(e.target, false);
+});
+
 function nextEventLabel(pid) {
   const list = (state.calEvents || [])
     .filter(ev => ev.projectId === pid && ev.date >= state.todayKey)
@@ -641,7 +732,9 @@ function projListCardHTML() {
   const showDone = !!renderProjects.showDone;
   let list = (state.projects || []).filter(p => p.active !== false);
   if (!showDone) list = list.filter(p => (p.status || 'active') === 'active');
+  const missingN = list.filter(missingStaff).length;
   if (f === 'mine') list = list.filter(isMyProject);
+  if (f === 'missing') list = list.filter(missingStaff);
   if (f === 'team') list = list.filter(p => !isMyProject(p));
   list.sort((a, b) => (sort.key === 'createdAt'
     ? (a.createdAt || 0) - (b.createdAt || 0) // 登録日は数値比較(未設定は最古扱い)
@@ -650,7 +743,7 @@ function projListCardHTML() {
   const rows = list.map(p => `
     <tr>
       <td class="nowrap"><b>${esc(p.code)}</b></td>
-      <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}${p.keywordsReview ? ' <span class="tag" title="ID重複の修復対象でした。キーワードが他案件と混ざっている可能性があります。編集して保存すると消えます">キーワード要確認</span>' : ''}${budgetBadge(p)}</td>
+      <td>${esc(p.name)}${(p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}${missingStaff(p) ? ' <span class="tag missing" title="担当営業または制作が未入力です。「編集」から入力してください">担当未入力</span>' : ''}${p.keywordsReview ? ' <span class="tag" title="ID重複の修復対象でした。キーワードが他案件と混ざっている可能性があります。編集して保存すると消えます">キーワード要確認</span>' : ''}${budgetBadge(p)}</td>
       <td>${esc(p.client || '-')}</td>
       <td>${(p.sales || []).map(esc).join('、') || '-'}</td>
       <td>${(p.makers || []).map(esc).join('、') || '-'}</td>
@@ -661,6 +754,7 @@ function projListCardHTML() {
         ${(p.status || 'active') === 'active'
           ? `<button class="btn sm" data-act="proj-done" data-id="${esc(p.id)}">納品完了</button>`
           : `<button class="btn sm" data-act="proj-reopen" data-id="${esc(p.id)}">再開</button>`}
+        <button class="btn sm ghost" data-act="proj-edit" data-id="${esc(p.id)}">編集</button>
         <button class="btn sm ghost" data-act="proj-kw" data-id="${esc(p.id)}">キーワード</button>
         <button class="btn sm ghost danger" data-act="proj-del" data-id="${esc(p.id)}">削除</button>
       </td>
@@ -672,8 +766,11 @@ function projListCardHTML() {
         <button class="fchip ${f === 'all' ? 'on' : ''}" data-act="plist-filter" data-f="all">すべて表示</button>
         <button class="fchip ${f === 'mine' ? 'on' : ''}" data-act="plist-filter" data-f="mine">自分の案件</button>
         <button class="fchip ${f === 'team' ? 'on' : ''}" data-act="plist-filter" data-f="team">チーム案件</button>
+        <button class="fchip ${f === 'missing' ? 'on' : ''}" data-act="plist-filter" data-f="missing">担当未入力${missingN ? `(${missingN})` : ''}</button>
       </div>
     </div>
+    ${missingN && f !== 'missing' ? `<div class="staff-summary mt8">担当営業・制作が未入力の案件が ${missingN}件あります →
+      <button class="btn sm" data-act="plist-filter" data-f="missing">未入力のみ表示</button></div>` : ''}
     <div class="table-wrap mt8"><table>
       <thead><tr>
         <th class="sortable" data-act="plist-sort" data-k="code">コード${arrow('code')}</th>
@@ -683,10 +780,10 @@ function projListCardHTML() {
         <th class="sortable" data-act="plist-sort" data-k="createdAt">登録日${arrow('createdAt')}</th>
         <th>次の予定</th><th>データ</th><th></th>
       </tr></thead>
-      <tbody>${rows || `<tr><td colspan="9" class="muted">${f === 'mine' ? '担当に自分(' + esc(state.settings.userName) + ')が含まれる案件がありません' : '該当する案件がありません'}</td></tr>`}</tbody>
+      <tbody>${rows || `<tr><td colspan="9" class="muted">${f === 'mine' ? '担当に自分(' + esc(state.settings.userName) + ')が含まれる案件がありません' : f === 'missing' ? '担当未入力の案件はありません' : '該当する案件がありません'}</td></tr>`}</tbody>
     </table></div>
     <div class="row mt8">
-      <span class="muted">「自分の案件」= 担当営業/制作に自分の表示名を含む案件。</span>
+      <span class="muted">「自分の案件」= 担当営業/制作に自分の表示名を含む案件。担当の変更は各行の「編集」から(チームの誰でも編集できます)。</span>
       <span class="grow"></span>
       <button class="btn sm ghost" data-act="plist-done">${showDone ? '納品完了を隠す' : '納品完了も表示'}</button>
     </div>
@@ -864,10 +961,7 @@ function renderProjAdd() {
         <label class="field">案件名<input type="text" id="pj-name" placeholder="例: 在庫管理システム刷新"></label>
         <label class="field">顧客<input type="text" id="pj-client" placeholder="例: 山田商事"></label>
       </div>
-      <div class="field-row">
-        <label class="field">担当営業(複数はカンマ区切り)<input type="text" id="pj-sales" placeholder="例: 佐藤, 鈴木"></label>
-        <label class="field">制作(複数はカンマ区切り)<input type="text" id="pj-makers" placeholder="例: 田中, 高橋"></label>
-      </div>
+      ${staffFieldsHTML('pj')}
       <div class="field-row">
         <label class="field">制作データ(Box URL)<input type="text" id="pj-box" placeholder="https://app.box.com/folder/..."></label>
         <label class="field">キーワード(読点・カンマ区切り)<input type="text" id="pj-kw" placeholder="例: 山田商事, 在庫管理"></label>
@@ -1080,6 +1174,99 @@ function openKeywordModal(pid) {
       state = await window.api.updateProject(pid, { keywords: kws });
       root.innerHTML = ''; root.onclick = null;
       renderProjects(); toast('キーワードを更新しました');
+    }
+  };
+}
+
+/** 案件の編集(案件名・顧客・担当営業・制作・Box・予算・見積・状態)。チームの誰でも編集可、保存は projects:update */
+function openProjectEditModal(pid) {
+  const p = state.projects.find(p => p.id === pid);
+  if (!p) return;
+  const root = $('#modal-root');
+  const close = () => { root.innerHTML = ''; root.onclick = null; };
+  root.innerHTML = `<div class="overlay"><div class="modal" style="width:620px">
+    <h2>[${esc(p.code)}] 案件を編集</h2>
+    <div class="field-row">
+      <label class="field">案件名<input type="text" id="pe-name" value="${esc(p.name || '')}"></label>
+      <label class="field">顧客<input type="text" id="pe-client" value="${esc(p.client || '')}"></label>
+    </div>
+    ${staffFieldsHTML('pe', p.sales || [], p.makers || [])}
+    <label class="field">制作データ(Box URL)<input type="text" id="pe-box" value="${esc(p.boxUrl || '')}" placeholder="https://app.box.com/folder/..."></label>
+    <div class="field-row">
+      <label class="field">予算工数(h)<input type="number" id="pe-budget" min="0" value="${+p.budgetHours || ''}"></label>
+      <label class="field">見積金額(円)<input type="number" id="pe-est" min="0" value="${+p.estimateAmount || ''}"></label>
+      <label class="field">状態<select id="pe-status">
+        <option value="active" ${(p.status || 'active') === 'active' ? 'selected' : ''}>稼働中</option>
+        <option value="delivered" ${p.status === 'delivered' ? 'selected' : ''}>納品完了</option>
+      </select></label>
+    </div>
+    ${p.lastEditedBy ? `<div class="muted">最終編集: ${esc(p.lastEditedBy)}${p.lastEditedAt ? ' ' + fmtYMD(p.lastEditedAt) : ''}</div>` : ''}
+    <div class="staff-msg err" id="pe-err"></div>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">キャンセル</button>
+      <button class="btn primary" data-act="pe-save">保存</button>
+    </div>
+  </div></div>`;
+  ['#pe-sales', '#pe-makers'].forEach(id => updateStaffMsg($(id), true));
+  root.onclick = async (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (e.target.classList.contains('overlay')) { close(); return; }
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === 'modal-close') { close(); return; }
+    if (act === 'name-chip') { addNameChip(btn); return; }
+    if (act === 'pe-save') {
+      const name = $('#pe-name').value.trim();
+      const staff = readStaffFields('pe');
+      if (!name) { $('#pe-err').textContent = '案件名を入力してください'; return; }
+      if (!staff) { $('#pe-err').textContent = '担当営業と制作は必須です(どちらも1名以上)'; return; }
+      const res = await window.api.updateProject(pid, {
+        name, client: $('#pe-client').value.trim(), sales: staff.sales, makers: staff.makers,
+        boxUrl: $('#pe-box').value.trim(), budgetHours: +$('#pe-budget').value || 0,
+        estimateAmount: +$('#pe-est').value || 0, status: $('#pe-status').value
+      });
+      if (res.error) { $('#pe-err').textContent = res.error; return; }
+      state = res; close();
+      renderProjects(); if (activeTab !== 'projects') renderTab(activeTab);
+      toast('案件を更新しました');
+    }
+  };
+}
+
+/** フォルダ一括インポートの前に、取り込む全案件に付ける担当営業・制作を聞く(必須。制作は自分を初期値) */
+function openImportStaffModal() {
+  const root = $('#modal-root');
+  const close = () => { root.innerHTML = ''; root.onclick = null; };
+  const me = state.settings.userName;
+  root.innerHTML = `<div class="overlay"><div class="modal" style="width:620px">
+    <h2>フォルダから一括インポート</h2>
+    <p class="muted">取り込む案件すべてに、次の担当営業・制作を設定します(あとから各案件の「編集」で個別に変更できます)。</p>
+    ${staffFieldsHTML('pi', [], me ? [me] : [])}
+    <div class="staff-msg err" id="pi-err"></div>
+    <div class="foot">
+      <button class="btn" data-act="modal-close">キャンセル</button>
+      <button class="btn primary" data-act="pi-go">📁 フォルダを選んでインポート</button>
+    </div>
+  </div></div>`;
+  updateStaffMsg($('#pi-makers'), false);
+  root.onclick = async (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (e.target.classList.contains('overlay')) { close(); return; }
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === 'modal-close') { close(); return; }
+    if (act === 'name-chip') { addNameChip(btn); return; }
+    if (act === 'pi-go') {
+      const staff = readStaffFields('pi');
+      if (!staff) { $('#pi-err').textContent = '担当営業と制作は必須です(どちらも1名以上)'; return; }
+      const r = await window.api.importFolderProjects(staff);
+      if (r.canceled) return; // フォルダ選択をやめた → モーダルは残す
+      if (!r.ok) { $('#pi-err').textContent = r.error || 'インポートできませんでした'; return; }
+      close();
+      state = await window.api.getState();
+      if (r.added) renderProjAdd.last = `フォルダから${r.added}件の案件を登録しました(担当営業: ${esc(staff.sales.join('、'))} / 制作: ${esc(staff.makers.join('、'))})。`;
+      renderTab(activeTab);
+      toast(`${r.added}件の案件を登録しました` + (r.skipped ? `(既存${r.skipped}件はスキップ)` : ''));
     }
   };
 }
@@ -1476,12 +1663,15 @@ function memberVersionsHTML() {
     else {
       if (!t.watchRoots) out.push('<span class="chip UNSURE" title="案件フォルダが登録されていないため、フォルダからの案件判定ができません">フォルダ未登録</span>');
       else if (t.rootsMissing > 0) out.push(`<span class="chip UNSURE" title="登録された案件フォルダのうち${t.rootsMissing}件が見つかりません(Box未接続・パス変更など)">フォルダ未接続</span>`);
+      if (t.missingFolders > 0) out.push(`<span class="chip UNSURE" title="${esc('制作担当なのに案件フォルダ(CODE_名称)が監視フォルダ内に無い案件:\n' + (t.missingFolderCodes || []).join(', ') + (t.missingFolders > (t.missingFolderCodes || []).length ? ' ほか' : ''))}">フォルダ未作成 ${t.missingFolders}件</span>`);
       if (!t.titleDetect) out.push('<span class="muted" title="ウィンドウタイトルからの案件判定がオフです">タイトル判定オフ</span>');
       if (!out.length) out.push('<span class="chip STABLE">OK</span>');
     }
     return out.join(' ');
   };
-  const selfTracking = { trackWork: !!state.settings.trackWork, titleDetect: state.settings.titleDetect === true, watchRoots: (state.watchRoots || state.settings.watchRoots || []).filter(Boolean).length, rootsMissing: 0 };
+  const fs0 = state.folderStatus || {};
+  const selfTracking = { trackWork: !!state.settings.trackWork, titleDetect: state.settings.titleDetect === true, watchRoots: (state.watchRoots || state.settings.watchRoots || []).filter(Boolean).length, rootsMissing: (fs0.missing || []).length,
+    ...(fs0.reliable ? { missingFolders: (fs0.allMissingCodes || []).length, missingFolderCodes: (fs0.allMissingCodes || []).slice(0, 20) } : {}) };
   const rows = [{ name: state.settings.userName + '(あなた)', appVersion: state.appVersion, versionLabel: 'v' + state.appVersion, updatedAt: Date.now(), platform: state.platform, arch: state.arch, tracking: selfTracking }, ...members]
     .map(m => ({ ...m, old: !m.appVersion || cmp(m.appVersion, latest) < 0 }))
     .sort((a, b) => (b.old - a.old) || String(a.name).localeCompare(String(b.name)));
@@ -1494,7 +1684,7 @@ function memberVersionsHTML() {
       <td>${esc(os(r) || '-')}</td><td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
       <td>${r.old ? '<span class="chip LOW">古い版</span>' : '<span class="chip STABLE">最新</span>'}</td>
       <td>${trackHTML(r.tracking)}</td></tr>`).join('')}</tbody></table></div>
-    <div class="muted mt8">計測: 案件の工数を記録する設定の状況です。「計測オフ」「フォルダ未登録」の人は、勤怠はあっても案件の工数が空になります。</div></div>`;
+    <div class="muted mt8">計測: 案件の工数を記録する設定の状況です。「計測オフ」「フォルダ未登録」の人は、勤怠はあっても案件の工数が空になります。「フォルダ未作成」は制作担当の案件のフォルダが本人の監視フォルダ内に無い件数です(本人の「今日の勤務」に対処ボタンが出ています)。</div></div>`;
 }
 
 /** 管理者: メンバー別の今月の残業(同期サマリーから試算) */
@@ -1599,6 +1789,15 @@ function memberDetailHTML(roster) {
     <div class="mt8"><b>今月の案件別工数</b>(${monthProj.length}案件 ・ 計 ${fmtDur(monthProjTotal)}):
       ${monthProj.length ? monthProj.map(([pid, min]) => projChip(pid, min)).join(' ') : '<span class="muted">なし</span>'}
       ${gapDays ? ` <span class="chip UNSURE" title="実働1時間超で案件の工数が1分未満の日">工数未計測 ${gapDays}日</span>` : ''}</div>
+    ${(() => {
+      // 制作担当なのに案件フォルダが無い案件(同期の tracking から。自分は端末の状態)
+      const fsSelf = state.folderStatus || {};
+      const t = m.id === 'self' ? (fsSelf.reliable ? { missingFolders: (fsSelf.allMissingCodes || []).length, missingFolderCodes: fsSelf.allMissingCodes || [] } : null)
+        : (((state.remoteTeam && state.remoteTeam.members) || []).find(x => x.id === m.id) || {}).tracking;
+      if (!t || !(t.missingFolders > 0)) return '';
+      const codes = (t.missingFolderCodes || []).slice(0, 20);
+      return `<div class="mt8"><span class="chip UNSURE">フォルダ未作成 ${t.missingFolders}件</span> <span class="muted">制作担当なのに案件フォルダが監視フォルダ内に無い案件:</span> ${codes.map(c => { const p = (state.projects || []).find(x => String(x.code).toUpperCase() === String(c).toUpperCase()); return `<span class="tag" title="${esc(p ? projName(p.id) : c)}">${esc(c)}</span>`; }).join(' ')}${t.missingFolders > codes.length ? ` <span class="muted">ほか${t.missingFolders - codes.length}件</span>` : ''}</div>`;
+    })()}
     <div class="table-wrap"><table class="mt8"><thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>残業</th><th>私用除外</th><th>状態</th><th>案件</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="9" class="muted">記録がありません</td></tr>'}</tbody></table></div>
     <div class="mt8"><b>稼働扱いのマイルール</b>: ${(() => {
@@ -2138,12 +2337,14 @@ document.addEventListener('click', async (e) => {
     const code = $('#pj-code').value.trim().toUpperCase(), name = $('#pj-name').value.trim();
     if (!code || !name) { toast('コードと案件名を入力してください'); return; }
     if (!/^[A-Z]+\d+$/.test(code)) { toast('案件コードは「大文字英字+数字」(例: F000, T123)にしてください'); return; }
+    const staff = readStaffFields('pj');
+    if (!staff) { toast('担当営業と制作は必須です(どちらも1名以上)'); return; }
     const split = (v) => v.split(/[,、]/).map(s => s.trim()).filter(Boolean);
     const res = await window.api.addProject({
       code, name,
       client: $('#pj-client').value.trim(),
-      sales: split($('#pj-sales').value),
-      makers: split($('#pj-makers').value),
+      sales: staff.sales,
+      makers: staff.makers,
       boxUrl: $('#pj-box').value.trim(),
       keywords: split($('#pj-kw').value),
       estimateAmount: +$('#pj-est').value || 0,
@@ -2190,13 +2391,15 @@ document.addEventListener('click', async (e) => {
     renderProjects(); toast('案件を削除しました');
   }
   if (act === 'proj-kw') openKeywordModal(btn.dataset.id);
+  if (act === 'proj-edit') openProjectEditModal(btn.dataset.id);
+  if (act === 'name-chip') addNameChip(btn);
   if (act === 'perm-open') await window.api.openScreenSettings();
   if (act === 'app-relaunch') await window.api.relaunchApp();
   if (act === 'watch-add') {
     const r = await window.api.addWatchRoot();
     if (r.canceled) return;
     state = r.state || await window.api.getState();
-    renderProjects();
+    renderProjects(); if (activeTab !== 'projects') renderTab(activeTab);
     toast('監視フォルダを追加しました');
   }
   if (act === 'watch-remove') {
@@ -2210,15 +2413,7 @@ document.addEventListener('click', async (e) => {
     renderProjects();
     toast(`継続時間を${v}分に設定しました`);
   }
-  if (act === 'proj-import') {
-    const r = await window.api.importFolderProjects();
-    if (r.canceled) return;
-    if (!r.ok) { toast(r.error || 'インポートできませんでした'); return; }
-    state = await window.api.getState();
-    if (r.added) renderProjAdd.last = `フォルダから${r.added}件の案件を登録しました。`;
-    renderTab(activeTab);
-    toast(`${r.added}件の案件を登録しました` + (r.skipped ? `(既存${r.skipped}件はスキップ)` : ''));
-  }
+  if (act === 'proj-import') openImportStaffModal();
   if (act === 'assign') openAssignModal(+btn.dataset.idx);
   if (act === 'assign-hint') {
     state = await window.api.assignBlock(state.todayKey, +btn.dataset.idx, btn.dataset.pid, []);
@@ -2340,10 +2535,39 @@ document.addEventListener('click', async (e) => {
     });
     if (r.ok) { state = r.state; renderAdmin(); toast('会社ポリシーを保存しました(チーム全員に次回同期で反映)'); } else toast(`エラー: ${r.error}`);
   }
-  if (act === 'folder-dismiss') {
+  if (act === 'folder-dismiss' || act === 'folder-snooze') {
     e.preventDefault();
-    state = await window.api.dismissFolderHint(btn.dataset.code);
+    state = await window.api.snoozeFolderHint(btn.dataset.code);
+    renderToday(); toast(`${btn.dataset.code} は7日間通知しません`);
+  }
+  if (act === 'folder-register') {
+    const r = await window.api.registerProjectFolder(btn.dataset.code);
+    if (r.canceled) return;
+    if (!r.ok) { toast(`エラー: ${r.error}`); return; }
+    state = r.state || await window.api.getState();
     renderToday();
+    toast(r.warning || '監視フォルダに登録しました');
+  }
+  if (act === 'folder-create') {
+    const r = await window.api.createProjectFolder(btn.dataset.code);
+    if (r.canceled) return;
+    if (!r.ok) { toast(`エラー: ${r.error}`); return; }
+    state = r.state || await window.api.getState();
+    renderToday();
+    toast(`フォルダを作成しました: ${r.path}`);
+  }
+  if (act === 'folder-leave') {
+    const { id, code, name } = btn.dataset;
+    if (!confirm(`${code} ${name} の制作から、あなた(${state.settings.userName})の名前を外します。よろしいですか?\n(チーム全員の案件リストに反映されます)`)) return;
+    const r = await window.api.leaveMakers(id);
+    if (!r.ok) {
+      if (r.onlyMaker) {
+        if (confirm(`${r.error}\n\n今すぐこの案件の編集画面を開きますか?`)) openProjectEditModal(id);
+      } else toast(`エラー: ${r.error}`);
+      return;
+    }
+    state = r.state;
+    renderToday(); toast(`${code} の制作から外れました`);
   }
   if (act === 'review-resolve') {
     const g = (state.reviewItems || [])[+btn.dataset.g];

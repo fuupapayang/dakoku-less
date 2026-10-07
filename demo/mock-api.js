@@ -9,6 +9,18 @@
 
   let ruleSeq = 3, projSeq = 3;
 
+  // 担当(担当営業・制作)の正規化・必須チェック(src/projectEdit.js splitNames/validateStaff の簡易版)
+  const splitNames = (v) => {
+    const out = [], seen = new Set();
+    for (const c of (Array.isArray(v) ? v : [v]).flatMap(x => String(x == null ? '' : x).split(/[,、，;；\n]+/))) {
+      const t = c.trim(), k = t.replace(/\s/g, '');
+      if (k && !seen.has(k)) { seen.add(k); out.push(t); }
+    }
+    return out;
+  };
+  const staffError = (sales, makers) => !sales.length && !makers.length ? '担当営業と制作を入力してください(どちらも1名以上必須です)'
+    : !sales.length ? '担当営業を1名以上入力してください' : !makers.length ? '制作を1名以上入力してください' : null;
+
   const projects = [
     { id: 'p1', code: 'F000', name: '在庫管理システム刷新', client: '山田商事', sales: ['あなた', '佐藤 美咲'], makers: ['田中 蓮'], boxUrl: 'https://app.box.com/folder/000000001', status: 'active', keywords: ['山田商事', '在庫管理'], budgetHours: 45, estimateAmount: 1500000, active: true, createdAt: Date.now() - 20 * 86400000 },
     { id: 'p2', code: 'T123', name: '勤怠システム導入', client: '鈴木建設', sales: ['佐藤 美咲'], makers: ['高橋 大和'], boxUrl: 'https://app.box.com/folder/000000002', status: 'active', keywords: ['鈴木建設'], budgetHours: 80, estimateAmount: 800000, active: true, createdAt: Date.now() - 15 * 86400000 },
@@ -169,7 +181,16 @@
     currentWork: { projectId: 'p1', code: 'F000', name: '山田商事 在庫管理システム', via: 'keyword', app: 'Excel' },
     team: seedTeam(), remoteTeam: null, teamProfiles: [], activeTeamId: '',
     syncStatus: { state: 'idle', lastSync: null, error: null, members: 0 },
-    watchRoots: [], watchStatus: { mode: 'idle', roots: 0, lastHitAt: 0 },
+    watchRoots: ['/Users/demo/Box/案件'], watchStatus: { mode: 'watch+poll', roots: 1, lastHitAt: 0 },
+    // 制作担当の案件フォルダが無いアラートのデモ(main.js folderStatus と同じ形)
+    folderStatus: {
+      noRoots: false, missing: [], snoozedCount: 0, reliable: true, defaultParent: '/Users/demo/Box/案件', trackWork: true,
+      unregistered: [
+        { id: 'p1', code: 'F000', name: '在庫管理システム刷新', folderName: 'F000_在庫管理システム刷新', snoozed: false },
+        { id: 'p2', code: 'T123', name: '勤怠システム導入', folderName: 'T123_勤怠システム導入', snoozed: false }
+      ],
+      allMissingCodes: ['F000', 'T123']
+    },
     screenPermission: 'granted', recording: true, platform: 'demo'
   };
 
@@ -233,7 +254,12 @@
     addProject: async (p) => {
       if (!/^[A-Z]+\d+$/.test(p.code)) return { error: '案件コードは「大文字英字+数字」(例: F000, T123)で入力してください' };
       if (state.projects.some(x => x.code === p.code)) return { error: `案件コード ${p.code} は既に登録されています` };
-      state.projects.push({ id: 'p' + ++projSeq, active: true, keywords: [], client: '', sales: [], makers: [], boxUrl: '', status: 'active', createdAt: Date.now(), ...p });
+      const sales = splitNames(p.sales), makers = splitNames(p.makers);
+      const err = staffError(sales, makers);
+      if (err) return { error: err };
+      const t = Date.now();
+      state.projects.push({ id: 'p' + ++projSeq, active: true, keywords: [], client: '', boxUrl: '', status: 'active', createdAt: t, updatedAt: t,
+        ...p, sales, makers, createdBy: state.settings.userName });
       return S();
     },
     addCalEvent: async (ev) => {
@@ -255,10 +281,35 @@
       state.calEvents = state.calEvents.filter(ev => ev.id !== id); return S();
     },
     openUrl: async (url) => { window.open(url, '_blank'); return true; },
-    importFolderProjects: async () => ({ ok: false, error: 'ブラウザデモでは利用できません(デスクトップ版の機能です)' }),
+    importFolderProjects: async (staff) => ({ ok: false, error: 'ブラウザデモでは利用できません(デスクトップ版の機能です)' }),
     addWatchRoot: async () => ({ ok: false, canceled: true }),
+    // 案件フォルダのアラート: 登録・作成・制作から外れるはデスクトップ版のみ。スヌーズはデモでも動く
+    registerProjectFolder: async () => ({ ok: false, error: 'ブラウザデモでは利用できません(デスクトップ版の機能です)' }),
+    createProjectFolder: async () => ({ ok: false, error: 'ブラウザデモでは利用できません(デスクトップ版の機能です)' }),
+    leaveMakers: async () => ({ ok: false, error: 'ブラウザデモでは利用できません(デスクトップ版の機能です)' }),
+    snoozeFolderHint: async (code) => {
+      const f = state.folderStatus;
+      f.unregistered = f.unregistered.filter(p => p.code !== code); f.snoozedCount++;
+      return S();
+    },
+    dismissFolderHint: async (code) => window.api.snoozeFolderHint(code),
     removeWatchRoot: async () => S(),
-    updateProject: async (id, patch) => { const p = state.projects.find(p => p.id === id); if (p) Object.assign(p, patch); return S(); },
+    updateProject: async (id, patch) => {
+      const p = state.projects.find(p => p.id === id);
+      if (!p) return S();
+      const next = { ...patch };
+      // 担当に触れる更新だけ必須チェック(main.js projects:update / src/projectEdit.js applyEdit と同じ)
+      if ('sales' in next || 'makers' in next) {
+        next.sales = splitNames('sales' in next ? next.sales : p.sales);
+        next.makers = splitNames('makers' in next ? next.makers : p.makers);
+        const err = staffError(next.sales, next.makers);
+        if (err) return { error: err };
+      }
+      if ('name' in next && !String(next.name || '').trim()) return { error: '案件名を入力してください' };
+      for (const k of ['id', 'code', 'createdAt', 'createdBy', 'createdById']) delete next[k];
+      Object.assign(p, next, { updatedAt: Math.max(Date.now(), (p.updatedAt || 0) + 1), lastEditedBy: state.settings.userName, lastEditedAt: Date.now() });
+      return S();
+    },
     deleteProject: async (id) => { state.projects = state.projects.filter(p => p.id !== id); return S(); },
     assignBlock: async (k, idx, pid, kws) => {
       const day = state.days[k];

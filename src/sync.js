@@ -93,12 +93,19 @@ function roundMinMap(map) {
 /** 案件記録の設定状況 { trackWork, titleDetect, watchRoots, rootsMissing } */
 function normTracking(t) {
   t = t || {};
-  return {
+  const out = {
     trackWork: !!t.trackWork,
     titleDetect: !!t.titleDetect,
     watchRoots: Number(t.watchRoots) || 0,
     rootsMissing: Number(t.rootsMissing) || 0
   };
+  // 制作担当なのに案件フォルダが無い件数とコード(最大20件)。判定できないとき(未接続など)は送らない
+  if (t.missingFolders != null) {
+    out.missingFolders = Math.max(0, Number(t.missingFolders) || 0);
+    out.missingFolderCodes = (Array.isArray(t.missingFolderCodes) ? t.missingFolderCodes : [])
+      .map(c => String(c).slice(0, 20)).filter(Boolean).slice(0, 20);
+  }
+  return out;
 }
 
 class Sync {
