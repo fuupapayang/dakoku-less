@@ -1338,6 +1338,32 @@ function selfRow(dateKey) {
   };
 }
 
+/** 管理者: メンバーのアプリのバージョン(古い版の人を見つける) */
+function memberVersionsHTML() {
+  const myId = (state.settings.sync && state.settings.sync.memberId) || '';
+  const members = ((state.remoteTeam && state.remoteTeam.members) || []).filter(m => m.id !== myId);
+  if (!members.length) return '';
+  const cmp = (a, b) => {
+    const pa = String(a || '0').split('.').map(Number), pb = String(b || '0').split('.').map(Number);
+    for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    return 0;
+  };
+  // 基準 = 自分と同期メンバーの中で一番新しい版
+  const latest = members.reduce((v, m) => (m.appVersion && cmp(m.appVersion, v) > 0 ? m.appVersion : v), state.appVersion || '0');
+  const os = (m) => ({ darwin: 'Mac', win32: 'Windows' }[m.platform] || '') + (m.arch ? `(${m.arch === 'arm64' ? 'Apple シリコン' : m.arch})` : '');
+  const rows = [{ name: state.settings.userName + '(あなた)', appVersion: state.appVersion, versionLabel: 'v' + state.appVersion, updatedAt: Date.now(), platform: state.platform, arch: state.arch }, ...members]
+    .map(m => ({ ...m, old: !m.appVersion || cmp(m.appVersion, latest) < 0 }))
+    .sort((a, b) => (b.old - a.old) || String(a.name).localeCompare(String(b.name)));
+  const oldN = rows.filter(r => r.old).length;
+  return `<div class="card"><div class="row"><h2 class="grow">メンバーのアプリ</h2>
+      ${oldN ? `<span class="chip LOW">古い版 ${oldN}人</span>` : '<span class="chip STABLE">全員最新</span>'}</div>
+    <div class="muted">最新: v${esc(latest)}。v0.12.6以降は自動で更新されます。「古い版」の人(特にv0.12.6より前)は手動でインストールが必要です。</div>
+    <div class="table-wrap"><table class="mt8"><thead><tr><th>メンバー</th><th>バージョン</th><th>PC</th><th>最終同期</th><th></th></tr></thead>
+    <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td><b>${esc(r.versionLabel || '-')}</b>${r.appVersion ? '' : ' <span class="muted">(推定)</span>'}</td>
+      <td>${esc(os(r) || '-')}</td><td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+      <td>${r.old ? '<span class="chip LOW">古い版</span>' : '<span class="chip STABLE">最新</span>'}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+
 /** 管理者: メンバー別の今月の残業(同期サマリーから試算) */
 function teamOvertimeHTML(roster) {
   if (!state.overtime) return '';
@@ -1507,6 +1533,7 @@ function renderAdmin() {
       <div class="kpi"><div class="num">${waiting}</div><div class="lbl">承認待ち</div></div>
       <div class="kpi"><div class="num" style="color:${alerts.length ? 'var(--red)' : 'inherit'}">${alerts.length}</div><div class="lbl">乖離アラート(30分超)</div></div>
     </div>
+    ${memberVersionsHTML()}
     ${teamOvertimeHTML([{ name: state.settings.userName + '(あなた)', days: state.days }, ...roster])}
     ${memberDetailHTML([{ id: 'self', name: state.settings.userName + '(あなた)', days: state.days }, ...roster.map(r => ({ ...r, workRules: ((state.remoteTeam && state.remoteTeam.members) || []).find(x => x.id === r.id)?.workRules || [] }))])}
     <div class="card">

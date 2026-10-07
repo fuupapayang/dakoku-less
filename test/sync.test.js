@@ -36,5 +36,13 @@ const { Sync } = require('../src/sync');
   const merged2 = await s.syncProjects([{ id: 'q1', code: 'X10', name: 'n', keywords: ['a'], updatedAt: 5 }]);
   assert.deepStrictEqual(merged2.find(p => p.code === 'X10').keywords, ['a'], '削除したキーワードが反映される');
 
-  console.log('✓ all sync tests passed');
+  // ---- バージョン同期
+const { compareVersions, inferLegacyVersion } = require('../src/sync');
+assert.ok(compareVersions('0.13.1', '0.13.2') < 0);
+assert.ok(compareVersions('0.13.10', '0.13.2') > 0);   // 数値として比較
+assert.strictEqual(compareVersions('1.0', '1.0.0'), 0);
+assert.strictEqual(inferLegacyVersion({ a: { categoryMin: {} } }), 'v0.13.0〜0.13.1');
+assert.strictEqual(inferLegacyVersion({ a: { privateMin: 0 } }), 'v0.12');
+assert.strictEqual(inferLegacyVersion({ a: { workMin: 1 } }), 'v0.11以前');
+console.log('✓ all sync tests passed');
 })().catch(e => { console.error(e); process.exit(1); });

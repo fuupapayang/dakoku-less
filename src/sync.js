@@ -52,6 +52,27 @@ function decDoc(doc) {
   return o;
 }
 
+/** バージョン文字列の比較(a<b: 負, 等しい: 0, a>b: 正) */
+function compareVersions(a, b) {
+  const pa = String(a || '0').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b || '0').split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
+}
+
+/**
+ * バージョンを同期しない旧版(〜v0.13.1)のメンバーは、同期項目の有無からおおまかに推定する
+ *  categoryMin あり → v0.13.0〜0.13.1 / privateMin あり → v0.12 / どちらもなし → v0.11以前
+ */
+function inferLegacyVersion(days) {
+  const all = Object.values(days || {});
+  if (all.some(d => d && 'categoryMin' in d)) return 'v0.13.0〜0.13.1';
+  if (all.some(d => d && 'privateMin' in d)) return 'v0.12';
+  return 'v0.11以前';
+}
+
 class Sync {
   /** @param cfg () => ({projectId, apiKey, teamId, memberId, userName, enabled}) */
   constructor(cfg) {
@@ -216,7 +237,11 @@ class Sync {
     }
     const workRules = (rules || []).filter(r => r.enabled !== false && r.treatAs === 'work')
       .map(r => ({ label: r.label, fromMin: r.fromMin, toMin: r.toMin, weekday: r.weekday == null ? null : r.weekday }));
-    const payload = { name: c.userName, recoruUserId: c.recoruUserId || '', workRules, days: out };
+    const payload = {
+      name: c.userName, recoruUserId: c.recoruUserId || '', workRules,
+      appVersion: c.appVersion || '', platform: c.platform || '', arch: c.arch || '',
+      days: out
+    };
     if (this._changed('summary', payload)) {
       await this.setDoc(`summary/${c.memberId}`, { ...payload, updatedAt: Date.now() });
     }
@@ -251,7 +276,9 @@ class Sync {
       this.getDoc(`reviews/${c.memberId}`)
     ]);
     const members = summaries.map(s => ({
-      id: s.id, name: s.data.name || s.id, recoruUserId: s.data.recoruUserId || '', workRules: s.data.workRules || [], days: s.data.days || {}, updatedAt: s.data.updatedAt
+      id: s.id, name: s.data.name || s.id, recoruUserId: s.data.recoruUserId || '', workRules: s.data.workRules || [], days: s.data.days || {}, updatedAt: s.data.updatedAt,
+      appVersion: s.data.appVersion || '', platform: s.data.platform || '', arch: s.data.arch || '',
+      versionLabel: s.data.appVersion ? 'v' + s.data.appVersion : inferLegacyVersion(s.data.days)
     }));
     const teamStats = [];
     for (const d of dicts) {
@@ -268,4 +295,4 @@ class Sync {
   }
 }
 
-module.exports = { Sync, enc, dec, encDoc, decDoc };
+module.exports = { Sync, enc, dec, encDoc, decDoc, compareVersions, inferLegacyVersion };

@@ -869,7 +869,10 @@ function applyActiveProfile() {
 
 function syncCfg() {
   const s = settings().sync || {};
-  return { ...s, userName: settings().userName, recoruUserId: settings().recoruUserId || '' };
+  return {
+    ...s, userName: settings().userName, recoruUserId: settings().recoruUserId || '',
+    appVersion: app.getVersion(), platform: process.platform, arch: process.arch
+  };
 }
 
 /** 招待コード(base64のJSON)を作成/解析 */
@@ -1135,7 +1138,8 @@ function buildState() {
     watchRoots: settings().watchRoots || [],
     watchStatus: watcher ? watcher.status() : { mode: 'idle', roots: 0, lastHitAt: 0 },
     recording: !!currentInterval,
-    platform: process.platform
+    platform: process.platform,
+    arch: process.arch
   };
 }
 
