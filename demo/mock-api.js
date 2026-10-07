@@ -116,7 +116,7 @@
     ];
     let seed = 42;
     const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
-    for (const m of members) {
+    for (const [mi, m] of members.entries()) {
       m.days = {};
       for (let i = 35; i >= 1; i--) {
         const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
@@ -132,7 +132,13 @@
           start: s, end: s + lenH * 3600000, breakMin, workMin, confidence,
           status: submitted ? (rnd() < 0.6 ? 'approved' : 'submitted') : 'pending',
           discrepancyMin: rnd() < 0.08 ? Math.round(30 + rnd() * 60) : 0,
-          auto: submitted && rnd() < 0.8
+          auto: submitted && rnd() < 0.8,
+          // 案件の工数(小数1桁 = 同期の形式)。ときどき空にして「工数未計測」の表示を確認できるようにする
+          projectMin: (i + mi) % 9 === 4 ? {} : {
+            p1: Math.round(workMin * (0.2 + mi * 0.1) * 10) / 10,
+            p2: Math.round(workMin * 0.25 * 10) / 10,
+            ...(i % 3 === 0 ? { p3: Math.round(workMin * 0.1 * 10) / 10 } : {})
+          }
         };
       }
     }

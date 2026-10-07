@@ -31,6 +31,8 @@ class Store {
         sheetsToken: '',     // 連携用の合言葉(GAS側と一致)
         autoExportSheets: false, // 毎月自動で書き出す
         lastExportMonth: '', // 最後に自動書き出しした月 YYYY-MM
+        lastCurrentExportDay: '', // 当月分を最後に自動書き出しした日 YYYY-MM-DD(1日1回)
+        lastExportHash: {},  // 月(YYYY-MM) -> 最後に書き出した内容のハッシュ(修正後の再書き出し判定)
         trackWork: false,    // 案件トラッキング(オプトイン)
         titleDetect: false,  // ウィンドウタイトル判定(active-win使用・macOSは権限要求)。既定オフ
         folderDetect: false, // 【廃止】旧アクセシビリティ方式。互換のため残置(常にfalse)
@@ -102,6 +104,8 @@ class Store {
         if (this.data.settings.sheetsToken == null) this.data.settings.sheetsToken = '';
         if (this.data.settings.autoExportSheets == null) this.data.settings.autoExportSheets = false;
         if (this.data.settings.lastExportMonth == null) this.data.settings.lastExportMonth = '';
+        if (this.data.settings.lastCurrentExportDay == null) this.data.settings.lastCurrentExportDay = '';
+        if (!this.data.settings.lastExportHash || typeof this.data.settings.lastExportHash !== 'object') this.data.settings.lastExportHash = {};
         // 同一コードの重複案件を統合(過去のID衝突の後始末)
         this.dedupeProjects();
         this.lastRepair = this.repairIdCollisions();

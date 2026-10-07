@@ -24,6 +24,21 @@ function hhmm(min) {
   return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 }
 function inMonth(key, ym) { return String(key).slice(0, 7) === ym; }
+/** 日時 → 'YYYY-MM'(ローカル時刻) */
+function monthKey(d = new Date()) {
+  d = new Date(d);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+/** 書き出し内容の簡易ハッシュ(JSON長 + 32bit FNV-1a)。内容が変わったかの判定用 */
+function contentHash(obj) {
+  const str = JSON.stringify(obj);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${str.length}:${h.toString(16)}`;
+}
 
 /** 履歴タブの行: [ユーザ,日付,曜日,始業,終業,休憩,実働,会議,状態] */
 function historyRows(members, ym, statusLabel) {
@@ -53,12 +68,13 @@ function reportRows(members, ym, projById) {
   const headers = ['ユーザ', '案件コード', '案件名', '分', '時間(h)'];
   const rows = [];
   for (const m of members) {
-    const agg = {}; // pid -> min
+    const agg = {}; // pid -> min(端数のまま合計し、最後に1回だけ丸める。日ごとに丸めると小さな工数が消えるため)
     for (const [k, d] of Object.entries(m.days || {})) {
       if (!inMonth(k, ym)) continue;
-      for (const [pid, min] of Object.entries(d.projectMin || {})) agg[pid] = (agg[pid] || 0) + Math.round(min);
+      for (const [pid, min] of Object.entries(d.projectMin || {})) agg[pid] = (agg[pid] || 0) + (Number(min) || 0);
     }
-    for (const [pid, min] of Object.entries(agg)) {
+    for (const [pid, raw] of Object.entries(agg)) {
+      const min = Math.round(raw);
       if (min <= 0) continue;
       const p = projById[pid];
       rows.push([m.name, p ? p.code : pid, p ? p.name : '(削除済み)', min, Math.round(min / 60 * 100) / 100]);
@@ -159,4 +175,4 @@ async function post(url, token, sheets, summaries) {
   return json || { ok: true };
 }
 
-module.exports = { historyRows, reportRows, personalExport, projectListSheet, safeTabName, gasScript, post, hhmm, fmtTime, GAS_VERSION };
+module.exports = { historyRows, reportRows, monthKey, contentHash, personalExport, projectListSheet, safeTabName, gasScript, post, hhmm, fmtTime, GAS_VERSION };

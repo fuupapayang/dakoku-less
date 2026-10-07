@@ -24,6 +24,17 @@ assert.strictEqual(rep.rows.length, 2);
 const f = rep.rows.find(r => r[1] === 'F001');
 assert.deepStrictEqual(f, ['佐藤', 'F001', 'A案件', 300, 5]);   // 時間(h)は小数
 
+// 端数の工数: 日ごとに丸めず月合計で1回だけ丸める(0.4分×5日=2分。以前は日ごとに0へ丸めて消えていた)
+const frac = { name: '中村', days: {} };
+for (let i = 1; i <= 5; i++) frac.days[`2026-09-0${i}`] = { projectMin: { p1: 0.4, p2: 0.05 } };
+const fr = sh.reportRows([frac], '2026-09', projById);
+assert.deepStrictEqual(fr.rows.map(r => [r[1], r[3]]), [['F001', 2]]); // p2(合計0.25分)は丸めて0なので出さない
+
+// 月ハッシュ・月キー
+assert.strictEqual(sh.monthKey(new Date(2026, 9, 7)), '2026-10');
+assert.strictEqual(sh.contentHash([[1, 'a']]), sh.contentHash([[1, 'a']]));
+assert.notStrictEqual(sh.contentHash([[1, 'a']]), sh.contentHash([[1, 'b']]));
+
 // 回帰: 「未提出」に戻した日は古い提出値ではなく最新の推定値を書き出す
 const stale = { '2026-09-05': {
   status: 'pending',

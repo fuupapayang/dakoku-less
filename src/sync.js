@@ -4,7 +4,7 @@
  *
  * 共有するもの(いずれも集計・辞書のみ。タイトルや生ログは送信しない):
  *  - teams/{team}/meta/projects     … 案件マスター(キーワードはメンバー間でユニオン)
- *  - teams/{team}/summary/{member}  … 各メンバーの直近35日の勤怠+案件別分数
+ *  - teams/{team}/summary/{member}  … 各メンバーの前月1日以降の勤怠+案件別分数+案件記録の設定状況
  *  - teams/{team}/dict/{member}     … 各メンバーの学習統計(語句→案件回数)
  *  - teams/{team}/reviews/{member}  … 管理者の承認/差し戻し
  *
@@ -71,6 +71,34 @@ function inferLegacyVersion(days) {
   if (all.some(d => d && 'categoryMin' in d)) return 'v0.13.0〜0.13.1';
   if (all.some(d => d && 'privateMin' in d)) return 'v0.12';
   return 'v0.11以前';
+}
+
+/** サマリーの同期開始日(前月1日, 'YYYY-MM-DD'。ローカル時刻基準) */
+function summaryFromKey(now = Date.now()) {
+  const d = new Date(now);
+  const m = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
+/** 案件別分数を小数1桁に丸め、0.05分未満(丸めて0)の項目は落とす */
+function roundMinMap(map) {
+  const out = {};
+  for (const [k, v] of Object.entries(map || {})) {
+    const r = Math.round((Number(v) || 0) * 10) / 10;
+    if (r >= 0.1) out[k] = r;
+  }
+  return out;
+}
+
+/** 案件記録の設定状況 { trackWork, titleDetect, watchRoots, rootsMissing } */
+function normTracking(t) {
+  t = t || {};
+  return {
+    trackWork: !!t.trackWork,
+    titleDetect: !!t.titleDetect,
+    watchRoots: Number(t.watchRoots) || 0,
+    rootsMissing: Number(t.rootsMissing) || 0
+  };
 }
 
 class Sync {
@@ -206,13 +234,17 @@ class Sync {
     return merged;
   }
 
-  /** 自分の勤怠サマリー(直近35日)を1ドキュメントでpush */
-  async pushSummary(days, projectsMeta, rules = []) {
+  /**
+   * 自分の勤怠サマリー(前月1日〜今日)を1ドキュメントでpush。
+   * 以前は直近35日だったため、月の5日頃を過ぎると前月の月初分が管理者側で欠けていた。
+   * 前月1日起点なら前月全体が常に揃い、最大でも約62日分に収まる。
+   */
+  async pushSummary(days, projectsMeta, rules = [], now = Date.now()) {
     const c = this.cfg();
-    const cutoff = Date.now() - 35 * 86400000;
+    const fromKey = summaryFromKey(now);
     const out = {};
     for (const [key, d] of Object.entries(days)) {
-      if (new Date(key).getTime() < cutoff) continue;
+      if (String(key) < fromKey) continue;
       const est = d.correction || d.estimation;
       if (!est || est.start == null) continue;
       out[key] = {
@@ -226,9 +258,8 @@ class Sync {
         estWorkMin: d.estimation ? Math.round(d.estimation.workMin || 0) : 0,
         corrDeltaMin: d.correction && d.estimation ? Math.round((d.correction.workMin || 0) - (d.estimation.workMin || 0)) : 0,
         needsApproval: !!(d.submitted && d.submitted.needsApproval),
-        projectMin: Object.fromEntries(
-          Object.entries(d.projectMin || {}).map(([k, v]) => [k, Math.round(v)])
-        ),
+        // 15秒サンプリングの端数を案件×日ごとに整数へ丸めると小さな工数が消えるため、小数1桁で送る
+        projectMin: roundMinMap(d.projectMin),
         // 案件外の予定区分の時間 { internal: 社内会議(案件外), shoot: 撮影・ロケハン }
         categoryMin: Object.fromEntries(
           Object.entries(d.categoryMin || {}).map(([k, v]) => [k, Math.round(v)])
@@ -240,6 +271,8 @@ class Sync {
     const payload = {
       name: c.userName, recoruUserId: c.recoruUserId || '', workRules,
       appVersion: c.appVersion || '', platform: c.platform || '', arch: c.arch || '',
+      // 案件記録の設定状況(管理者が「案件の分数が出ない理由」を確認するため)
+      tracking: normTracking(c.tracking),
       days: out
     };
     if (this._changed('summary', payload)) {
@@ -278,7 +311,8 @@ class Sync {
     const members = summaries.map(s => ({
       id: s.id, name: s.data.name || s.id, recoruUserId: s.data.recoruUserId || '', workRules: s.data.workRules || [], days: s.data.days || {}, updatedAt: s.data.updatedAt,
       appVersion: s.data.appVersion || '', platform: s.data.platform || '', arch: s.data.arch || '',
-      versionLabel: s.data.appVersion ? 'v' + s.data.appVersion : inferLegacyVersion(s.data.days)
+      versionLabel: s.data.appVersion ? 'v' + s.data.appVersion : inferLegacyVersion(s.data.days),
+      tracking: s.data.tracking || null // 旧版(未送信)は null
     }));
     const teamStats = [];
     for (const d of dicts) {
@@ -295,4 +329,4 @@ class Sync {
   }
 }
 
-module.exports = { Sync, enc, dec, encDoc, decDoc, compareVersions, inferLegacyVersion };
+module.exports = { Sync, enc, dec, encDoc, decDoc, compareVersions, inferLegacyVersion, summaryFromKey, roundMinMap, normTracking };

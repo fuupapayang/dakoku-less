@@ -27,7 +27,9 @@ function fmtTime(ts) {
 }
 function fmtDur(min) {
   if (min == null || isNaN(min)) return '-';
-  return `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, '0')}`;
+  // 工数は小数(15秒単位)のことがあるため先に分へ丸める(丸めないと 59.6分 → 0:60 になる)
+  const m = Math.round(min);
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
 }
 function fmtDate(key) {
   const [y, m, d] = key.split('-').map(Number);
@@ -323,15 +325,17 @@ function renderToday() {
 
 /* ---------- ダッシュボード ---------- */
 function consumedMinR(pid, sinceTs = 0) {
+  // 日付キー(ローカル日付)同士で比較する。new Date('YYYY-MM-DD') はUTC 0時(=日本時間9時)になり境界の日がずれるため
+  const sinceKey = sinceTs ? keyOfTs(sinceTs) : '';
   let total = 0;
   for (const [k, d] of Object.entries(state.days)) {
-    if (new Date(k).getTime() >= sinceTs) total += (d.projectMin || {})[pid] || 0;
+    if (k >= sinceKey) total += (d.projectMin || {})[pid] || 0;
   }
   const myId = (state.settings.sync || {}).memberId || '';
   for (const m of ((state.remoteTeam && state.remoteTeam.members) || [])) {
     if (m.id === myId) continue;
     for (const [k, d] of Object.entries(m.days || {})) {
-      if (new Date(k).getTime() >= sinceTs) total += (d.projectMin || {})[pid] || 0;
+      if (k >= sinceKey) total += (d.projectMin || {})[pid] || 0;
     }
   }
   return total;
@@ -376,10 +380,14 @@ function renderDashboard() {
   const withBudget = actives.filter(p => p.budgetHours > 0);
   const alerts = withBudget.filter(p => consumedMinR(p.id) / 60 / p.budgetHours >= 0.8);
 
-  // 案件別 今月の工数
-  const monthRows = actives
-    .map(p => ({ p, min: consumedMinR(p.id, monthStart) }))
-    .filter(r => r.min > 0).sort((a, b) => b.min - a.min).slice(0, 8);
+  // 案件別 今月の工数(納品完了の案件も今月の作業分は含める。上位8件+残りは「ほかN案件」にまとめる)
+  const MONTH_TOP = 8;
+  const monthAll = (state.projects || []).filter(p => p.active !== false)
+    .map(p => ({ p, min: Math.round(consumedMinR(p.id, monthStart)) }))
+    .filter(r => r.min >= 1).sort((a, b) => b.min - a.min);
+  const monthRows = monthAll.slice(0, MONTH_TOP);
+  const monthRest = monthAll.slice(MONTH_TOP);
+  const monthRestMin = monthRest.reduce((a, r) => a + r.min, 0);
   const maxMonth = Math.max(60, ...monthRows.map(r => r.min));
 
   // 収益性
@@ -428,8 +436,9 @@ function renderDashboard() {
     <div class="card">
       <h2>今月の案件別工数${state.settings.sync.enabled ? '(チーム計)' : ''}</h2>
       ${monthRows.map(r => barRowHTML(
-        `<b>${esc(r.p.code)}</b> ${esc(r.p.name)}`, r.min, maxMonth, 'var(--green)', fmtDur(r.min)
+        `<b>${esc(r.p.code)}</b> ${esc(r.p.name)}${(r.p.status || 'active') !== 'active' ? ' <span class="tag">納品完了</span>' : ''}`, r.min, maxMonth, 'var(--green)', fmtDur(r.min)
       )).join('') || '<div class="muted">今月の計測データがまだありません。案件タブで計測をONにしてください。</div>'}
+      ${monthRest.length ? `<div class="muted mt8" title="${esc(monthRest.map(r => `${r.p.code} ${r.p.name} ${fmtDur(r.min)}`).join('\n'))}">ほか${monthRest.length}案件 ${fmtDur(monthRestMin)}</div>` : ''}
     </div>
 
     ${withBudget.length ? `<div class="card">
@@ -478,12 +487,15 @@ function historyRange() {
       toTs = r.to ? new Date(r.to).getTime() + 86399999 : Date.now();
       label = `${r.from || '…'}〜${r.to || '…'}`; break;
   }
-  return { fromTs, toTs, label, preset: r.preset };
+  // 日付キーで比較(期間指定は入力値そのもの。new Date('YYYY-MM-DD') はUTC基準で端の日がずれるため使わない)
+  const fromKey = r.preset === 'custom' ? (r.from || '') : fromTs ? keyOfTs(fromTs) : '';
+  const toKey = r.preset === 'custom' && r.to ? r.to : keyOfTs(toTs);
+  return { fromTs, toTs, fromKey, toKey, label, preset: r.preset };
 }
 
 function renderHistory() {
   const hr = historyRange();
-  const inRange = (k) => { const t = new Date(k).getTime(); return t >= hr.fromTs && t <= hr.toTs; };
+  const inRange = (k) => k >= hr.fromKey && k <= hr.toKey;
   const keys = Object.keys(state.days).filter(inRange).sort().reverse();
   let sumWork = 0, sumBreak = 0, sumMeeting = 0, nDays = 0;
   const rows = keys.map(k => {
@@ -596,9 +608,14 @@ function projBarsHTML(projectMin, unclassifiedMin, categoryMin) {
 }
 
 /* ---- 案件リスト(共有・フィルタ・ソート) ---- */
+/** 担当(営業・制作)に自分が含まれるか。「井上」と「井上さくら」のような部分一致を許容(src/collisions.js isMaker と同じ規則) */
 function isMyProject(p) {
-  const me = state.settings.userName;
-  return [...(p.sales || []), ...(p.makers || [])].includes(me);
+  const me = String(state.settings.userName || '').replace(/\s/g, '');
+  if (!me) return false;
+  return [...(p.sales || []), ...(p.makers || [])].some(n => {
+    const x = String(n || '').replace(/\s/g, '');
+    return x && (me.includes(x) || x.includes(me));
+  });
 }
 
 function nextEventLabel(pid) {
@@ -1424,7 +1441,7 @@ function reassignCardHTML() {
     </div>
     <div class="row">
       <button class="btn" data-act="ra-preview">対象を確認</button>
-      ${f.preview ? `<span class="muted">対象: <b>${fmtDur(f.preview.min)}</b>(${f.preview.days}日)${f.preview.local ? '' : '・同期データ(直近35日)からの見込み。それより前の分も本人のPCで反映されます'}</span>` : ''}
+      ${f.preview ? `<span class="muted">対象: <b>${fmtDur(f.preview.min)}</b>(${f.preview.days}日)${f.preview.local ? '' : '・同期データ(先月1日以降)からの見込み。それより前の分も本人のPCで反映されます'}</span>` : ''}
       <span class="grow"></span>
       <button class="btn primary" data-act="ra-create">付け替えを指示する</button>
     </div>
@@ -1451,17 +1468,33 @@ function memberVersionsHTML() {
   // 基準 = 自分と同期メンバーの中で一番新しい版
   const latest = members.reduce((v, m) => (m.appVersion && cmp(m.appVersion, v) > 0 ? m.appVersion : v), state.appVersion || '0');
   const os = (m) => ({ darwin: 'Mac', win32: 'Windows' }[m.platform] || '') + (m.arch ? `(${m.arch === 'arm64' ? 'Apple シリコン' : m.arch})` : '');
-  const rows = [{ name: state.settings.userName + '(あなた)', appVersion: state.appVersion, versionLabel: 'v' + state.appVersion, updatedAt: Date.now(), platform: state.platform, arch: state.arch }, ...members]
+  // 案件記録の設定状況(tracking: 同期で共有。null = 旧版で未送信)
+  const trackHTML = (t) => {
+    if (!t) return '<span class="muted">不明(旧版)</span>';
+    const out = [];
+    if (!t.trackWork) out.push('<span class="chip LOW" title="案件タブの「作業を計測」がオフのため、案件の工数が記録されません">計測オフ</span>');
+    else {
+      if (!t.watchRoots) out.push('<span class="chip UNSURE" title="案件フォルダが登録されていないため、フォルダからの案件判定ができません">フォルダ未登録</span>');
+      else if (t.rootsMissing > 0) out.push(`<span class="chip UNSURE" title="登録された案件フォルダのうち${t.rootsMissing}件が見つかりません(Box未接続・パス変更など)">フォルダ未接続</span>`);
+      if (!t.titleDetect) out.push('<span class="muted" title="ウィンドウタイトルからの案件判定がオフです">タイトル判定オフ</span>');
+      if (!out.length) out.push('<span class="chip STABLE">OK</span>');
+    }
+    return out.join(' ');
+  };
+  const selfTracking = { trackWork: !!state.settings.trackWork, titleDetect: state.settings.titleDetect === true, watchRoots: (state.watchRoots || state.settings.watchRoots || []).filter(Boolean).length, rootsMissing: 0 };
+  const rows = [{ name: state.settings.userName + '(あなた)', appVersion: state.appVersion, versionLabel: 'v' + state.appVersion, updatedAt: Date.now(), platform: state.platform, arch: state.arch, tracking: selfTracking }, ...members]
     .map(m => ({ ...m, old: !m.appVersion || cmp(m.appVersion, latest) < 0 }))
     .sort((a, b) => (b.old - a.old) || String(a.name).localeCompare(String(b.name)));
   const oldN = rows.filter(r => r.old).length;
   return `<div class="card"><div class="row"><h2 class="grow">メンバーのアプリ</h2>
       ${oldN ? `<span class="chip LOW">古い版 ${oldN}人</span>` : '<span class="chip STABLE">全員最新</span>'}</div>
     <div class="muted">最新: v${esc(latest)}。v0.12.6以降は自動で更新されます。「古い版」の人(特にv0.12.6より前)は手動でインストールが必要です。</div>
-    <div class="table-wrap"><table class="mt8"><thead><tr><th>メンバー</th><th>バージョン</th><th>PC</th><th>最終同期</th><th></th></tr></thead>
+    <div class="table-wrap"><table class="mt8"><thead><tr><th>メンバー</th><th>バージョン</th><th>PC</th><th>最終同期</th><th></th><th>計測</th></tr></thead>
     <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td><b>${esc(r.versionLabel || '-')}</b>${r.appVersion ? '' : ' <span class="muted">(推定)</span>'}</td>
       <td>${esc(os(r) || '-')}</td><td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
-      <td>${r.old ? '<span class="chip LOW">古い版</span>' : '<span class="chip STABLE">最新</span>'}</td></tr>`).join('')}</tbody></table></div></div>`;
+      <td>${r.old ? '<span class="chip LOW">古い版</span>' : '<span class="chip STABLE">最新</span>'}</td>
+      <td>${trackHTML(r.tracking)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="muted mt8">計測: 案件の工数を記録する設定の状況です。「計測オフ」「フォルダ未登録」の人は、勤怠はあっても案件の工数が空になります。</div></div>`;
 }
 
 /** 管理者: メンバー別の今月の残業(同期サマリーから試算) */
@@ -1474,7 +1507,7 @@ function teamOvertimeHTML(roster) {
       if (k.slice(0, 7) !== ym) continue;
       const e = d.submitted || d.correction || d.estimation || d;
       if (!e || e.start == null) continue;
-      const wd = new Date(k).getDay();
+      const wd = new Date(k + 'T00:00').getDay();
       const holiday = (state.holidays || []).includes(k);
       if (wd === 0) hol += e.workMin || 0;
       else if (wd === 6 || holiday) ot += e.workMin || 0;
@@ -1520,7 +1553,15 @@ function memberDetailHTML(roster) {
   if (!m) return '';
   const ym = (state.overtime && state.overtime.ym) || state.todayKey.slice(0, 7);
   const keys = Object.keys(m.days || {}).filter(k => k.slice(0, 7) === ym).sort();
-  const wdName = (k) => '日月火水木金土'[new Date(k).getDay()];
+  // 案件の工数チップ(コード+時間、名前はツールチップ)
+  const projChip = (pid, min) => {
+    const p = (state.projects || []).find(x => x.id === pid);
+    return `<span class="tag" title="${esc(projName(pid))}">${esc(p ? p.code : '削除済み')} ${fmtDur(min)}</span>`;
+  };
+  const sortedProj = (pm) => Object.entries(pm || {}).map(([pid, min]) => [pid, Math.round(min)])
+    .filter(([, min]) => min >= 1).sort((a, b) => b[1] - a[1]);
+  const monthPm = {};
+  let gapDays = 0;
   const rows = keys.map(k => {
     const d = m.days[k];
     const e = d.submitted || d.correction || d.estimation || d;
@@ -1528,10 +1569,20 @@ function memberDetailHTML(roster) {
     const delta = d.corrDeltaMin != null ? d.corrDeltaMin : (d.submitted && d.submitted.corrDeltaMin) || 0;
     const needs = (d.needsApproval || (d.submitted && d.submitted.needsApproval)) && d.status !== 'approved';
     const noEv = Math.round(d.noEvidenceMin || 0);
-    const wd = new Date(k).getDay(), hol = (state.holidays || []).includes(k);
+    const wd = new Date(k + 'T00:00').getDay(), hol = (state.holidays || []).includes(k);
     const ot = wd === 0 ? 0 : (wd === 6 || hol) ? (e.workMin || 0) : Math.max(0, (e.workMin || 0) - 480);
-    const top = Object.entries(d.projectMin || {}).sort((a, b) => b[1] - a[1]).slice(0, 2)
-      .map(([pid, min]) => `${esc(projName(pid))} ${fmtDur(Math.round(min))}`).join('、');
+    for (const [pid, min] of Object.entries(d.projectMin || {})) monthPm[pid] = (monthPm[pid] || 0) + (Number(min) || 0);
+    // その日の案件(1分以上すべて。5件を超える分は「ほかN件」にまとめてツールチップで一覧)
+    const dayProj = sortedProj(d.projectMin);
+    const projTotal = Object.values(d.projectMin || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+    const gap = (e.workMin || 0) > 60 && projTotal < 1;
+    if (gap) gapDays++;
+    const shown = dayProj.length > 5 ? dayProj.slice(0, 4) : dayProj;
+    const rest = dayProj.slice(shown.length);
+    const top = gap
+      ? '<span class="chip UNSURE" title="実働があるのに案件の工数が記録されていません。本人のアプリで案件の計測がオフ・フォルダ未登録などの可能性があります(表示の不具合ではありません)">工数未計測</span>'
+      : shown.map(([pid, min]) => projChip(pid, min)).join(' ') +
+        (rest.length ? ` <span class="tag" title="${esc(rest.map(([pid, min]) => `${projName(pid)} ${fmtDur(min)}`).join('\n'))}">ほか${rest.length}件</span>` : '');
     return `<tr><td>${fmtDate(k)}${wd === 0 || wd === 6 || hol ? ' <span class="tag">休日</span>' : ''}</td>
       <td>${fmtTime(e.start)}</td><td>${fmtTime(e.end)}</td><td>${fmtDur(e.breakMin)}</td><td><b>${fmtDur(e.workMin)}</b></td>
       <td>${ot ? fmtDur(ot) : '-'}</td><td>${d.privateMin ? fmtDur(Math.round(d.privateMin)) : '-'}</td>
@@ -1541,16 +1592,21 @@ function memberDetailHTML(roster) {
         ${needs ? ` <button class="btn sm primary" data-act="approve" data-id="${esc(m.id || 'self')}" data-key="${esc(k)}">修正を承認</button>` : ''}</td>
       <td class="muted" style="font-size:12px">${top || '-'}</td></tr>`;
   }).join('');
+  const monthProj = sortedProj(monthPm);
+  const monthProjTotal = monthProj.reduce((a, [, min]) => a + min, 0);
   return `<div class="card"><div class="row"><h2 class="grow">${esc(name)} の勤怠詳細(${esc(ym)})</h2>
       <button class="btn sm ghost" data-act="admin-member" data-name="">閉じる</button></div>
-    <table class="mt8"><thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>残業</th><th>私用除外</th><th>状態</th><th>主な案件</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="9" class="muted">記録がありません</td></tr>'}</tbody></table>
+    <div class="mt8"><b>今月の案件別工数</b>(${monthProj.length}案件 ・ 計 ${fmtDur(monthProjTotal)}):
+      ${monthProj.length ? monthProj.map(([pid, min]) => projChip(pid, min)).join(' ') : '<span class="muted">なし</span>'}
+      ${gapDays ? ` <span class="chip UNSURE" title="実働1時間超で案件の工数が1分未満の日">工数未計測 ${gapDays}日</span>` : ''}</div>
+    <div class="table-wrap"><table class="mt8"><thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>残業</th><th>私用除外</th><th>状態</th><th>案件</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="9" class="muted">記録がありません</td></tr>'}</tbody></table></div>
     <div class="mt8"><b>稼働扱いのマイルール</b>: ${(() => {
       const rules = m.id === 'self' ? (state.rules || []).filter(r => r.enabled !== false && r.treatAs === 'work') : (m.workRules || []);
       const hm = (x) => `${String(Math.floor(x / 60)).padStart(2, '0')}:${String(x % 60).padStart(2, '0')}`;
       return rules.length ? rules.map(r => `<span class="tag">${esc(r.label)} ${hm(r.fromMin)}〜${hm(r.toMin)}${r.weekday != null ? '(' + '日月火水木金土'[r.weekday] + ')' : ''}</span>`).join(' ') : '<span class="muted">なし</span>';
     })()} <span class="muted">(30分以内のみ有効)</span></div>
-    <div class="muted mt8">他のメンバーは同期された直近35日分を表示します。「修正+」はPCログの推定から本人が増やした時間で、30分以上は承認されるまで推定値で集計します。</div></div>`;
+    <div class="muted mt8">他のメンバーは同期されたデータ(先月1日以降)を表示します。「修正+」はPCログの推定から本人が増やした時間で、30分以上は承認されるまで推定値で集計します。</div></div>`;
 }
 
 /** 総管理者: 会社ポリシー(検知パラメータ・勤務時間帯・アプリ一覧・パスワード変更) */
@@ -1790,42 +1846,52 @@ function reportRange() {
     default:
       fromTs = Date.now() - 30 * 86400000; toTs = Date.now(); label = '直近30日';
   }
-  return { fromTs, toTs, label, preset: r.preset };
+  // 日付キーで比較(期間指定は入力値そのもの。new Date('YYYY-MM-DD') はUTC基準で最終日や今日の9時前が落ちるため使わない)
+  const fromKey = r.preset === 'custom' ? (r.from || '') : fromTs ? keyOfTs(fromTs) : '';
+  const toKey = r.preset === 'custom' && r.to ? r.to : keyOfTs(toTs);
+  return { fromTs, toTs, fromKey, toKey, label, preset: r.preset };
 }
 
 /** 人×案件の期間集計(誰が・どの案件を・どれだけ)。本人+同期メンバーは実データ */
 function buildMatrix() {
   const projects = (state.projects || []).filter(p => p.active !== false);
   if (!projects.length) return null;
-  const { fromTs, toTs } = reportRange();
-  const inRange = (k) => { const t = new Date(k).getTime(); return t >= fromTs && t <= toTs; };
+  const { fromKey, toKey } = reportRange();
+  const inRange = (k) => k >= fromKey && k <= toKey;
   const rows = [];
   // 本人(実データ)
-  const mine = { name: state.settings.userName + '(あなた)', cells: {}, unclassified: 0 };
+  // 実働1時間超なのに案件の工数が1分未満の日 = 計測漏れ(表示の不具合ではない)
+  const isGap = (workMin, pm) => (workMin || 0) > 60 && Object.values(pm || {}).reduce((a, b) => a + (Number(b) || 0), 0) < 1;
+  // 工数は小数(同期は小数1桁)のことがあるため、期間で合計してから分へ丸める(日ごとに丸めると小さな工数が消える)
+  const roundCells = (r) => { for (const pid of Object.keys(r.cells)) r.cells[pid] = Math.round(r.cells[pid]); return r; };
+  const mine = { name: state.settings.userName + '(あなた)', cells: {}, unclassified: 0, gapDays: 0 };
   for (const [k, d] of Object.entries(state.days)) {
     if (!inRange(k)) continue;
+    const est = effective(d);
+    if (est && isGap(est.workMin, d.projectMin)) mine.gapDays++;
     for (const [pid, min] of Object.entries(d.projectMin || {}))
-      mine.cells[pid] = (mine.cells[pid] || 0) + Math.round(min);
+      mine.cells[pid] = (mine.cells[pid] || 0) + (Number(min) || 0);
     mine.unclassified += (d.unclassified || []).reduce((a, b) => a + Math.round((b.e - b.s) / 60000), 0);
   }
-  rows.push(mine);
+  rows.push(roundCells(mine));
   const myId = (state.settings.sync && state.settings.sync.memberId) || '';
   const remote = state.remoteTeam && state.remoteTeam.members && state.remoteTeam.members.length
     ? state.remoteTeam.members.filter(m => m.id !== myId) : null;
   if (remote) {
     // 同期メンバー(実データ)
     for (const m of remote) {
-      const r = { name: m.name, cells: {}, unclassified: 0 };
+      const r = { name: m.name, cells: {}, unclassified: 0, gapDays: 0 };
       for (const [k, d] of Object.entries(m.days || {})) {
         if (!inRange(k)) continue;
+        if (isGap(d.workMin, d.projectMin)) r.gapDays++;
         let assigned = 0;
         for (const [pid, min] of Object.entries(d.projectMin || {})) {
-          r.cells[pid] = (r.cells[pid] || 0) + Math.round(min);
-          assigned += Math.round(min);
+          r.cells[pid] = (r.cells[pid] || 0) + (Number(min) || 0);
+          assigned += Number(min) || 0;
         }
-        r.unclassified += Math.max(0, (d.workMin || 0) - assigned);
+        r.unclassified += Math.max(0, Math.round((d.workMin || 0) - assigned));
       }
-      rows.push(r);
+      rows.push(roundCells(r));
     }
   } else {
     // デモメンバー(実働時間を案件へ擬似配分 ― デモ表示用)
@@ -1872,6 +1938,9 @@ function projMatrixHTML() {
     <tr style="border-top:2px solid var(--line)"><td><b>合計</b></td>
       ${staff.map(s => `<td><b>${fmtDur(staffTotal(s))}</b></td>`).join('')}
       <td></td></tr>
+    ${staff.some(s => s.gapDays) ? `<tr><td title="実働1時間超なのに案件の工数が1分未満の日。本人のアプリで案件の計測がオフ・フォルダ未登録などの計測漏れです(表示の不具合ではありません)">工数未計測の日</td>
+      ${staff.map(s => `<td>${s.gapDays ? `<span class="chip UNSURE">${s.gapDays}日</span>` : '-'}</td>`).join('')}
+      <td></td></tr>` : ''}
     </tbody></table>
     <p class="muted mt8">案件を行、スタッフを列に表示しています(工数のある案件のみ・多い順)。${m.remote ? 'チーム同期による実データです。' : '列にデモデータを含みます。チーム同期を有効にすると全員の実データに置き換わります。'}</p>`;
 }
@@ -1880,12 +1949,11 @@ function projMatrixHTML() {
 function exportLongCSV() {
   const projects = state.projects || [];
   const byId = Object.fromEntries(projects.map(p => [p.id, p]));
-  const { fromTs, toTs } = reportRange();
+  const { fromKey, toKey } = reportRange();
   const lines = [['日付', 'メンバー', '案件コード', '案件名', '分']];
   const pushDays = (name, days, projectMinGetter) => {
     for (const [k, d] of Object.entries(days)) {
-      const t = new Date(k).getTime();
-      if (t < fromTs || t > toTs) continue;
+      if (k < fromKey || k > toKey) continue;
       for (const [pid, min] of Object.entries(projectMinGetter(d) || {})) {
         const p = byId[pid];
         if (Math.round(min) > 0) lines.push([k, name, p ? p.code : pid, p ? p.name : '(削除済み)', Math.round(min)]);

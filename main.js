@@ -151,7 +151,7 @@ function trackWork(day, now, fg) {
 
   const text = (fg && fg.title) || '';
   let hit = projectsLib.classify({
-    title: text, calendar: combinedCal, now, projects: store.data.projects
+    title: text, calendar: combinedCal, now, projects: store.data.projects, userName: settings().userName
   });
   // タイトルで判定できない場合、直近のファイル更新で検知した案件を「継続」計上する。
   // 最後のファイル更新から stickyMin 分以内は同じ案件とみなし、別案件のファイルが
@@ -363,7 +363,7 @@ function hasWorkEvidence(now, key, fg, day) {
   if (policyLib.isWorkApp(fg, p) || isAiFg(fg) || isMeetingFg(fg)) return true;
   const cal = dayCalendar(day, key);
   if (isMeetingCal(cal, now)) return true;
-  if (projectsLib.classify({ title: (fg && fg.title) || '', calendar: cal, now, projects: store.data.projects })) return true;
+  if (projectsLib.classify({ title: (fg && fg.title) || '', calendar: cal, now, projects: store.data.projects, userName: settings().userName })) return true;
   if (recentFolderHit && now - recentFolderHit.ts <= (settings().folderStickyMin || 30) * 60000) return true;
   return false;
 }
@@ -904,7 +904,20 @@ function syncCfg() {
   const s = settings().sync || {};
   return {
     ...s, userName: settings().userName, recoruUserId: settings().recoruUserId || '',
-    appVersion: app.getVersion(), platform: process.platform, arch: process.arch
+    appVersion: app.getVersion(), platform: process.platform, arch: process.arch,
+    tracking: trackingStatus()
+  };
+}
+
+/** 案件記録の設定状況(チーム同期で管理者へ共有。パスは送らず件数のみ) */
+function trackingStatus() {
+  const roots = (settings().watchRoots || []).filter(Boolean);
+  const missing = roots.filter(r => { try { return !fs.existsSync(r); } catch (_) { return true; } }).length;
+  return {
+    trackWork: !!settings().trackWork,
+    titleDetect: settings().titleDetect === true,
+    watchRoots: roots.length,
+    rootsMissing: missing
   };
 }
 
@@ -1088,21 +1101,63 @@ function prevMonthKey(d = new Date()) {
   return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}`;
 }
 
-/** 毎月の自動書き出し: 前月分を1回だけ書き出す(月初〜いつ起動しても取りこぼさない) */
+/**
+ * 自動書き出し(チーム共有またはこの端末の設定で autoExport がオンのときだけ):
+ *  1) 前月分: 月が替わって最初の1回(月初〜いつ起動しても取りこぼさない)
+ *  2) 前月分の再書き出し: 月初10日間は、前回書き出し後に内容(履歴・工数)が変わっていれば再送
+ *     (月初の修正・承認・復元を反映するため。期間を絞って送信量を抑える)
+ *  3) 当月分: 1日1回(途中経過を管理者がシートで確認できるように)
+ */
 async function maybeAutoExport() {
   const s = settings();
   const cfg = sheetsConfig();
   if (!cfg.autoExport || !cfg.url) return;
-  const target = prevMonthKey();
-  if (s.lastExportMonth === target) return; // 済み
+  if (maybeAutoExport.busy) return;
+  maybeAutoExport.busy = true;
   try {
-    await exportSheets(target);
-    s.lastExportMonth = target;
-    store.save(); pushUpdate();
-    notify('スプレッドシートへ自動書き出し', `${target} の履歴・工数レポートを書き出しました。`);
-  } catch (e) {
-    console.error('auto export error', e);
-  }
+    const now = new Date();
+    const prev = prevMonthKey(now);
+    const cur = sheetsLib.monthKey(now);
+    const today = `${cur}-${String(now.getDate()).padStart(2, '0')}`;
+    if (!s.lastExportHash || typeof s.lastExportHash !== 'object') s.lastExportHash = {};
+    let dirty = false;
+    const run = async (ym) => {
+      const hash = exportContentHash(ym);
+      await exportSheets(ym);
+      s.lastExportHash[ym] = hash;
+      dirty = true;
+    };
+    // 1) 2) 前月分
+    try {
+      const first = s.lastExportMonth !== prev;
+      const changed = !first && now.getDate() <= 10 && s.lastExportHash[prev] !== exportContentHash(prev);
+      if (first || changed) {
+        await run(prev);
+        s.lastExportMonth = prev;
+        if (first) notify('スプレッドシートへ自動書き出し', `${prev} の履歴・工数レポートを書き出しました。`);
+      }
+    } catch (e) { console.error('auto export (prev month) error', e); }
+    // 3) 当月分(1日1回)
+    try {
+      if (s.lastCurrentExportDay !== today) {
+        await run(cur);
+        s.lastCurrentExportDay = today;
+      }
+    } catch (e) { console.error('auto export (current month) error', e); }
+    if (dirty) {
+      // ハッシュは直近3か月分だけ保持
+      for (const k of Object.keys(s.lastExportHash).sort().slice(0, -3)) delete s.lastExportHash[k];
+      store.save(); pushUpdate();
+    }
+  } finally { maybeAutoExport.busy = false; }
+}
+
+/** 指定月の書き出し内容(自分の履歴・工数の行)のハッシュ。内容が変わったかの判定に使う */
+function exportContentHash(ym) {
+  const me = { name: settings().userName, days: store.data.days };
+  const projById = Object.fromEntries((store.data.projects || []).map(p => [p.id, p]));
+  const { sheets } = sheetsLib.personalExport(me, ym, projById, (st) => STATUS_LABEL[st] || st);
+  return sheetsLib.contentHash(sheets.map(sh => sh.rows));
 }
 
 // ---- 状態のシリアライズ -----------------------------------------------
@@ -1383,6 +1438,7 @@ function registerIpc() {
     for (const k of Object.keys(policyLib.DEFAULT_PARAMS)) delete patch[k];
     delete patch.privateUntil;
     delete patch.localUserId; delete patch.calCreatorIds; delete patch.appliedReassign; // 予定の本人判定に使うIDは画面から変更させない
+    delete patch.lastExportMonth; delete patch.lastCurrentExportDay; delete patch.lastExportHash; // 自動書き出しの記録は画面から上書きさせない
     Object.assign(store.data.settings, patch);
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
