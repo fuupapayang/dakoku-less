@@ -1038,6 +1038,27 @@ function calEvPrefix(ev, byId) {
   return ev.kind ? kindLabel(ev.kind) + '_' : '';
 }
 
+/**
+ * 案件の部分一致検索(コード・案件名・顧客)。全角/半角・大文字/小文字・ひらがな/カタカナを区別しない。
+ * 並び順: コード前方一致 → コード部分一致 → 案件名(前の方で一致するほど上) → 顧客 → コード順
+ */
+function searchProjects(projects, q) {
+  const norm = (v) => String(v || '').normalize('NFKC').toLowerCase()
+    .replace(/[\u3041-\u3096]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60)).replace(/\s+/g, '');
+  const byCode = (a, b) => String(a.code).localeCompare(String(b.code));
+  const nq = norm(q);
+  if (!nq) return projects.slice().sort(byCode);
+  return projects.map(p => {
+    const code = norm(p.code), name = norm(p.name), client = norm(p.client);
+    let score = -1;
+    if (code.startsWith(nq)) score = 0;
+    else if (code.includes(nq)) score = 1000;
+    else if (name.includes(nq)) score = 2000 + name.indexOf(nq);
+    else if (client.includes(nq)) score = 3000 + client.indexOf(nq);
+    return { p, score };
+  }).filter(x => x.score >= 0).sort((a, b) => a.score - b.score || byCode(a.p, b.p)).map(x => x.p);
+}
+
 function openDayModal(dateKey, editId) {
   const byId = Object.fromEntries((state.projects || []).map(p => [p.id, p]));
   const evs = (state.calEvents || []).filter(ev => ev.date === dateKey).sort((a, b) => a.sMin - b.sMin);
@@ -1069,13 +1090,16 @@ function openDayModal(dateKey, editId) {
     </div>
     <div class="field-row">
       <label class="field">タイトル<input type="text" id="ce-title" placeholder="例: 定例会議、納品、先方訪問" value="${edit ? esc(edit.title) : ''}"></label>
-      <label class="field">案件<select id="ce-proj"><option value="">(案件なし)</option>
+      <label class="field">案件
+        <input type="search" id="ce-proj-q" placeholder="🔍 コード・案件名・顧客の一部で検索" autocomplete="off" style="margin-bottom:6px">
+        <select id="ce-proj"><option value="">(案件なし)</option>
         <optgroup label="案件外">
           ${Object.entries(EVENT_KINDS).map(([k, label]) => `<option value="kind:${k}">${esc(label)}</option>`).join('')}
         </optgroup>
-        <optgroup label="案件">
-          ${projOpts.map(p => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join('')}
-        </optgroup></select></label>
+        <optgroup label="案件" id="ce-proj-group">
+          ${searchProjects(projOpts, '').map(p => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join('')}
+        </optgroup></select>
+        <span class="muted" id="ce-proj-hit" style="font-size:12px"></span></label>
     </div>
     <label class="field">参加メンバー(カンマ区切り・空欄=チーム全員)<input type="text" id="ce-members" placeholder="例: 佐藤, 田中" value="${edit ? esc((edit.members || []).join(', ')) : ''}"></label>
     <div class="foot">
@@ -1085,6 +1109,19 @@ function openDayModal(dateKey, editId) {
     </div>
   </div></div>`;
   $('#ce-proj').value = selVal;
+  // 入力するたびに案件の選択肢を部分一致で絞り込み・並べ替え(先頭の候補を自動で選択)
+  $('#ce-proj-q').addEventListener('input', (e) => {
+    const q = e.target.value;
+    const hits = searchProjects(projOpts, q);
+    const sel = $('#ce-proj');
+    const cur = sel.value;
+    $('#ce-proj-group').innerHTML = hits.map(p => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join('');
+    if (q.trim() && hits.length) sel.value = hits[0].id;
+    else if (!q.trim()) sel.value = cur && (cur.startsWith('kind:') || hits.some(p => p.id === cur)) ? cur : '';
+    else if (!cur.startsWith('kind:')) sel.value = '';
+    $('#ce-proj-hit').textContent = q.trim() ? (hits.length ? `${hits.length}件一致` : '一致する案件がありません') : '';
+  });
+  $('#ce-proj-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#ce-proj').focus(); } });
   const done = (r, msg) => {
     if (r && r.error) { toast(r.error); return false; }
     state = r;
