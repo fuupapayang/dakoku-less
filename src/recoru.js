@@ -77,13 +77,63 @@ function nightMin(key, est) {
   return Math.max(0, Math.round(ms / MIN));
 }
 
-const IMPORT_HEADERS = ['名前', 'ユーザID', '日付', '勤務区分', '開始', '終了', '休憩時間', 'メモ'];
+/**
+ * その日の休憩区間 [{s,e,kind}]。提出スナップショットには区間が無いため、
+ * 開始・終了が一致する修正値/推定値から引き当てる。区間が分からない場合は null。
+ */
+function breaksOf(d, rec) {
+  if (!rec) return null;
+  if (Array.isArray(rec.breaks)) return rec.breaks;
+  const same = (x) => x && x.start != null && Math.abs(x.start - rec.start) < 60000 && Math.abs(x.end - rec.end) < 60000;
+  for (const c of [d && d.correction, d && d.estimation]) if (same(c) && Array.isArray(c.breaks)) return c.breaks;
+  return (rec.breakMin || 0) < 1 ? [] : null;
+}
+
+/** 休憩合計(分)。旧版の手修正は breakMin を保存していなかったため、区間から計算する */
+function breakMinOf(rec, breaks) {
+  if (rec && rec.breakMin != null) return rec.breakMin;
+  return (breaks || []).reduce((a, b) => a + Math.max(0, (b.e - b.s) / MIN), 0);
+}
+
+/** 勤務時間の区分: 5時前 / 22時以降(〜翌5時) / 深夜合計 / 8時間超。breaks が null(不明)なら null */
+function timeSplit(key, rec, breaks) {
+  if (!rec || rec.start == null || breaks == null) return null;
+  const [y, m, d] = key.split('-').map(Number);
+  const base = new Date(y, m - 1, d).getTime(), H = 3600000;
+  const ov = (s1, e1, s2, e2) => Math.max(0, Math.min(e1, e2) - Math.max(s1, s2));
+  const workIn = (ws, we) => {
+    let ms = ov(rec.start, rec.end, ws, we);
+    for (const b of breaks) ms -= ov(Math.max(b.s, rec.start), Math.min(b.e, rec.end), ws, we);
+    return Math.max(0, Math.round(ms / MIN));
+  };
+  const before5 = workIn(base - 2 * H, base + 5 * H);
+  const after22 = workIn(base + 22 * H, base + 29 * H);
+  return { before5, after22, night: before5 + after22, over8: Math.max(0, Math.round(rec.workMin || 0) - SCHEDULED_MIN) };
+}
+
+/** 休憩時刻の文字列(例: 12:00-13:00, 15:10-15:30)。対象外(私用等)は「(対象外)」を付ける */
+function breakText(key, breaks) {
+  if (breaks == null) return '(不明)';
+  return breaks.slice().sort((a, b) => a.s - b.s)
+    .map(b => `${clock(key, b.s)}-${clock(key, b.e)}${b.kind === 'exclude' ? '(対象外)' : ''}`).join(', ');
+}
+
+/** 時刻・区分の追加列: [休憩時刻, 5時前, 22時以降, 深夜(22-5時), 8時間超] */
+const TIME_HEADERS = ['休憩時刻', '5時前', '22時以降', '深夜(22-5時)', '8時間超'];
+function timeColumns(key, rec, breaks) {
+  const t = timeSplit(key, rec, breaks);
+  return [breakText(key, breaks), t ? hhmm(t.before5) : '', t ? hhmm(t.after22) : '', t ? hhmm(t.night) : '', t ? hhmm(t.over8) : ''];
+}
+
+const IMPORT_HEADERS = ['名前', 'ユーザID', '日付', '勤務区分', '開始', '終了', '休憩時間', 'メモ', ...TIME_HEADERS];
 
 /** 取込用の1行。ユーザIDが空の場合は管理者が気付けるようメモに「ユーザID未設定」を付ける */
-function importRow(name, uid, key, est, memo = '') {
+function importRow(name, uid, key, est, memo = '', breaks) {
   uid = String(uid || '').trim();
   if (!uid) memo = [memo, 'ユーザID未設定'].filter(Boolean).join(' / ');
-  return [name || '', uid, key.replace(/-/g, '/'), KUBUN[dayType(key)], clock(key, est.start), clock(key, est.end), hhmm(est.breakMin), memo];
+  const br = breaks === undefined ? breaksOf(null, est) : breaks;
+  return [name || '', uid, key.replace(/-/g, '/'), KUBUN[dayType(key)], clock(key, est.start), clock(key, est.end), hhmm(breakMinOf(est, br)), memo,
+    ...timeColumns(key, est, br)];
 }
 
 /** 確認用: レコルの集計列を試算 */
@@ -167,7 +217,7 @@ function signedHhmm(min) {
  * 値は集計と同じ扱い: 提出済み・承認済みの日は recordOf(実働を30分以上増やす修正は承認まで推定値)。
  * 未提出・差し戻しの日は画面と同じ修正値(なければ推定値)だが、30分以上増やす修正は推定値で出し、修正値は別列に出す。
  */
-const HISTORY_HEADERS = ['日付', '曜日', '区分', '始業', '終業', '休憩', '実働', '残業', '会議', '私用除外',
+const HISTORY_HEADERS = ['日付', '曜日', '区分', '始業', '終業', '休憩', '休憩時刻', '実働', '残業', '5時前', '22時以降', '深夜(22-5時)', '8時間超', '会議', '私用除外',
   '社内会議（案件外）', '撮影・ロケハン', '状態', '本人修正', '修正後(承認待ち)', '備考'];
 
 /** @returns {rec, pending, note, delta} rec=出力する値 / pending=承認待ちの修正値(なければnull) */
@@ -206,7 +256,9 @@ function historyRows(days, { from = '', to = '', statusLabel = {} } = {}) {
     if (note) notes.push(note);
     rows.push([
       k.replace(/-/g, '/'), '日月火水木金土'[weekdayOf(k)], KUBUN[t],
-      clock(k, rec.start), clock(k, rec.end), hhmm(rec.breakMin), hhmm(w), hhmm(overtime),
+      clock(k, rec.start), clock(k, rec.end), hhmm(breakMinOf(rec, breaksOf(d, rec))),
+      ...(() => { const br = breaksOf(d, rec); const t = timeSplit(k, rec, br); const f = (v) => (t ? hhmm(v) : '');
+        return [breakText(k, br), hhmm(w), hhmm(overtime), f(t && t.before5), f(t && t.after22), f(t && t.night), f(t && t.over8)]; })(),
       hhmm(d.meetingMin), hhmm(d.privateMin), hhmm(cat.internal), hhmm(cat.shoot),
       statusLabel[d.status] || d.status || '',
       d.correction && d.estimation ? signedHhmm(delta) : '',
@@ -227,5 +279,5 @@ function toCSV(rows) {
 module.exports = {
   HOLIDAYS, SCHEDULED_MIN, KUBUN, IMPORT_HEADERS, SUMMARY_HEADERS, HISTORY_HEADERS,
   dayType, clock, hhmm, signedHhmm, reviewReasons, nightMin, importRow, summarize, toCSV, monthOvertime, overtimeLevel, recordOf,
-  historyRecord, historyRows
+  historyRecord, historyRows, breaksOf, breakMinOf, timeSplit, breakText, timeColumns, TIME_HEADERS
 };

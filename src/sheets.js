@@ -10,7 +10,8 @@
  * チーム全員分のタブ(履歴_2026-09)はGAS側が個人タブを連結して作り直す(summaries)。
  * これにより、複数人が同じスプレッドシートへ書き込んでも互いに上書きし合わない。
  */
-const GAS_VERSION = 2; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う
+const GAS_VERSION = 3; // 3: 列数の違う個人タブ(旧版の書き出し)も揃えて連結
+const GAS_MIN_VERSION = 2; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う
 const recoru = require('./recoru');
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -42,7 +43,8 @@ function contentHash(obj) {
 
 /** 履歴タブの行: [ユーザ,日付,曜日,始業,終業,休憩,実働,会議,状態] */
 function historyRows(members, ym, statusLabel) {
-  const headers = ['ユーザ', '日付', '曜日', '始業', '終業', '休憩', '実働', '会議', '状態'];
+  // 末尾に時刻・区分の列を追加(旧版の列並びと揃うよう、既存列の後ろに足す)
+  const headers = ['ユーザ', '日付', '曜日', '始業', '終業', '休憩', '実働', '会議', '状態', ...recoru.TIME_HEADERS];
   const rows = [];
   for (const m of members) {
     for (const k of Object.keys(m.days || {}).sort()) {
@@ -55,8 +57,9 @@ function historyRows(members, ym, statusLabel) {
       const wd = WD[new Date(k).getDay()];
       rows.push([
         m.name, k, wd, recoru.clock(k, est.start), recoru.clock(k, est.end),
-        hhmm(est.breakMin), hhmm(est.workMin), hhmm(d.meetingMin || 0),
-        statusLabel(d.status) || d.status || ''
+        hhmm(recoru.breakMinOf(est, recoru.breaksOf(d, est))), hhmm(est.workMin), hhmm(d.meetingMin || 0),
+        statusLabel(d.status) || d.status || '',
+        ...recoru.timeColumns(k, est, recoru.breaksOf(d, est))
       ]);
     }
   }
@@ -129,7 +132,7 @@ function doPost(e) {
         if (name.indexOf(sum.from) !== 0) return;
         const v = sh.getDataRange().getDisplayValues(); // 表示どおりの文字列で連結(時刻の型変換を避ける)
         if (!v.length) return;
-        headers = headers || v[0];
+        if (!headers || v[0].length > headers.length) headers = v[0];
         rows = rows.concat(v.slice(1).filter(function(r){ return r.join('') !== ''; }));
       });
       if (headers) writeTab(ss, sum.tab, headers, rows);
@@ -144,8 +147,9 @@ function doPost(e) {
 function writeTab(ss, tab, headers, rows) {
   const sh = ss.getSheetByName(tab) || ss.insertSheet(tab);
   sh.clearContents();
-  const values = [headers].concat(rows);
-  sh.getRange(1, 1, values.length, headers.length).setValues(values);
+  const n = headers.length;
+  const values = [headers].concat(rows.map(function(r){ r = r.slice(0, n); while (r.length < n) r.push(''); return r; }));
+  sh.getRange(1, 1, values.length, n).setValues(values);
 }
 function out(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }`;
 }
@@ -175,4 +179,4 @@ async function post(url, token, sheets, summaries) {
   return json || { ok: true };
 }
 
-module.exports = { historyRows, reportRows, monthKey, contentHash, personalExport, projectListSheet, safeTabName, gasScript, post, hhmm, fmtTime, GAS_VERSION };
+module.exports = { GAS_MIN_VERSION, historyRows, reportRows, monthKey, contentHash, personalExport, projectListSheet, safeTabName, gasScript, post, hhmm, fmtTime, GAS_VERSION };

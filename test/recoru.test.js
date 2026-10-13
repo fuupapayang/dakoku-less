@@ -30,10 +30,29 @@ assert.strictEqual(R.nightMin('2026-09-04', { start: at(21, 0, 4), end: at(1, 0,
 assert.strictEqual(R.nightMin('2026-09-04', { start: at(21, 0, 4), end: at(1, 0, 5), breaks: [{ s: at(23, 0, 4), e: at(0, 0, 5) }] }), 120);
 // ---- 取込行・集計
 const e4 = { start: at(9, 0, 4), end: at(23, 0, 4), breakMin: 60, workMin: 780, breaks: [{ s: at(12, 0, 4), e: at(13, 0, 4) }] };
-assert.deepStrictEqual(R.IMPORT_HEADERS, ['名前', 'ユーザID', '日付', '勤務区分', '開始', '終了', '休憩時間', 'メモ']);
-assert.deepStrictEqual(R.importRow('山田 太郎', 'U1', '2026-09-04', e4, 'm'), ['山田 太郎', 'U1', '2026/09/04', '出勤', '09:00', '23:00', '01:00', 'm']);
+assert.deepStrictEqual(R.IMPORT_HEADERS, ['名前', 'ユーザID', '日付', '勤務区分', '開始', '終了', '休憩時間', 'メモ', '休憩時刻', '5時前', '22時以降', '深夜(22-5時)', '8時間超']);
+// 9:00〜23:00・休憩12:00-13:00 → 22時以降1h・深夜1h・8時間超5h
+assert.deepStrictEqual(R.importRow('山田 太郎', 'U1', '2026-09-04', e4, 'm'), ['山田 太郎', 'U1', '2026/09/04', '出勤', '09:00', '23:00', '01:00', 'm', '12:00-13:00', '00:00', '01:00', '01:00', '05:00']);
 // ユーザID未設定: 名前で代用せず空欄、メモで知らせる
-assert.deepStrictEqual(R.importRow('山田 太郎', '', '2026-09-04', e4, 'm'), ['山田 太郎', '', '2026/09/04', '出勤', '09:00', '23:00', '01:00', 'm / ユーザID未設定']);
+assert.deepStrictEqual(R.importRow('山田 太郎', '', '2026-09-04', e4, 'm').slice(0, 8), ['山田 太郎', '', '2026/09/04', '出勤', '09:00', '23:00', '01:00', 'm / ユーザID未設定']);
+
+// ---- 時刻の区分(5時前・22時以降・深夜・8時間超)
+// 4:30〜翌1:00、休憩 12:00-13:00 と 23:30-24:00
+const e5 = { start: at(4, 30, 4), end: at(1, 0, 5), workMin: 1170 - 90, breakMin: 90,
+  breaks: [{ s: at(12, 0, 4), e: at(13, 0, 4), kind: 'break' }, { s: at(23, 30, 4), e: at(0, 0, 5), kind: 'break' }] };
+assert.deepStrictEqual(R.timeSplit('2026-09-04', e5, e5.breaks), { before5: 30, after22: 150, night: 180, over8: 1080 - 480 });
+assert.strictEqual(R.breakText('2026-09-04', e5.breaks), '12:00-13:00, 23:30-24:00');
+// 提出スナップショット(区間なし)→ 開始・終了が一致する推定値から休憩区間を引き当てる
+const dSub = { submitted: { start: e5.start, end: e5.end, workMin: e5.workMin, breakMin: 90 }, estimation: e5 };
+assert.deepStrictEqual(R.breaksOf(dSub, dSub.submitted), e5.breaks);
+// 区間が分からない(手修正で時刻が違う等)→ null・時刻欄は(不明)、区分は空欄
+const dUnknown = { submitted: { start: at(9, 0, 4), end: at(18, 0, 4), workMin: 480, breakMin: 60 }, estimation: e5 };
+assert.strictEqual(R.breaksOf(dUnknown, dUnknown.submitted), null);
+assert.deepStrictEqual(R.timeColumns('2026-09-04', dUnknown.submitted, null), ['(不明)', '', '', '', '']);
+// 旧版の手修正(breakMin未保存)は区間から休憩合計を計算
+assert.strictEqual(R.breakMinOf({ start: 1, end: 2 }, [{ s: at(8, 36, 4), e: at(9, 43, 4) }, { s: at(12, 48, 4), e: at(13, 58, 4) }]), 137);
+// 休憩0分なら区間なしで確定
+assert.deepStrictEqual(R.breaksOf({}, { start: 1, end: 2, breakMin: 0 }), []);
 assert.strictEqual(R.importRow('山田 太郎', '  ', '2026-09-04', e4)[7], 'ユーザID未設定');
 const sm = R.summarize('2026-09-04', e4);
 assert.strictEqual(sm[R.SUMMARY_HEADERS.indexOf('法定外残業')], '05:00');
@@ -103,7 +122,8 @@ const hDays = {
 const hr = R.historyRows(hDays, { from: '2026-09-01', to: '2026-09-30', statusLabel: SL });
 assert.strictEqual(hr.length, 6);
 assert.ok(hr.every(r => r.length === R.HISTORY_HEADERS.length));
-assert.deepStrictEqual(hr[0], ['2026/09/04', '金', '出勤', '09:00', '25:00', '01:00', '15:00', '07:00', '00:45', '00:20', '00:30', '01:30', '承認済み', '', '', '']);
+// 休憩の区間が無いデータ → 休憩時刻は(不明)、5時前〜8時間超は空欄
+assert.deepStrictEqual(hr[0], ['2026/09/04', '金', '出勤', '09:00', '25:00', '01:00', '(不明)', '15:00', '07:00', '', '', '', '', '00:45', '00:20', '00:30', '01:30', '承認済み', '', '', '']);
 assert.strictEqual(hr[1][H('区分')], '所定休日出勤');
 assert.strictEqual(hr[1][H('残業')], '03:00');                        // 土曜は全部残業
 assert.strictEqual(hr[1][H('備考')], '要確認: 休日の稼働');

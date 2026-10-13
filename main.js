@@ -603,6 +603,7 @@ function submitDay(key, auto = false) {
   day.submitted = {
     start: est.start, end: est.end,
     workMin: est.workMin, breakMin: est.breakMin, auto,
+    breaks: (est.breaks || []).map(b => ({ s: b.s, e: b.e, kind: b.kind })), // 休憩時刻の書き出し用
     ...(day.correction ? { corrDeltaMin: delta } : {}),
     ...(needsApproval ? { needsApproval: true } : {})
   };
@@ -1127,7 +1128,7 @@ async function exportSheets(ym) {
   sheets.push(sheetsLib.projectListSheet(store.data.projects)); // 案件リスト(制作・登録者)も毎回最新に
   const res = await sheetsLib.post(cfg.url, cfg.token, sheets, summaries);
   const r = { ok: true, months: [ym], historyRows: sheets[0].rows.length, reportRows: sheets[1].rows.length };
-  if (!res || res.v !== sheetsLib.GAS_VERSION) {
+  if (!res || !(res.v >= sheetsLib.GAS_MIN_VERSION)) {
     r.warning = 'スプレッドシート側のGASスクリプトが古いため、チーム全員分のタブが更新されません。設定画面の最新スクリプトに貼り替えて再デプロイしてください。';
   }
   return r;
@@ -1723,7 +1724,8 @@ function registerIpc() {
     const proposals = engine.diffToRuleProposals(day.estimation, correction);
     const workMin = Math.max(0, (correction.end - correction.start) / engine.MIN -
       (correction.breaks || []).reduce((a, b) => a + (b.e - b.s) / engine.MIN, 0));
-    day.correction = { ...correction, workMin: Math.round(workMin), correctedAt: Date.now() };
+    const breakMin = (correction.breaks || []).reduce((a, b) => a + (b.e - b.s) / engine.MIN, 0);
+    day.correction = { ...correction, workMin: Math.round(workMin), breakMin: Math.round(breakMin), correctedAt: Date.now() };
     if (day.status === 'submitted' || day.status === 'approved') day.status = 'pending';
     logEvent(day, '勤怠を手動修正しました');
     store.save();
@@ -1800,7 +1802,7 @@ function registerIpc() {
         const est = recoruLib.recordOf(d);
         if (!est || est.start == null) continue;
         const reasons = recoruLib.reviewReasons(k, est, { longMin: settings().reviewLongMin || 720 });
-        rows.push(recoruLib.importRow(name, uid, k, est, ['全自動勤怠管理くん', ...reasons].join(' / ')));
+        rows.push(recoruLib.importRow(name, uid, k, est, ['全自動勤怠管理くん', ...reasons].join(' / '), recoruLib.breaksOf(d, est)));
       }
     };
     add(settings().userName, (settings().recoruUserId || '').trim(), store.data.days);

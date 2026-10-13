@@ -256,7 +256,9 @@ class Sync {
       if (!est || est.start == null) continue;
       out[key] = {
         start: est.start, end: est.end,
-        workMin: est.workMin || 0, breakMin: est.breakMin || 0,
+        workMin: est.workMin || 0,
+        breakMin: est.breakMin != null ? est.breakMin : Math.round((est.breaks || []).reduce((a, b) => a + (b.e - b.s) / 60000, 0)),
+        breaks: (est.breaks || []).map(b => ({ s: b.s, e: b.e, kind: b.kind || 'break' })), // 休憩時刻・深夜の計算用
         confidence: d.estimation ? d.estimation.confidence : 'LOW',
         status: d.status, auto: !!(d.submitted && d.submitted.auto),
         meetingMin: Math.round(d.meetingMin || 0),
