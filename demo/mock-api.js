@@ -170,7 +170,7 @@
     overtime: { ym: todayKey.slice(0, 7), overtimeMin: 2280, legalHolidayMin: 300, forecastMin: 3100, elapsed: 22, daysInMonth: 31, limitMin: 2700, level: 'warn' },
     holidays: [],
     adminConfigured: true, adminUnlocked: false, adminUntil: 0, privateUntil: 0, meetingMaxMin: 240,
-    policy: { params: { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4 }, workStartMin: 540, workEndMin: 1320,
+    policy: { params: { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4, folderStickyMin: 30 }, workStartMin: 540, workEndMin: 1320,
       workApps: ['Figma', 'Photoshop', 'Illustrator', 'Excel', 'Slack', 'ChatGPT', 'Claude', 'Antigravity'], privateApps: ['Netflix', 'Prime Video', 'Steam'], updatedBy: '' },
     todayKey, days,
     rules: [

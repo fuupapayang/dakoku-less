@@ -12,7 +12,7 @@
 const crypto = require('crypto');
 const recoru = require('./recoru');
 
-const DEFAULT_PARAMS = { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4 };
+const DEFAULT_PARAMS = { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4, folderStickyMin: 30 }; // folderStickyMin: 案件フォルダのファイル保存後、同じ案件に継続計上する時間(分)
 
 // アプリ名、またはブラウザのタブタイトルに含まれる語(大文字小文字を区別しない)
 const DEFAULT_WORK_APPS = [
@@ -99,7 +99,8 @@ function sanitize(input) {
     params: {
       idleThresholdSec: clamp(p.params && p.params.idleThresholdSec, 30, 600, DEFAULT_PARAMS.idleThresholdSec),
       breakThresholdMin: clamp(p.params && p.params.breakThresholdMin, 5, 120, DEFAULT_PARAMS.breakThresholdMin),
-      dayStartHour: clamp(p.params && p.params.dayStartHour, 0, 12, DEFAULT_PARAMS.dayStartHour)
+      dayStartHour: clamp(p.params && p.params.dayStartHour, 0, 12, DEFAULT_PARAMS.dayStartHour),
+      folderStickyMin: clamp(p.params && p.params.folderStickyMin, 1, 240, DEFAULT_PARAMS.folderStickyMin)
     },
     workStartMin: clamp(p.workStartMin, 0, 1439, DEFAULT_POLICY.workStartMin),
     workEndMin: clamp(p.workEndMin, 1, 1440, DEFAULT_POLICY.workEndMin),

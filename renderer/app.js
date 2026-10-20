@@ -906,10 +906,10 @@ function renderProjects() {
       <button class="btn primary mt8" data-act="watch-add">📁 監視フォルダを追加</button>
       <div class="field-row mt16">
         <label class="field">継続計上する時間(分) ― 最後のファイル更新からこの間は同じ案件に計上し続けます
-          <input type="number" id="wt-sticky" value="${s.folderStickyMin || 30}" min="1" max="240"></label>
+          <input type="number" id="wt-sticky" value="${s.folderStickyMin || 30}" disabled></label>
         <div style="flex:1"></div>
       </div>
-      <button class="btn" data-act="sticky-save">継続時間を保存</button>
+      <div class="muted">🔒 継続計上する時間は会社ポリシーで決まっています(変更は総管理者のみ: 管理者ビュー →「会社ポリシー」)。</div>
       <p class="muted mt8">継続方式: F599のファイルを保存すると、その後は別案件のファイルを更新するか、${s.folderStickyMin || 30}分ファイル更新が途切れるまで、稼働時間をF599に継続計上します。デザイン作業のように長時間保存しない場合でも取りこぼしません。<br>
       動かない時のチェック: ①「作業内容の計測」がオン ②案件コード(F599等)が案件マスターに登録済み ③対象フォルダ名が「F599_名称」形式。試しに対象フォルダ内のファイルを保存し、上の「最終検知」が更新されるか確認してください。</p>
     </div>
@@ -1856,6 +1856,7 @@ function policyCardHTML() {
       <label class="field">無操作とみなす秒数<input type="number" id="pol-idle" value="${p.params.idleThresholdSec}" min="30" max="600"></label>
       <label class="field">休憩とみなす空白(分)<input type="number" id="pol-break" value="${p.params.breakThresholdMin}" min="5" max="120"></label>
       <label class="field">日付の切替時刻(時)<input type="number" id="pol-daystart" value="${p.params.dayStartHour}" min="0" max="12"></label>
+      <label class="field">継続計上する時間(分)<input type="number" id="pol-sticky" value="${p.params.folderStickyMin || 30}" min="1" max="240" title="案件フォルダのファイルを保存してから、この時間は同じ案件の作業として計上します"></label>
     </div>
     <div class="field-row">
       <label class="field">勤務時間帯 開始<input type="time" id="pol-ws" value="${hm(p.workStartMin)}"></label>
@@ -2444,12 +2445,7 @@ document.addEventListener('click', async (e) => {
     renderProjects();
     toast('監視を解除しました');
   }
-  if (act === 'sticky-save') {
-    const v = Math.max(1, Math.min(240, +$('#wt-sticky').value || 30));
-    state = await window.api.updateSettings({ folderStickyMin: v });
-    renderProjects();
-    toast(`継続時間を${v}分に設定しました`);
-  }
+
   if (act === 'proj-import') openImportStaffModal();
   if (act === 'assign') openAssignModal(+btn.dataset.idx);
   if (act === 'assign-hint') {
@@ -2566,7 +2562,7 @@ document.addEventListener('click', async (e) => {
     const toMin = (v) => { const [h, m] = String(v || '0:0').split(':').map(Number); return h * 60 + (m || 0); };
     const lines = (id) => $(id).value.split('\n').map(x => x.trim()).filter(Boolean);
     const r = await window.api.adminSavePolicy({
-      params: { idleThresholdSec: +$('#pol-idle').value, breakThresholdMin: +$('#pol-break').value, dayStartHour: +$('#pol-daystart').value },
+      params: { idleThresholdSec: +$('#pol-idle').value, breakThresholdMin: +$('#pol-break').value, dayStartHour: +$('#pol-daystart').value, folderStickyMin: +$('#pol-sticky').value },
       workStartMin: toMin($('#pol-ws').value), workEndMin: toMin($('#pol-we').value),
       workApps: lines('#pol-work'), privateApps: lines('#pol-private')
     });

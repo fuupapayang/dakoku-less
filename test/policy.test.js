@@ -3,8 +3,10 @@ const assert = require('assert');
 const P = require('../src/policy');
 const pol = P.effective();
 
-// 既定値(ご指定の 90秒 / 15分 / 4時)
-assert.deepStrictEqual(pol.params, { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4 });
+// 既定値(ご指定の 90秒 / 15分 / 4時 / 継続計上30分)
+assert.deepStrictEqual(pol.params, { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4, folderStickyMin: 30 });
+// 既存のチームポリシー(継続計上の項目なし)は既定の30分で補完
+assert.strictEqual(P.effective({ params: { idleThresholdSec: 90, breakThresholdMin: 15, dayStartHour: 4 } }).params.folderStickyMin, 30);
 // 保存値は既定値に上書き、欠けた項目は補完
 assert.strictEqual(P.effective({ params: { idleThresholdSec: 120 } }).params.breakThresholdMin, 15);
 
@@ -34,8 +36,9 @@ assert.ok(!P.verifyPassword('wrong', { adminHash: h.hash, adminSalt: h.salt }));
 assert.ok(!P.verifyPassword('x', {}));
 
 // 入力検証: 範囲外は既定値、一覧は重複・空行を除去
-const sn = P.sanitize({ params: { idleThresholdSec: 5, breakThresholdMin: 30, dayStartHour: 99 }, workApps: ['A', 'A', ' ', 'B'], workStartMin: 600 });
-assert.deepStrictEqual(sn.params, { idleThresholdSec: 90, breakThresholdMin: 30, dayStartHour: 4 });
+const sn = P.sanitize({ params: { idleThresholdSec: 5, breakThresholdMin: 30, dayStartHour: 99, folderStickyMin: 45 }, workApps: ['A', 'A', ' ', 'B'], workStartMin: 600 });
+assert.deepStrictEqual(sn.params, { idleThresholdSec: 90, breakThresholdMin: 30, dayStartHour: 4, folderStickyMin: 45 });
+assert.strictEqual(P.sanitize({ params: { folderStickyMin: 999 } }).params.folderStickyMin, 30);   // 範囲外(1〜240)は既定値
 assert.deepStrictEqual(sn.workApps, ['A', 'B']);
 assert.strictEqual(sn.workStartMin, 600);
 assert.ok(!('adminHash' in sn)); // ポリシー保存でパスワードは書き換えられない
