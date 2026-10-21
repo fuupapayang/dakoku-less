@@ -2121,12 +2121,7 @@ function renderAdmin() {
         ${recoruRangeHTML()}
         <button class="btn sm primary" data-act="csv-recoru" ${recoruRange().error ? 'disabled' : ''}>レコル向けCSV出力</button></div>
       <p class="muted mt8">出力列: 名前 / ユーザID(設定タブの「レコル用ユーザID」。未設定の人は空欄になり、メモに「ユーザID未設定」が入ります) / 日付 / 勤務区分(出勤・所定休日出勤・法定休日出勤) / 開始 / 終了(翌日は25:30のような24時超え表記) / 休憩時間 / メモ。提出済み・承認済みの勤怠のみ。休日・長時間の日はメモに「要確認」理由が入ります。管理者がレコルの「打刻データCSVインポート」に取り込んでください。</p>
-      <div class="row mt8">
-        <label style="display:flex;align-items:center;gap:8px" title="準備中の機能です">
-          <input type="checkbox" data-act="recoru-send-dummy" disabled> レコルへ自動送信(準備中)
-        </label>
-        <span class="muted">※ レコルは外部からの書き込みAPIが無いため、現状はCSVインポート運用です。列仕様が分かり次第、出力形式を最適化します。</span>
-      </div>
+      <p class="muted mt8">※ 通常は各メンバーのアプリが「設定 → レコル連携」でレコルの勤務表に直接転記します(確定・申請はレコルで各自)。転記の状況は上の「メンバーのアプリ」の「レコル転記」欄で確認できます。このCSVは、自動転記を使っていないメンバーの分をまとめて取り込むときや、控えとして使ってください。</p>
     </div>
     <div class="card">
       <h2>乖離アラート一覧</h2>
@@ -2865,9 +2860,6 @@ document.addEventListener('click', async (e) => {
     state = await window.api.updateSettings({ travelAsWork: state.settings.travelAsWork === false });
     renderSettings();
     toast('設定を更新しました(移動の扱い)');
-  }
-  if (act === 'recoru-send-dummy') {
-    toast('レコル自動送信は準備中です。当面は「レコル向けCSV出力」をご利用ください');
   }
   if (act === 'csv-recoru') exportRecoruCSV();
   if (act === 'csv-history') exportHistoryCSV();
