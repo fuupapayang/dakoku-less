@@ -105,6 +105,11 @@ function normTracking(t) {
     out.missingFolderCodes = (Array.isArray(t.missingFolderCodes) ? t.missingFolderCodes : [])
       .map(c => String(c).slice(0, 20)).filter(Boolean).slice(0, 20);
   }
+  // レコル自動転記の状況(有効/無効・最後に転記できた日)。旧版は送らない
+  if (t.recoruPost) {
+    const d = String(t.recoruPost.lastOkDay || '');
+    out.recoruPost = { enabled: !!t.recoruPost.enabled, lastOkDay: /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : '' };
+  }
   return out;
 }
 

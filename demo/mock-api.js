@@ -167,6 +167,10 @@
       sync: { enabled: false, projectId: '', apiKey: '', teamId: '', memberId: 'demo' },
       teamProfiles: [], activeTeamId: ''
     },
+    // レコル自動転記(デスクトップ版のみ。デモでは設定画面の表示だけ)
+    recoru: { enabled: false, postTime: '09:30', skipFilled: true, showWindow: false,
+      cred: { contractId: '', authId: '', hasPassword: false, sessionOnly: false }, encryption: true, ready: false, posting: false,
+      candidates: [], log: [], lastOkDay: '' },
     overtime: { ym: todayKey.slice(0, 7), overtimeMin: 2280, legalHolidayMin: 300, forecastMin: 3100, elapsed: 22, daysInMonth: 31, limitMin: 2700, level: 'warn' },
     holidays: [],
     adminConfigured: true, adminUnlocked: false, adminUntil: 0, privateUntil: 0, meetingMaxMin: 240,
@@ -224,7 +228,14 @@
 
   window.api = {
     getState: async () => S(),
-    updateSettings: async (patch) => { Object.assign(state.settings, patch); return S(); },
+    updateSettings: async (patch) => {
+      Object.assign(state.settings, patch);
+      const r = state.recoru; // レコル連携の表示用(デモでは保存・転記はしない)
+      if ('recoruSkipFilled' in patch) r.skipFilled = patch.recoruSkipFilled !== false;
+      if ('recoruShowWindow' in patch) r.showWindow = !!patch.recoruShowWindow;
+      if ('recoruPostTime' in patch) r.postTime = patch.recoruPostTime;
+      return S();
+    },
     correctDay: async (k, correction) => {
       const day = state.days[k];
       const workMin = Math.round((correction.end - correction.start) / MIN -
@@ -435,6 +446,12 @@
     },
     openScreenSettings: async () => true,
     relaunchApp: async () => { location.reload(); },
+    recoruSaveCred: async () => ({ ok: false, error: 'レコル連携はデスクトップ版のみの機能です' }),
+    recoruClearCred: async () => ({ ok: false, error: 'レコル連携はデスクトップ版のみの機能です' }),
+    recoruTest: async () => ({ ok: false, error: 'レコル連携はデスクトップ版のみの機能です' }),
+    recoruPost: async () => ({ ok: false, error: 'レコル連携はデスクトップ版のみの機能です', results: [] }),
+    recoruSnooze: async () => ({ ok: true }),
+    onRecoruPrompt: () => {},
     onUpdate: (cb) => listeners.push(cb)
   };
 })();

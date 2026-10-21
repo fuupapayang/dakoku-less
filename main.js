@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell, Notification, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, powerMonitor, ipcMain, dialog, systemPreferences, shell, Notification, screen, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('./src/store');
@@ -10,6 +10,8 @@ const calendarLib = require('./src/calendar');
 const meetingsLib = require('./src/meetings');
 const sheetsLib = require('./src/sheets');
 const recoruLib = require('./src/recoru');
+const recoruPostLib = require('./src/recoruPost');
+const recoruBotLib = require('./src/recoruBot');
 const collisionsLib = require('./src/collisions');
 const policyLib = require('./src/policy');
 const restoreLib = require('./src/restore');
@@ -702,6 +704,222 @@ function noteSystem(msg) {
   logEvent(store.day(currentKey), msg);
 }
 
+// ---- レコル自動転記 -------------------------------------------------------
+// 前日までの勤怠を、ワンクリックでレコルの勤務表へ転記する。
+// 起動30秒後・スリープ復帰/ロック解除(1分デバウンス)・毎日の時刻(既定9:30)に候補があれば確認を出し、
+// 「レコルに転記する」ボタン = 本人の確認として、非表示ウィンドウでレコルを操作する(src/recoruBot.js)。
+// パスワードは safeStorage で暗号化して保存し、画面(renderer)には一切渡さない。
+let recoruSessionPw = '';  // safeStorage が使えない環境では、このセッションの間だけメモリに保持
+let recoruPosting = false;
+let recoruPromptState = { open: false, at: 0 };
+let recoruNotif = null;    // GCで click が失われないよう保持
+let recoruTrig = { lastAt: 0, timeFiredDate: '' };
+const RECORU_PROMPT_TTL = 30 * 60000;
+
+function recoruCred() {
+  const c = settings().recoruCred || {};
+  return { contractId: c.contractId || '', authId: c.authId || '', passwordEnc: c.passwordEnc || '' };
+}
+function recoruEncryptionOk() {
+  try { return safeStorage.isEncryptionAvailable(); } catch (_) { return false; }
+}
+function recoruPassword() {
+  const c = recoruCred();
+  if (c.passwordEnc && recoruEncryptionOk()) {
+    try { return safeStorage.decryptString(Buffer.from(c.passwordEnc, 'base64')); } catch (_) { /* 別PCからの移行などで復号できない */ }
+  }
+  return recoruSessionPw || '';
+}
+function recoruHasCred() {
+  const c = recoruCred();
+  return !!(c.contractId && c.authId && (c.passwordEnc || recoruSessionPw));
+}
+function recoruCandidates() {
+  return recoruPostLib.candidateKeys(store.data.days, todayKeyNow(), settings().recoruPosted || {});
+}
+function recoruPreview(keys) {
+  return keys.map(k => {
+    const d = store.data.days[k];
+    const v = recoruPostLib.dayValues(k, d);
+    return v && { ...v, status: d.status };
+  }).filter(Boolean);
+}
+/** 画面用(パスワードは送らない) */
+function recoruState() {
+  const s = settings(), c = recoruCred();
+  const keys = s.recoruEnabled ? recoruCandidates() : [];
+  return {
+    enabled: !!s.recoruEnabled,
+    postTime: s.recoruPostTime || '09:30',
+    skipFilled: s.recoruSkipFilled !== false,
+    showWindow: !!s.recoruShowWindow,
+    cred: { contractId: c.contractId, authId: c.authId, hasPassword: !!(c.passwordEnc || recoruSessionPw), sessionOnly: !c.passwordEnc && !!recoruSessionPw },
+    encryption: recoruEncryptionOk(),
+    ready: recoruHasCred(),
+    posting: recoruPosting,
+    candidates: recoruPreview(keys),
+    log: s.recoruLog || [],
+    lastOkDay: recoruPostLib.lastOkDay(s.recoruPosted)
+  };
+}
+
+/** 起動・復帰・時刻のトリガー。候補があり確認が出ていなければ、通知(またはウィンドウ表示中ならその場)で確認を出す */
+function recoruTrigger(reason) {
+  if (!store || !settings().recoruEnabled) return;
+  const d = recoruPostLib.triggerDecision(reason, Date.now(), recoruTrig, { postTime: settings().recoruPostTime || '09:30' });
+  if (!d.fire) return;
+  recoruTrig = d.st;
+  if (recoruPosting || !recoruHasCred()) return;
+  if (recoruPromptState.open && Date.now() - recoruPromptState.at < RECORU_PROMPT_TTL) return;
+  const keys = recoruCandidates();
+  if (!keys.length) return;
+  recoruPrompt(keys.length);
+}
+function recoruPrompt(n) {
+  recoruPromptState = { open: true, at: Date.now() };
+  buildTrayMenu();
+  const openModal = () => {
+    if (!win || win.isDestroyed()) return;
+    win.show(); win.focus();
+    win.webContents.send('recoru:prompt');
+  };
+  const shown = win && !win.isDestroyed() && win.isVisible() && !win.isMinimized();
+  if (shown && win.isFocused()) { openModal(); return; }
+  // 表示中(背面)なら確認画面を先に開いておく(フォーカスは奪わない)
+  if (shown) win.webContents.send('recoru:prompt');
+  // レコル連携は本人が有効にした機能のため、通知設定がオフでもこの確認は出す
+  try {
+    if (Notification.isSupported()) {
+      recoruNotif = new Notification({ title: '昨日の勤怠をレコルに転記しますか？', body: `${n}日分の勤怠があります。クリックして内容を確認し、「レコルに転記する」を押してください。` });
+      recoruNotif.on('click', openModal);
+      recoruNotif.on('close', () => { recoruPromptState.open = false; });
+      recoruNotif.show();
+      return;
+    }
+  } catch (_) {}
+  openModal();
+}
+
+/**
+ * 転記の実行(ボタン = 本人の確認)。未提出・差し戻しの日は先に提出してアプリとレコルを一致させる。
+ * @param keys 対象の日(省略時は候補すべて。候補に無い日は無視)
+ */
+async function recoruPostNow(keys) {
+  if (recoruPosting) return { ok: false, error: 'レコルへの転記を実行中です' };
+  if (!recoruHasCred()) return { ok: false, error: 'レコルのログイン情報(契約ID・ログインID・パスワード)を設定してください' };
+  const cands = recoruCandidates();
+  keys = Array.isArray(keys) ? keys.filter(k => cands.includes(k)).sort() : cands;
+  if (!keys.length) return { ok: false, error: '転記する日がありません' };
+  recoruPosting = true;
+  recoruPromptState.open = false;
+  buildTrayMenu(); pushUpdate();
+  const pre = []; // 転記前に判明した失敗(値を作れない日)
+  try {
+    const out = await recoruBotLib.run({
+      mode: 'post',
+      cred: { ...recoruCred(), password: recoruPassword() },
+      overwrite: settings().recoruSkipFilled === false,
+      show: !!settings().recoruShowWindow,
+      log: (m) => console.log('[recoru]', m),
+      prepare: async () => {
+        // ログインできてから提出する(ログイン失敗で提出だけ進むのを避ける)
+        let submitted = 0;
+        for (const k of keys) {
+          const d = store.data.days[k];
+          if (d && (d.status === 'pending' || d.status === 'rejected')) {
+            const r = submitDay(k);
+            if (r.ok) { submitted++; logEvent(d, 'レコルへの転記のため提出しました'); }
+          }
+        }
+        if (submitted) { store.save(); pushUpdate(); }
+        const items = [];
+        for (const k of keys) {
+          const v = recoruPostLib.dayValues(k, store.data.days[k]);
+          if (!v) pre.push({ key: k, status: 'fail', reason: '記録がありません' });
+          else if (v.error) pre.push({ key: k, status: 'fail', reason: v.error });
+          else items.push(v);
+        }
+        return items;
+      }
+    });
+    const results = [...pre, ...(out.results || [])].sort((a, b) => a.key.localeCompare(b.key));
+    const s = settings();
+    s.recoruPosted = recoruPostLib.applyResults(s.recoruPosted || {}, results, Date.now(), { todayKey: todayKeyNow() });
+    s.recoruLog = recoruPostLib.appendLog(s.recoruLog, results, Date.now());
+    for (const r of results) {
+      const d = store.data.days[r.key];
+      if (d) logEvent(d, `レコル転記: ${{ ok: '転記しました', skip: 'スキップ', fail: '失敗' }[r.status]}${r.reason ? '(' + r.reason + ')' : ''}${r.rk && r.rk.work ? ` レコル 休憩${r.rk.break} 労働${r.rk.work}` : ''}`);
+    }
+    store.save();
+    const summary = results.length ? recoruPostLib.summaryText(results) : '';
+    if (!(win && win.isVisible())) {
+      notify(out.error ? 'レコルへの転記ができませんでした' : 'レコルへの転記が終わりました', out.error || summary);
+    }
+    return { ok: !out.error && results.every(r => r.status !== 'fail'), error: out.error || '', login: !!out.login, results, summary };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200), results: [] };
+  } finally {
+    recoruPosting = false;
+    buildTrayMenu(); pushUpdate();
+  }
+}
+
+async function recoruTestLogin() {
+  if (recoruPosting) return { ok: false, error: 'レコルへの転記を実行中です' };
+  if (!recoruHasCred()) return { ok: false, error: '契約ID・ログインID・パスワードを入力して保存してください' };
+  recoruPosting = true;
+  try {
+    const out = await recoruBotLib.run({ mode: 'test', cred: { ...recoruCred(), password: recoruPassword() }, show: !!settings().recoruShowWindow, timeoutMs: 60 * 1000 });
+    return { ok: !!out.ok, error: out.error || '', message: out.message || '', login: !!out.login };
+  } finally { recoruPosting = false; }
+}
+
+function recoruSaveCred({ contractId, authId, password } = {}) {
+  const s = settings();
+  const c = recoruCred();
+  const next = { contractId: String(contractId || '').trim().slice(0, 100), authId: String(authId || '').trim().slice(0, 100), passwordEnc: c.passwordEnc };
+  let message = '';
+  if (password) {
+    if (recoruEncryptionOk()) {
+      next.passwordEnc = safeStorage.encryptString(String(password)).toString('base64');
+      recoruSessionPw = '';
+    } else {
+      next.passwordEnc = '';
+      recoruSessionPw = String(password);
+      message = 'このPCではパスワードを安全に保存できないため、アプリを終了するまでの間だけ記憶します(再起動後はもう一度入力してください)';
+    }
+  }
+  s.recoruCred = next;
+  // ログイン情報がそろったら有効にする(最初の保存時のみ)
+  if (s.recoruEnabled == null && recoruHasCred()) s.recoruEnabled = true;
+  store.save();
+  return { ok: true, message };
+}
+
+function recoruClearCred() {
+  settings().recoruCred = { contractId: '', authId: '', passwordEnc: '' };
+  recoruSessionPw = '';
+  settings().recoruEnabled = false;
+  store.save();
+  // ログイン状態(Cookie)も消す
+  try { require('electron').session.fromPartition(recoruBotLib.PARTITION).clearStorageData().catch(() => {}); } catch (_) {}
+  return { ok: true };
+}
+
+function startRecoru() {
+  setTimeout(() => recoruTrigger('start'), 30 * 1000);
+  // 復帰直後はネットワークが戻るまで少し待つ
+  powerMonitor.on('resume', () => setTimeout(() => recoruTrigger('resume'), 5000));
+  powerMonitor.on('unlock-screen', () => setTimeout(() => recoruTrigger('unlock'), 3000));
+  let trayN = -1;
+  setInterval(() => {
+    recoruTrigger('tick');
+    // 日付が変わって候補が増えたらトレイの「レコルに転記(N日分)」を更新
+    const n = settings().recoruEnabled ? recoruCandidates().length : 0;
+    if (n !== trayN) { trayN = n; buildTrayMenu(); }
+  }, 60 * 1000);
+}
+
 // ---- 突発の社内会議(今日の勤務 / トレイの 開始・終了) -----------------------
 // 記録は本人の day.calendar に {adhoc:true} の予定として保存(チーム共有カレンダーには載せない)。
 // 記録中(open)は終了=今として推定エンジン・会議判定・区分計上に効く。詳細は src/meetings.js
@@ -927,7 +1145,7 @@ function syncCfg() {
   return {
     ...s, userName: settings().userName, recoruUserId: settings().recoruUserId || '',
     appVersion: app.getVersion(), platform: process.platform, arch: process.arch,
-    tracking: trackingStatus()
+    tracking: { ...trackingStatus(), recoruPost: { enabled: !!settings().recoruEnabled, lastOkDay: recoruPostLib.lastOkDay(settings().recoruPosted) } }
   };
 }
 
@@ -1239,7 +1457,8 @@ function buildState() {
   const keys = Object.keys(store.data.days).sort().slice(-62);
   for (const k of keys) days[k] = store.data.days[k];
   return {
-    settings: settings(),
+    settings: (() => { const { recoruCred, ...rest } = settings(); return rest; })(), // レコルのログイン情報は画面に渡さない(state.recoru.cred を使う)
+    recoru: recoruState(),
     todayKey: currentKey || engine.dayKey(Date.now(), settings().dayStartHour),
     days,
     rules: store.data.rules,
@@ -1451,6 +1670,12 @@ function buildTrayMenu() {
       } },
     { type: 'separator' },
     { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
+    ...(() => {
+      if (!store || !settings().recoruEnabled) return [];
+      const n = recoruCandidates().length;
+      if (recoruPosting) return [{ label: 'レコルに転記中…', enabled: false }];
+      return n ? [{ label: `レコルに転記(${n}日分)`, click: () => { win.show(); win.focus(); win.webContents.send('recoru:prompt'); } }] : [];
+    })(),
     ...(updateState.status === 'downloaded'
       ? [{ type: 'separator' }, { label: `今すぐ v${updateState.version} に更新して再起動`, click: installUpdateNow }] : []),
     { type: 'separator' },
@@ -1478,6 +1703,9 @@ function registerIpc() {
     delete patch.localUserId; delete patch.calCreatorIds; delete patch.appliedReassign; // 予定の本人判定に使うIDは画面から変更させない
     delete patch.lastExportMonth; delete patch.lastCurrentExportDay; delete patch.lastExportHash; // 自動書き出しの記録は画面から上書きさせない
     delete patch.folderSnooze; delete patch.folderNotified; delete patch.folderNoticeDay; delete patch.folderHintDismissed; // 案件フォルダ通知の記録は専用IPCでのみ変更
+    delete patch.recoruCred; delete patch.recoruPosted; delete patch.recoruLog; // レコル連携のログイン情報・転記記録は専用IPCでのみ変更
+    if ('recoruPostTime' in patch && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(patch.recoruPostTime))) delete patch.recoruPostTime;
+    if (patch.recoruEnabled === true && !recoruHasCred()) delete patch.recoruEnabled; // ログイン情報が無いうちは有効にしない
     Object.assign(store.data.settings, patch);
     if ('autoLaunch' in patch) {
       try { app.setLoginItemSettings({ openAtLogin: !!patch.autoLaunch }); } catch (_) {}
@@ -1757,6 +1985,13 @@ function registerIpc() {
   });
 
   ipcMain.handle('day:submit', (e, key) => { const r = submitDay(key); pushUpdate(); return r; });
+
+  // レコル連携(パスワードは main 側で暗号化保存し、画面には返さない)
+  ipcMain.handle('recoru:saveCred', (e, cred) => ({ ...recoruSaveCred(cred), state: buildState() }));
+  ipcMain.handle('recoru:clearCred', () => ({ ...recoruClearCred(), state: buildState() }));
+  ipcMain.handle('recoru:test', async () => ({ ...(await recoruTestLogin()), state: buildState() }));
+  ipcMain.handle('recoru:post', async (e, keys) => ({ ...(await recoruPostNow(keys)), state: buildState() }));
+  ipcMain.handle('recoru:snooze', () => { recoruPromptState.open = false; buildTrayMenu(); return { ok: true }; });
 
   // 案件マスター CRUD(コード形式: 大文字英字+数字。例 F000, T123)
   ipcMain.handle('projects:add', (e, p) => {
@@ -2103,6 +2338,7 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   startTracker();
+  startRecoru();
   startWatcher();
   setTimeout(recheckAutoSubmitted, 3000);
   setupAutoUpdater();

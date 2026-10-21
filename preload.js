@@ -62,5 +62,11 @@ contextBridge.exposeInMainWorld('api', {
   importCalendar: () => ipcRenderer.invoke('calendar:import'),
   setTeamStatus: (memberId, dateKey, status) => ipcRenderer.invoke('team:setStatus', { memberId, dateKey, status }),
   reseedDemo: () => ipcRenderer.invoke('demo:reseed'),
+  recoruSaveCred: (cred) => ipcRenderer.invoke('recoru:saveCred', cred),
+  recoruClearCred: () => ipcRenderer.invoke('recoru:clearCred'),
+  recoruTest: () => ipcRenderer.invoke('recoru:test'),
+  recoruPost: (keys) => ipcRenderer.invoke('recoru:post', keys),
+  recoruSnooze: () => ipcRenderer.invoke('recoru:snooze'),
+  onRecoruPrompt: (cb) => ipcRenderer.on('recoru:prompt', () => cb()),
   onUpdate: (cb) => ipcRenderer.on('state:update', (e, state) => cb(state))
 });

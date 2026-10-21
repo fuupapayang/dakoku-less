@@ -293,6 +293,145 @@ function overtimeCardHTML() {
   </div>`;
 }
 
+/* ---------- レコル自動転記 ---------- */
+const RECORU_RESULT = { ok: ['STABLE', '転記しました'], skip: ['UNSURE', 'スキップ'], fail: ['LOW', '失敗'] };
+function recoruBreaksText(c) {
+  if (c.breaksUnknown) return '<span class="muted">区間不明</span>';
+  if (!c.breaks.length) return '<span class="muted">なし</span>';
+  return c.breaks.map(b => `${esc(b.s)}-${esc(b.e)}`).join('<br>');
+}
+function recoruCandidatesTableHTML(cands, withCheck) {
+  return `<div class="table-wrap"><table><thead><tr>${withCheck ? '<th></th>' : ''}<th>日付</th><th>開始</th><th>終了</th><th>休憩(区間)</th><th>実働</th><th>メモ</th></tr></thead>
+    <tbody>${cands.map(c => `<tr>
+      ${withCheck ? `<td><input type="checkbox" class="rc-day" value="${esc(c.key)}" checked></td>` : ''}
+      <td style="white-space:nowrap">${esc(fmtDate(c.key))}</td><td>${esc(c.start)}</td><td>${esc(c.end)}</td>
+      <td style="white-space:nowrap">${recoruBreaksText(c)}<div class="muted">計 ${hm(c.breakMin)}</div></td><td><b>${hm(c.workMin)}</b></td>
+      <td class="muted" style="font-size:12px">${[
+        c.status === 'pending' || c.status === 'rejected' ? `<span class="chip status-${esc(c.status)}">${STATUS[c.status]}</span> 転記の前に提出します` : '',
+        c.error ? `<span class="chip LOW">${esc(c.error)}</span>` : '',
+        ...c.notes.map(esc)].filter(Boolean).join('<br>')}</td></tr>`).join('')}</tbody></table></div>`;
+}
+function recoruResultsHTML(res) {
+  const rows = (res.results || []).map(r => {
+    const [cls, label] = RECORU_RESULT[r.status] || ['LOW', r.status];
+    return `<tr><td style="white-space:nowrap">${esc(fmtDate(r.key))}</td><td><span class="chip ${cls}">${label}</span></td>
+      <td>${r.rk && r.rk.break ? esc(r.rk.break) : '-'}</td><td>${r.rk && r.rk.work ? esc(r.rk.work) : '-'}</td><td class="muted" style="font-size:12px">${esc(r.reason || '')}</td></tr>`;
+  }).join('');
+  return `${res.error ? `<div class="card" style="border-color:#f0c4c2;background:#fff6f5"><b>${esc(res.error)}</b>
+      ${res.login ? '<div class="muted mt8">レコルのログイン画面を別ウィンドウで表示しました。ログインしてからそのウィンドウを閉じ、もう一度「レコルに転記する」を押してください。</div>' : ''}</div>` : ''}
+    ${rows ? `<div class="table-wrap"><table class="mt8"><thead><tr><th>日付</th><th>結果</th><th>レコルの休憩</th><th>レコルの労働時間</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+    <div class="muted mt8">休憩・労働時間はレコルが計算した値です(保存後に読み戻して確認)。確定・申請はレコルで行ってください。</div>`;
+}
+
+/** 転記の確認画面。autoStart = 今日の勤務カードのボタンから(押した時点で転記を始める) */
+function openRecoruModal({ autoStart = false } = {}) {
+  const r = state.recoru;
+  const root = $('#modal-root');
+  if (root.innerHTML) return; // 別の画面を開いている間は出さない(今日の勤務のカード・トレイから後で開ける)
+  if (!r || !r.enabled) return;
+  if (!r.ready) { toast('レコルのログイン情報を設定してください'); showTab('settings'); return; }
+  if (!r.candidates.length) { toast('レコルに転記する日はありません'); window.api.recoruSnooze(); return; }
+  let posting = false;
+  const close = () => { root.innerHTML = ''; root.onclick = null; renderAll(); };
+  root.innerHTML = `<div class="overlay"><div class="modal" style="width:760px">
+    <h2>レコルに転記しますか？</h2>
+    <div id="rc-body">
+      <div class="muted">次の${r.candidates.length}日分を、レコルの勤務表(勤務区分=出勤・開始・終了・休憩)に入力します。${r.skipFilled ? 'レコルに入力済みの日は上書きしません。' : '<b>レコルに入力済みの日も上書きします。</b>'}確定・申請は行いません。</div>
+      <div class="mt8">${recoruCandidatesTableHTML(r.candidates, !autoStart)}</div>
+    </div>
+    <div class="foot" id="rc-foot">
+      <button class="btn" data-act="rc-snooze">今はしない</button>
+      <button class="btn primary" data-act="rc-post">レコルに転記する</button>
+    </div>
+  </div></div>`;
+  const run = async () => {
+    const keys = autoStart ? null : [...root.querySelectorAll('.rc-day:checked')].map(x => x.value);
+    if (keys && !keys.length) { toast('転記する日を選んでください'); return; }
+    posting = true;
+    $('#rc-foot').innerHTML = '<span class="muted">レコルに転記しています…(最大3分・この画面のままお待ちください)</span>';
+    let res;
+    try { res = await window.api.recoruPost(keys); } catch (e) { res = { ok: false, error: String(e && e.message || e) }; }
+    posting = false;
+    if (res.state) state = res.state;
+    $('.modal h2', root).textContent = res.error && !(res.results || []).length ? 'レコルに転記できませんでした' : `レコルへの転記結果${res.summary ? '(' + res.summary + ')' : ''}`;
+    $('#rc-body').innerHTML = recoruResultsHTML(res);
+    $('#rc-foot').innerHTML = '<button class="btn primary" data-act="modal-close">閉じる</button>';
+  };
+  root.onclick = async (e) => {
+    if (posting) return;
+    const act = e.target.dataset.act;
+    if (act === 'modal-close' || e.target.classList.contains('overlay')) { window.api.recoruSnooze(); close(); return; }
+    if (act === 'rc-snooze') { window.api.recoruSnooze(); close(); return; }
+    if (act === 'rc-post') run();
+  };
+  if (autoStart) run();
+}
+
+/** 今日の勤務: 未転記の日があるときのカード */
+function recoruCardHTML() {
+  const r = state.recoru;
+  if (!r || !r.enabled || !r.candidates.length) return '';
+  const list = r.candidates.map(c => `${fmtDate(c.key)} ${c.start}〜${c.end} 実働${hm(c.workMin)}`).map(esc).join(' ／ ');
+  return `<div class="card" style="border-color:#bcd7f5;background:#f4f9ff">
+    <div class="row"><div class="grow"><b>レコルに未転記の勤怠が${r.candidates.length}日分あります</b>
+      <div class="muted">${list}${r.candidates.some(c => c.status === 'pending' || c.status === 'rejected') ? '(未提出の日は提出してから転記します)' : ''}</div></div>
+      ${!r.ready ? '<button class="btn" data-act="recoru-settings">ログイン情報を設定</button>'
+        : `<button class="btn primary" data-act="recoru-post" ${r.posting ? 'disabled' : ''}>${r.posting ? '転記中…' : 'レコルに転記する'}</button>`}
+    </div></div>`;
+}
+
+/** 設定: レコル連携 */
+function recoruSettingsCardHTML() {
+  const r = state.recoru;
+  if (!r) return '';
+  const c = r.cred || {};
+  const log = (r.log || []).map(l => {
+    const [cls, label] = RECORU_RESULT[l.status] || ['LOW', l.status];
+    return `<tr><td style="white-space:nowrap">${esc(fmtDate(l.key))}</td><td><span class="chip ${cls}">${label}</span></td>
+      <td>${l.rk && l.rk.break ? esc(l.rk.break) : '-'}</td><td>${l.rk && l.rk.work ? esc(l.rk.work) : '-'}</td>
+      <td class="muted" style="font-size:12px">${esc(l.reason || '')}</td><td class="muted" style="white-space:nowrap">${l.at ? new Date(l.at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</td></tr>`;
+  }).join('');
+  return `<div class="card">
+    <h2>レコル連携 <span class="tag">自動転記</span></h2>
+    <div class="row">
+      <div class="toggle ${r.enabled ? 'on' : ''}" data-act="recoru-toggle"></div>
+      <div class="grow"><b>前日までの勤怠をレコルに転記する</b>
+        <div class="muted">PCの起動時・スリープ復帰/ロック解除時・毎日の時刻に、まだ転記していない日(直近7日)があれば確認を出します。「レコルに転記する」を押すと、未提出の日は提出してから、レコルの勤務表に勤務区分(出勤)・開始・終了・休憩を入力します。確定・申請は行いません。</div>
+        ${r.ready ? '' : '<div class="muted mt8">⚠ 下のログイン情報を保存すると有効にできます。</div>'}</div>
+    </div>
+    <div class="field-row mt8">
+      <label class="field">毎日の確認時刻(PCを付けたままの日用)<input type="time" id="rc-time" value="${esc(r.postTime)}"></label>
+      <span class="grow"></span>
+    </div>
+    <div class="row mt8">
+      <div class="toggle ${r.skipFilled ? 'on' : ''}" data-act="recoru-skip-toggle"></div>
+      <div class="grow"><b>既に入力がある日は上書きしない</b><div class="muted">レコルで開始・終了が入っている日はスキップします(推奨)。</div></div>
+    </div>
+    <div class="row mt8">
+      <div class="toggle ${r.showWindow ? 'on' : ''}" data-act="recoru-show-toggle"></div>
+      <div class="grow"><b>転記中のレコル画面を表示する</b><div class="muted">動作確認用。通常はオフ(画面を出さずに入力します)。</div></div>
+    </div>
+    <h3 class="mt16">ログイン情報</h3>
+    <div class="field-row">
+      <label class="field">契約ID<input type="text" id="rc-contract" value="${esc(c.contractId || '')}" autocomplete="off"></label>
+      <label class="field">ログインID<input type="text" id="rc-auth" value="${esc(c.authId || '')}" autocomplete="off"></label>
+      <label class="field">パスワード<input type="password" id="rc-pw" value="" autocomplete="new-password" placeholder="${c.hasPassword ? '保存済み(変更するときだけ入力)' : ''}"></label>
+    </div>
+    <div class="muted">パスワードはこのPCの${state.platform === 'darwin' ? 'キーチェーン' : '資格情報'}で暗号化して保存し、画面やチームには送りません。ログイン状態はアプリ専用のブラウザに保持されるため、通常は毎回ログインしません。
+      ${r.encryption ? '' : '<br><b>⚠ このPCでは暗号化保存が使えないため、パスワードはアプリを終了するまでの間だけ記憶します。</b>'}
+      ${c.sessionOnly ? '<br>(パスワードは今回の起動中のみ記憶しています)' : ''}</div>
+    <div class="row mt8">
+      <button class="btn primary" data-act="recoru-save-cred">保存</button>
+      <button class="btn" data-act="recoru-test" ${r.ready && !r.posting ? '' : 'disabled'}>ログインを確認</button>
+      ${c.contractId || c.authId || c.hasPassword ? '<button class="btn ghost" data-act="recoru-clear">ログイン情報を削除</button>' : ''}
+      <span class="grow"></span>
+      ${r.lastOkDay ? `<span class="muted">最後に転記した日: ${esc(fmtDate(r.lastOkDay))}</span>` : ''}
+    </div>
+    <div class="muted mt8" id="rc-msg"></div>
+    ${log ? `<h3 class="mt16">最近の結果</h3><div class="table-wrap"><table><thead><tr><th>日付</th><th>結果</th><th>休憩</th><th>労働時間</th><th></th><th>実行</th></tr></thead><tbody>${log}</tbody></table></div>` : ''}
+  </div>`;
+}
+
 function renderToday() {
   const key = state.todayKey;
   const day = state.days[key];
@@ -307,6 +446,7 @@ function renderToday() {
     <h1>今日の勤務</h1>
     <div class="page-sub">${fmtDate(key)} ｜ ただ仕事に集中するだけで、出退勤ログをそっと整えます。</div>
     ${folderBannerHTML()}
+    ${recoruCardHTML()}
     ${privateCardHTML(day)}
     ${meetingCardHTML(day)}
     ${overtimeCardHTML()}
@@ -1524,6 +1664,7 @@ function renderSettings() {
     </div>
     ${teamCardHTML()}
 
+    ${recoruSettingsCardHTML()}
     ${sheetsCardHTML(s)}
     <div class="card">
       <h2>データ連携</h2>
@@ -1704,11 +1845,16 @@ function memberVersionsHTML() {
       if (!t.titleDetect) out.push('<span class="muted" title="ウィンドウタイトルからの案件判定がオフです">タイトル判定オフ</span>');
       if (!out.length) out.push('<span class="chip STABLE">OK</span>');
     }
+    if (t.recoruPost) {
+      const rp = t.recoruPost, d = rp.lastOkDay ? rp.lastOkDay.slice(5).replace('-', '/').replace(/^0/, '') : '';
+      out.push(`<div class="muted" style="font-size:11px">レコル転記: ${rp.enabled ? '有効' : '無効'}${d ? '・最終 ' + esc(d) : ''}</div>`);
+    }
     return out.join(' ');
   };
   const fs0 = state.folderStatus || {};
   const selfTracking = { trackWork: !!state.settings.trackWork, titleDetect: state.settings.titleDetect === true, watchRoots: (state.watchRoots || state.settings.watchRoots || []).filter(Boolean).length, rootsMissing: (fs0.missing || []).length,
-    ...(fs0.reliable ? { missingFolders: (fs0.allMissingCodes || []).length, missingFolderCodes: (fs0.allMissingCodes || []).slice(0, 20) } : {}) };
+    ...(fs0.reliable ? { missingFolders: (fs0.allMissingCodes || []).length, missingFolderCodes: (fs0.allMissingCodes || []).slice(0, 20) } : {}),
+    ...(state.recoru ? { recoruPost: { enabled: !!state.recoru.enabled, lastOkDay: state.recoru.lastOkDay || '' } } : {}) };
   const rows = [{ name: state.settings.userName + '(あなた)', appVersion: state.appVersion, versionLabel: 'v' + state.appVersion, updatedAt: Date.now(), platform: state.platform, arch: state.arch, tracking: selfTracking }, ...members]
     .map(m => ({ ...m, old: !m.appVersion || cmp(m.appVersion, latest) < 0 }))
     .sort((a, b) => (b.old - a.old) || String(a.name).localeCompare(String(b.name)));
@@ -2666,6 +2812,47 @@ document.addEventListener('click', async (e) => {
     });
     toast('設定を保存しました');
   }
+  if (act === 'recoru-post') openRecoruModal({ autoStart: true });
+  if (act === 'recoru-settings') showTab('settings');
+  if (act === 'recoru-toggle') {
+    if (!state.recoru.enabled && !state.recoru.ready) { toast('先にログイン情報を保存してください'); return; }
+    state = await window.api.updateSettings({ recoruEnabled: !state.recoru.enabled });
+    renderSettings();
+  }
+  if (act === 'recoru-skip-toggle') {
+    state = await window.api.updateSettings({ recoruSkipFilled: !state.recoru.skipFilled });
+    renderSettings();
+  }
+  if (act === 'recoru-show-toggle') {
+    state = await window.api.updateSettings({ recoruShowWindow: !state.recoru.showWindow });
+    renderSettings();
+  }
+  if (act === 'recoru-save-cred') {
+    const contractId = $('#rc-contract').value.trim(), authId = $('#rc-auth').value.trim(), password = $('#rc-pw').value;
+    if (!contractId || !authId || (!password && !state.recoru.cred.hasPassword)) { toast('契約ID・ログインID・パスワードを入力してください'); return; }
+    const r = await window.api.recoruSaveCred({ contractId, authId, password });
+    if (!r.ok) { toast(r.error || '保存できませんでした'); return; }
+    if (r.state) state = r.state;
+    renderSettings();
+    toast('レコルのログイン情報を保存しました');
+    if (r.message) $('#rc-msg').textContent = r.message;
+  }
+  if (act === 'recoru-test') {
+    btn.disabled = true;
+    $('#rc-msg').textContent = 'レコルにログインしています…(最大1分)';
+    const r = await window.api.recoruTest();
+    if (r.state) state = r.state;
+    renderSettings();
+    $('#rc-msg').textContent = r.ok ? '✓ ' + (r.message || 'ログインできました')
+      : '✗ ' + (r.error || 'ログインできませんでした') + (r.login ? '(レコルのログイン画面を別ウィンドウで表示しました。手動でログインして閉じてください)' : '');
+  }
+  if (act === 'recoru-clear') {
+    if (!confirm('レコルのログイン情報(とログイン状態)を削除し、自動転記をオフにします。よろしいですか？')) return;
+    const r = await window.api.recoruClearCred();
+    if (r.state) state = r.state;
+    renderSettings();
+    toast('レコルのログイン情報を削除しました');
+  }
   if (act === 'notif-toggle') {
     state = await window.api.updateSettings({ notifications: state.settings.notifications === false });
     renderSettings();
@@ -2696,7 +2883,11 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
+  if (e.target.id === 'rc-time' && /^\d{2}:\d{2}$/.test(e.target.value)) {
+    state = await window.api.updateSettings({ recoruPostTime: e.target.value });
+    toast(`毎日 ${e.target.value} に確認します`);
+  }
   if (e.target.id === 'rs-month') { const r = renderProjects.restore; r.ym = e.target.value; r.preview = null; renderProjects(); }
   if (e.target.id === 'mt-proj') renderToday.meetingPid = e.target.value; // 自動更新で選択が戻らないよう保持
   if (e.target.id === 'adm-date') { renderAdmin.date = e.target.value; renderAdmin(); }
@@ -2746,6 +2937,13 @@ function renderTab(tab) {
   if (tab === 'admin') renderAdmin();
 }
 function renderAll() { renderTab(activeTab); }
+
+// レコル転記の確認(起動・復帰・毎日の時刻、トレイの「レコルに転記」)
+if (window.api.onRecoruPrompt) window.api.onRecoruPrompt(async () => {
+  state = await window.api.getState();
+  if ($('#modal-root').innerHTML) { window.api.recoruSnooze(); renderAll(); return; }
+  openRecoruModal();
+});
 
 window.api.onUpdate((s) => {
   state = s;
