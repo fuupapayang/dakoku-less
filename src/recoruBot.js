@@ -88,11 +88,30 @@ function pageLib() {
       setVal(a, c.contractId); setVal(b, c.authId); setVal(p, c.password);
       return '';
     },
+    /**
+     * 表示中の勤務表の年月。期間のプルダウンは全期間の選択肢を含むため、ページ全体の文字列からは読まない。
+     * 1) 期間プルダウンの「選択中」の項目  2) プルダウン以外の文字  3) 1行目の日付(例 10/1)から月だけ
+     */
     pageYm() {
-      const t = (document.body && document.body.innerText) || '';
-      const m = t.match(/(20\d{2})\s*[年\/.\-]\s*(\d{1,2})\s*[月\/.\-]\s*(\d{1,2})\s*日?\s*(?:\([^)]*\))?\s*[〜～~]/) ||
-        t.match(/(20\d{2})\s*年\s*(\d{1,2})\s*月/);
-      return m ? { y: Number(m[1]), m: Number(m[2]) } : null;
+      const re1 = /(20\d{2})\s*[年\/.\-]\s*(\d{1,2})\s*[月\/.\-]\s*(\d{1,2})\s*日?\s*(?:\([^)]*\))?\s*[〜～~]/;
+      const re2 = /(20\d{2})\s*年\s*(\d{1,2})\s*月/;
+      const pick = (t) => { const m = String(t || '').match(re1) || String(t || '').match(re2); return m ? { y: Number(m[1]), m: Number(m[2]) } : null; };
+      for (const sel of document.querySelectorAll('select')) {
+        if (!vis(sel) || sel.selectedIndex < 0) continue;
+        const r = pick(sel.options[sel.selectedIndex].text);
+        if (r) return r;
+      }
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.parentElement && !n.parentElement.closest('select,option,script,style') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT)
+      });
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const r = pick(n.nodeValue);
+        if (r) return r;
+      }
+      const r0 = row(0);
+      const md = r0 && txt(r0.children[0]).match(/^(\d{1,2})\/1\(/);
+      if (md) return { y: null, m: Number(md[1]) };
+      return null;
     },
     hasRows() { return !!row(0); },
     readRow(i) {
@@ -263,7 +282,8 @@ class Bot {
   async ensureMonth(y, m, st) {
     const target = y * 12 + m;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const parsed = await this.ev('__dk.pageYm()');
+      let parsed = await this.ev('__dk.pageYm()');
+      if (parsed && parsed.y == null) parsed = { y: Math.abs(parsed.m - m) <= 6 ? y : (parsed.m > m ? y - 1 : y + 1), m: parsed.m }; // 1行目の日付だけの場合は対象年の前後から推定
       const cur = parsed ? parsed.y * 12 + parsed.m : st.cur;
       st.cur = cur;
       if (cur === target) return '';
@@ -276,7 +296,8 @@ class Bot {
       await this.waitIdle();
       if (!parsed) st.cur = cur + (dir === '前月へ' ? -1 : 1);
     }
-    const last = await this.ev('__dk.pageYm()');
+    let last = await this.ev('__dk.pageYm()');
+    if (last && last.y == null) last = { y, m: last.m };
     if (last && last.y * 12 + last.m === target) return '';
     if (!last && st.cur === target) return '';
     return `${y}年${m}月の勤務表に切り替えられませんでした`;
