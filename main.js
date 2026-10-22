@@ -1567,6 +1567,14 @@ function setupAutoUpdater() {
   const check = () => updater.checkForUpdates().catch(() => {});
   setTimeout(check, 20 * 1000);
   setInterval(check, 3 * 60 * 60 * 1000);
+  // スリープ中はタイマーが止まるため、復帰・ロック解除時にも確認(直近30分以内に確認済みなら省略)
+  const checkOnWake = () => setTimeout(() => {
+    if (updateState.status === 'downloaded' || updateState.status === 'downloading') return;
+    if (Date.now() - (updateState.checkedAt || 0) < 30 * 60 * 1000) return;
+    check();
+  }, 15 * 1000);
+  powerMonitor.on('resume', checkOnWake);
+  powerMonitor.on('unlock-screen', checkOnWake);
   // ダウンロード済みなら、操作していない時に入れ替える
   setInterval(() => {
     if (updateState.status !== 'downloaded') return;
@@ -2352,6 +2360,12 @@ app.whenReady().then(() => {
   sync = new Sync(syncCfg);
   setInterval(() => { if (sync.enabled()) runSync(); }, 10 * 60 * 1000); // 無料枠節約のため10分間隔
   setTimeout(() => { if (sync.enabled()) runSync(); }, 10 * 1000);
+  // スリープ復帰・ロック解除時も同期(10分以内に同期済みなら省略)。管理者ビューが古い情報のままになるのを防ぐ
+  const syncOnWake = () => setTimeout(() => {
+    if (sync.enabled() && Date.now() - (sync.status.lastSync || 0) >= 10 * 60 * 1000) runSync();
+  }, 10 * 1000);
+  powerMonitor.on('resume', syncOnWake);
+  powerMonitor.on('unlock-screen', syncOnWake);
   setTimeout(remindPending, 30 * 1000);
   setInterval(remindPending, 6 * 60 * 60 * 1000);
   setInterval(checkBudgets, 10 * 60 * 1000);

@@ -1831,7 +1831,13 @@ function memberVersionsHTML() {
     return 0;
   };
   // 基準 = 自分と同期メンバーの中で一番新しい版
-  const latest = members.reduce((v, m) => (m.appVersion && cmp(m.appVersion, v) > 0 ? m.appVersion : v), state.appVersion || '0');
+  // (自分の端末が見つけた新しい版も含める)
+  const found = state.update && state.update.version;
+  const latest = members.reduce((v, m) => (m.appVersion && cmp(m.appVersion, v) > 0 ? m.appVersion : v), found && cmp(found, state.appVersion) > 0 ? found : (state.appVersion || '0'));
+  // この一覧を取得した時刻(スリープ等で同期が止まると古い情報のままになる)
+  const pulledAt = (state.remoteTeam && state.remoteTeam.pulledAt) || 0;
+  const staleList = pulledAt && Date.now() - pulledAt > 30 * 60 * 1000;
+  const hm = (t) => new Date(t).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const os = (m) => ({ darwin: 'Mac', win32: 'Windows' }[m.platform] || '') + (m.arch ? `(${m.arch === 'arm64' ? 'Apple シリコン' : m.arch})` : '');
   // 案件記録の設定状況(tracking: 同期で共有。null = 旧版で未送信)
   const trackHTML = (t) => {
@@ -1862,9 +1868,11 @@ function memberVersionsHTML() {
   return `<div class="card"><div class="row"><h2 class="grow">メンバーのアプリ</h2>
       ${oldN ? `<span class="chip LOW">古い版 ${oldN}人</span>` : '<span class="chip STABLE">全員最新</span>'}</div>
     <div class="muted">最新: v${esc(latest)}。v0.12.6以降は自動で更新されます。「古い版」の人(特にv0.12.6より前)は手動でインストールが必要です。</div>
+    ${pulledAt ? `<div class="row mt8"><span class="${staleList ? '' : 'muted'}">${staleList ? '⚠ ' : ''}この一覧は ${esc(hm(pulledAt))} 時点の情報です${staleList ? '(このPCの同期が止まっていました。最新の状態を見るには「今すぐ同期」を押してください)' : ''}</span>
+      <span class="grow"></span><button class="btn sm" data-act="sync-now">今すぐ同期</button></div>` : ''}
     <div class="table-wrap"><table class="mt8"><thead><tr><th>メンバー</th><th>バージョン</th><th>PC</th><th>最終同期</th><th></th><th>計測</th></tr></thead>
     <tbody>${rows.map(r => `<tr><td>${esc(r.name)}</td><td><b>${esc(r.versionLabel || '-')}</b>${r.appVersion ? '' : ' <span class="muted">(推定)</span>'}</td>
-      <td>${esc(os(r) || '-')}</td><td>${r.updatedAt ? new Date(r.updatedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+      <td>${esc(os(r) || '-')}</td><td>${r.updatedAt ? esc(hm(r.updatedAt)) : '-'}${r.updatedAt && pulledAt - r.updatedAt > 12 * 60 * 60 * 1000 ? '<div class="muted" style="font-size:11px" title="アプリが動いていないため、更新も届いていません">半日以上同期なし(PC未起動?)</div>' : ''}</td>
       <td>${r.old ? '<span class="chip LOW">古い版</span>' : '<span class="chip STABLE">最新</span>'}</td>
       <td>${trackHTML(r.tracking)}</td></tr>`).join('')}</tbody></table></div>
     <div class="muted mt8">計測: 案件の工数を記録する設定の状況です。「計測オフ」「フォルダ未登録」の人は、勤怠はあっても案件の工数が空になります。「フォルダ未作成」は制作担当の案件のフォルダが本人の監視フォルダ内に無い件数です(本人の「今日の勤務」に対処ボタンが出ています)。</div></div>`;
@@ -2793,7 +2801,7 @@ document.addEventListener('click', async (e) => {
     toast('同期しています…');
     const r = await window.api.syncNow();
     state = r.state;
-    renderSettings();
+    renderAll(); // 設定タブ・管理者ビューのどちらから押しても今のタブを描き直す
     toast(r.ok ? `同期完了(メンバー${r.members}人)` : `同期エラー: ${r.error}`);
   }
 
