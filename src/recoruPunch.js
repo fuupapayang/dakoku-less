@@ -51,7 +51,7 @@ function hasIn(st, key) { return done(st.days[key] && st.days[key].in); }
  */
 function canRetry(rec, now) {
   if (!rec) return true;
-  if (done(rec)) return false;
+  if (done(rec) || rec.status === 'declined') return false; // declined: 休日の確認で「打刻しない」を選んだ
   return (rec.tries || 1) < 3 && now - (rec.firstAt || rec.at) <= 10 * MIN && now - rec.at >= MIN;
 }
 const failRec = (prev, now) => prev && prev.status === 'fail'

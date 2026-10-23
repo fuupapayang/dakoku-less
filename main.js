@@ -656,7 +656,8 @@ async function sample() {
     }
     lastPrivateWhy = why;
     trackNoEvidence(day, now, key, fg, active);
-    recoruPunchTick(now, active);
+    // 打刻は私用判定(時間外・休日の証拠なし)に関係なく実際の操作で判定する。私用モード中だけは除く
+    recoruPunchTick(now, inputActive && !((settings().privateUntil || 0) > now));
 
     if (active) {
       if (currentInterval && now - currentInterval.e <= settings().mergeGapMin * engine.MIN) {
@@ -896,6 +897,7 @@ function recoruPunchTick(now, active) {
   if (recoruPunchMissKey !== key) { recoruPunchMissKey = key; recoruPunchNotifyMissed(key); }
   const a = recoruPunchLib.tick(punchState(), { now, active, inFlight: recoruPunchBusy || recoruPosting });
   if (!a) return;
+  if (a.kind === 'in' && recoruLib.dayType(a.key) !== 'work') { recoruPunchConfirmHoliday(a); return; }
   if (a.kind === 'prompt') recoruPunchPrompt(a, now);
   else {
     if (a.reason === 'noanswer' && recoruPunchDialog) { try { recoruPunchDialog.abort(); } catch (_) {} }
@@ -909,6 +911,24 @@ function recoruPunchAway(reason) {
   if (!a) return null;
   if (a.kind === 'confirm') return recoruPunchConfirmShutdown(a);
   return recoruPunchDo(a, Date.now());
+}
+
+/** 土日・祝日は出勤を打刻する前に確認(私用でPCを開いただけの日に休日出勤を記録しない) */
+let recoruPunchAskingHoliday = '';
+function recoruPunchConfirmHoliday(a) {
+  if (recoruPunchAskingHoliday === a.key) return;
+  recoruPunchAskingHoliday = a.key;
+  try { if (process.platform === 'darwin') app.focus({ steal: true }); } catch (_) {}
+  dialog.showMessageBox({
+    type: 'question', title: '全自動勤怠管理くん',
+    message: '今日は休日です。レコルに出勤を打刻しますか？',
+    detail: '仕事をする場合は「出勤を打刻する」を押してください(押した時刻で打刻します)。\n「打刻しない」を選ぶと、今日は自動では打刻しません(必要になったらトレイの「レコルに出勤を打刻」から打刻できます)。',
+    buttons: ['出勤を打刻する', '打刻しない'], defaultId: 0, cancelId: 1, noLink: true
+  }).then(({ response }) => {
+    if (response === 0) return recoruPunchDo({ kind: 'in', key: a.key }, Date.now());
+    recoruPunchLib.record(punchState(), { kind: 'in', key: a.key, now: Date.now(), status: 'declined', reason: '休日のため打刻しない' });
+    store.save(); pushUpdate();
+  }).catch(() => {}).finally(() => { recoruPunchAskingHoliday = ''; });
 }
 
 /** 深夜(0〜5時)の1時間おきの確認。30分答えがなければ次のサンプリングで退勤(recoruPunchLib.tick) */

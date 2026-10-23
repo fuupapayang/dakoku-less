@@ -384,7 +384,7 @@ function recoruCardHTML() {
 function recoruPunchHTML(r) {
   const p = r.punch;
   if (!p) return '';
-  const st = { ok: ['STABLE', '完了'], unverified: ['UNSURE', '要確認'], fail: ['LOW', '失敗'] };
+  const st = { ok: ['STABLE', '完了'], unverified: ['UNSURE', '要確認'], fail: ['LOW', '失敗'], declined: ['UNSURE', '打刻しない(休日)'] };
   const cell = (x) => x ? `${esc(x.time)} <span class="chip ${st[x.status][0]}">${st[x.status][1]}</span>${x.count > 1 ? ` <span class="muted">(${x.count}回目)</span>` : ''}${x.reason ? `<div class="muted" style="font-size:11px">${esc(x.reason)}</div>` : ''}` : '<span class="muted">-</span>';
   const rows = p.days.filter(d => d.in || d.out || d.lastFail).map(d => `<tr><td style="white-space:nowrap">${esc(fmtDate(d.key))}</td><td>${cell(d.in)}</td>
     <td>${cell(d.out)}${!d.out && d.lastFail ? cell({ time: new Date(d.lastFail.at).toTimeString().slice(0, 5), status: 'fail', reason: d.lastFail.reason }) : ''}${d.in && d.needOut ? '<div class="muted" style="font-size:11px">作業中(離れたら退勤を打刻)</div>' : ''}</td></tr>`).join('');
@@ -393,7 +393,7 @@ function recoruPunchHTML(r) {
       <div class="toggle ${p.enabled ? 'on' : ''}" data-act="recoru-punch-toggle"></div>
       <div class="grow"><b>出勤・退勤をレコルに自動で打刻する</b>
         <div class="muted">レコルで勤務表を編集できない(打刻のみの)場合に使います。オンの間は転記の確認は出ません。<br>
-        出勤: その日(朝5時区切り)の最初の操作の瞬間。<br>
+        出勤: その日(朝5時区切り)の最初の操作の瞬間(土日・祝日は打刻するか確認します)。<br>
         退勤: 5〜24時はPCのシステム終了時に「退勤を打刻しますか？」を出します(画面ロック・スリープでは打刻しません。終業時はシステム終了してください)。0〜5時は1時間おきに「深夜残業となりますが作業を続けますか？」を出し、「いいえ」または${p.promptWaitMin}分答えがない場合、${p.idleMin}分操作がない場合に退勤(夜に作業を終えてPCをつけたままにした場合は0時に退勤)。休憩は打刻しません。<br>
         打刻はその時刻にレコルのホームの「出勤」「退勤」ボタンを押すもので、時刻をさかのぼることはありません。</div></div>
     </div>

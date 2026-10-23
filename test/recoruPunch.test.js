@@ -149,4 +149,14 @@ assert.strictEqual(R.punchKey(at(24, 5, 0)), K(24));
   assert.ok(!st.days[K(1)]);
 }
 
+// ---- 休日の確認で「打刻しない」: その日はもう出勤を出さない
+{
+  const st = R.emptyState();
+  const a = R.tick(st, { now: at(24, 7, 19), active: true });
+  assert.strictEqual(a.kind, 'in');
+  R.record(st, { kind: 'in', key: a.key, now: at(24, 7, 20), status: 'declined' });
+  assert.deepStrictEqual(run(st, at(24, 7, 21), at(24, 12, 0), true), []);
+  assert.ok(!R.hasIn(st, K(24)));
+}
+
 console.log('recoruPunch tests passed');
