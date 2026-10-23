@@ -12,6 +12,7 @@ const sheetsLib = require('./src/sheets');
 const recoruLib = require('./src/recoru');
 const recoruPostLib = require('./src/recoruPost');
 const recoruBotLib = require('./src/recoruBot');
+const recoruPunchLib = require('./src/recoruPunch');
 const collisionsLib = require('./src/collisions');
 const policyLib = require('./src/policy');
 const restoreLib = require('./src/restore');
@@ -655,6 +656,7 @@ async function sample() {
     }
     lastPrivateWhy = why;
     trackNoEvidence(day, now, key, fg, active);
+    recoruPunchTick(now, key, active);
 
     if (active) {
       if (currentInterval && now - currentInterval.e <= settings().mergeGapMin * engine.MIN) {
@@ -693,9 +695,16 @@ async function sample() {
 function startTracker() {
   sample();
   sampleTimer = setInterval(sample, SAMPLE_MS);
-  powerMonitor.on('suspend', () => { forcedIdle = true; noteSystem('スリープを検知'); });
+  powerMonitor.on('suspend', () => { forcedIdle = true; noteSystem('スリープを検知'); recoruPunchAway('suspend'); });
+  // シャットダウン: 退勤を打刻してから終了(macOS/Linux。打刻が済むまで終了を少し待ってもらう)
+  powerMonitor.on('shutdown', (e) => {
+    const p = recoruPunchAway('shutdown');
+    if (!p) return;
+    try { e.preventDefault(); } catch (_) {}
+    Promise.race([p, new Promise(r => setTimeout(r, 40000))]).finally(() => { quitting = true; app.quit(); });
+  });
   powerMonitor.on('resume', () => { forcedIdle = false; noteSystem('復帰を検知'); sample(); });
-  powerMonitor.on('lock-screen', () => { forcedIdle = true; noteSystem('画面ロックを検知'); });
+  powerMonitor.on('lock-screen', () => { forcedIdle = true; noteSystem('画面ロックを検知'); recoruPunchAway('lock'); });
   powerMonitor.on('unlock-screen', () => { forcedIdle = false; noteSystem('ロック解除を検知'); sample(); });
 }
 
@@ -747,7 +756,7 @@ function recoruPreview(keys) {
 /** 画面用(パスワードは送らない) */
 function recoruState() {
   const s = settings(), c = recoruCred();
-  const keys = s.recoruEnabled ? recoruCandidates() : [];
+  const keys = s.recoruEnabled && !s.recoruPunchEnabled ? recoruCandidates() : [];
   return {
     enabled: !!s.recoruEnabled,
     postTime: s.recoruPostTime || '09:30',
@@ -759,13 +768,20 @@ function recoruState() {
     posting: recoruPosting,
     candidates: recoruPreview(keys),
     log: s.recoruLog || [],
-    lastOkDay: recoruPostLib.lastOkDay(s.recoruPosted)
+    lastOkDay: recoruPostLib.lastOkDay(s.recoruPosted),
+    punch: {
+      enabled: !!s.recoruPunchEnabled,
+      busy: recoruPunchBusy,
+      memo: RECORU_PUNCH_MEMO,
+      inStreakMin: recoruPunchLib.IN_STREAK_MIN, outIdleMin: recoruPunchLib.OUT_IDLE_MIN,
+      days: recoruPunchLib.summary(punchState(), Array.from({ length: 7 }, (_, i) => recoruPostLib.addDays(todayKeyNow(), -i)))
+    }
   };
 }
 
 /** 起動・復帰・時刻のトリガー。候補があり確認が出ていなければ、通知(またはウィンドウ表示中ならその場)で確認を出す */
 function recoruTrigger(reason) {
-  if (!store || !settings().recoruEnabled) return;
+  if (!store || !settings().recoruEnabled || settings().recoruPunchEnabled) return; // 打刻モード中は転記の確認を出さない
   const d = recoruPostLib.triggerDecision(reason, Date.now(), recoruTrig, { postTime: settings().recoruPostTime || '09:30' });
   if (!d.fire) return;
   recoruTrig = d.st;
@@ -862,6 +878,76 @@ async function recoruPostNow(keys) {
     recoruPosting = false;
     buildTrayMenu(); pushUpdate();
   }
+}
+
+// ---- レコル リアルタイム打刻 -------------------------------------------------
+// レコルで本人が勤務表を編集できない(打刻のみの)運用向け。操作を検知したその時刻に、ホームの「出勤」「退勤」を押す。
+// 時刻はさかのぼらず、打刻メモに自動打刻であることを残す(判定は src/recoruPunch.js)。
+let recoruPunchBusy = false;
+let recoruPunchMissKey = '';
+const RECORU_PUNCH_MEMO = '自動打刻(全自動勤怠管理くん)';
+function punchState() {
+  const s = settings();
+  if (!s.recoruPunch || typeof s.recoruPunch !== 'object') s.recoruPunch = recoruPunchLib.emptyState();
+  return s.recoruPunch;
+}
+function recoruPunchOn() { return !!(store && settings().recoruPunchEnabled && recoruHasCred()); }
+function recoruPunchTick(now, key, active) {
+  if (!recoruPunchOn()) return;
+  if (recoruPunchMissKey !== key) { recoruPunchMissKey = key; recoruPunchNotifyMissed(key); }
+  const a = recoruPunchLib.tick(punchState(), { now, key, active, inFlight: recoruPunchBusy || recoruPosting });
+  if (a) recoruPunchDo(a, now);
+}
+/** 画面ロック・スリープ・シャットダウン。打刻する場合は Promise を返す */
+function recoruPunchAway(reason) {
+  if (!recoruPunchOn() || recoruPunchBusy || recoruPosting) return null;
+  const a = recoruPunchLib.away(punchState(), { now: Date.now(), reason });
+  return a ? recoruPunchDo(a, Date.now()) : null;
+}
+/** 退勤を打刻できないまま日が変わった日を知らせる(レコルで修正の申請が必要) */
+function recoruPunchNotifyMissed(todayKey) {
+  for (const m of recoruPunchLib.missedOuts(punchState(), todayKey)) {
+    punchState().days[m.key].missNotified = true;
+    notify('レコルの退勤打刻ができていません', `${m.key.slice(5).replace('-', '/')} は退勤を打刻できないまま終了しました(最後の操作 ${recoruPunchLib.hm(m.lastActiveAt)})。レコルで打刻修正を申請してください。`);
+  }
+}
+async function recoruPunchDo(a, now, { manual = false } = {}) {
+  if (recoruPunchBusy || recoruPosting) return { ok: false, error: 'レコルを操作中です' };
+  const label = a.kind === 'in' ? '出勤' : '退勤';
+  recoruPunchBusy = true;
+  pushUpdate();
+  let r;
+  try {
+    const out = await recoruBotLib.run({
+      mode: 'punch', punch: { kind: a.kind, memo: RECORU_PUNCH_MEMO, now },
+      cred: { ...recoruCred(), password: recoruPassword() },
+      show: !!settings().recoruShowWindow, timeoutMs: 90 * 1000,
+      log: (m) => console.log('[recoru]', m)
+    });
+    r = out.punch || { status: 'fail', reason: out.error || '打刻できませんでした' };
+  } catch (e) {
+    r = { status: 'fail', reason: String((e && e.message) || e).slice(0, 200) };
+  } finally { recoruPunchBusy = false; }
+  recoruPunchLib.record(punchState(), { kind: a.kind, key: a.key, now, status: r.status, reason: r.reason || '', rk: r.rk || null });
+  const t = recoruPunchLib.hm(now);
+  const d = store.data.days[a.key];
+  if (d) logEvent(d, `レコル${label}打刻 ${t}${manual ? '(手動)' : ''}: ${{ ok: '完了', unverified: '押したが記録を確認できず', fail: '失敗' }[r.status]}${r.reason ? '(' + r.reason + ')' : ''}`);
+  store.save();
+  pushUpdate();
+  // レコル連携は本人が有効にした機能のため、通知設定に関係なく結果を知らせる
+  const body = r.status === 'fail'
+    ? `${t} の${label}打刻に失敗しました: ${r.reason}。${manual ? '' : '少し後に自動でやり直します。'}続けて失敗する場合はレコルで手動で打刻してください。`
+    : r.status === 'unverified' ? `${t} に${label}ボタンを押しましたが、記録を確認できませんでした。レコルの勤務表を確認してください。` : `${t} にレコルへ${label}を打刻しました。`;
+  try { if (Notification.isSupported()) new Notification({ title: `レコル ${label}打刻`, body, silent: r.status === 'ok' }).show(); } catch (_) {}
+  return { ok: r.status !== 'fail', status: r.status, reason: r.reason || '', time: t };
+}
+/** 手動の打刻(設定画面・トレイ) */
+async function recoruPunchManual(kind) {
+  if (!recoruHasCred()) return { ok: false, error: 'レコルのログイン情報を設定してください' };
+  if (kind !== 'in' && kind !== 'out') return { ok: false, error: '不明な打刻です' };
+  const st = punchState();
+  const key = kind === 'out' && st.lastKey ? st.lastKey : todayKeyNow();
+  return recoruPunchDo({ kind, key }, Date.now(), { manual: true });
 }
 
 async function recoruTestLogin() {
@@ -1145,7 +1231,7 @@ function syncCfg() {
   return {
     ...s, userName: settings().userName, recoruUserId: settings().recoruUserId || '',
     appVersion: app.getVersion(), platform: process.platform, arch: process.arch,
-    tracking: { ...trackingStatus(), recoruPost: { enabled: !!settings().recoruEnabled, lastOkDay: recoruPostLib.lastOkDay(settings().recoruPosted) } }
+    tracking: { ...trackingStatus(), recoruPost: { enabled: !!settings().recoruEnabled, lastOkDay: recoruPostLib.lastOkDay(settings().recoruPosted), punch: !!settings().recoruPunchEnabled } }
   };
 }
 
@@ -1679,7 +1765,15 @@ function buildTrayMenu() {
     { type: 'separator' },
     { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
     ...(() => {
-      if (!store || !settings().recoruEnabled) return [];
+      if (!store || !settings().recoruPunchEnabled || !recoruHasCred()) return [];
+      if (recoruPunchBusy) return [{ label: 'レコルに打刻中…', enabled: false }];
+      return [
+        { label: 'レコルに出勤を打刻', click: () => recoruPunchManual('in') },
+        { label: 'レコルに退勤を打刻', click: () => recoruPunchManual('out') }
+      ];
+    })(),
+    ...(() => {
+      if (!store || !settings().recoruEnabled || settings().recoruPunchEnabled) return [];
       const n = recoruCandidates().length;
       if (recoruPosting) return [{ label: 'レコルに転記中…', enabled: false }];
       return n ? [{ label: `レコルに転記(${n}日分)`, click: () => { win.show(); win.focus(); win.webContents.send('recoru:prompt'); } }] : [];
@@ -1711,7 +1805,8 @@ function registerIpc() {
     delete patch.localUserId; delete patch.calCreatorIds; delete patch.appliedReassign; // 予定の本人判定に使うIDは画面から変更させない
     delete patch.lastExportMonth; delete patch.lastCurrentExportDay; delete patch.lastExportHash; // 自動書き出しの記録は画面から上書きさせない
     delete patch.folderSnooze; delete patch.folderNotified; delete patch.folderNoticeDay; delete patch.folderHintDismissed; // 案件フォルダ通知の記録は専用IPCでのみ変更
-    delete patch.recoruCred; delete patch.recoruPosted; delete patch.recoruLog; // レコル連携のログイン情報・転記記録は専用IPCでのみ変更
+    delete patch.recoruCred; delete patch.recoruPosted; delete patch.recoruLog; delete patch.recoruPunch; // レコル連携のログイン情報・転記/打刻の記録は専用IPCでのみ変更
+    if (patch.recoruPunchEnabled === true && !recoruHasCred()) delete patch.recoruPunchEnabled;
     if ('recoruPostTime' in patch && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(patch.recoruPostTime))) delete patch.recoruPostTime;
     if (patch.recoruEnabled === true && !recoruHasCred()) delete patch.recoruEnabled; // ログイン情報が無いうちは有効にしない
     Object.assign(store.data.settings, patch);
@@ -1999,6 +2094,7 @@ function registerIpc() {
   ipcMain.handle('recoru:clearCred', () => ({ ...recoruClearCred(), state: buildState() }));
   ipcMain.handle('recoru:test', async () => ({ ...(await recoruTestLogin()), state: buildState() }));
   ipcMain.handle('recoru:post', async (e, keys) => ({ ...(await recoruPostNow(keys)), state: buildState() }));
+  ipcMain.handle('recoru:punch', async (e, kind) => ({ ...(await recoruPunchManual(kind)), state: buildState() }));
   ipcMain.handle('recoru:snooze', () => { recoruPromptState.open = false; buildTrayMenu(); return { ok: true }; });
 
   // 案件マスター CRUD(コード形式: 大文字英字+数字。例 F000, T123)

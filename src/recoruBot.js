@@ -13,6 +13,7 @@
 const P = require('./recoruPost');
 
 const TIMESHEET_URL = 'https://app.recoru.in/ap/menuAttendance/';
+const HOME_URL = 'https://app.recoru.in/ap/home/'; // 打刻ボタン(出勤・退勤・休憩・戻り)と打刻メモ欄がある画面
 const PARTITION = 'persist:recoru';
 const LEAVE_RE = /有休|有給|欠勤|特休|振休|代休|半休|休暇|休職/; // レコルで休暇等が設定済みの日は上書きしない
 
@@ -73,6 +74,18 @@ function pageLib() {
     }
     return null;
   };
+  /**
+   * ホームの打刻ボタン。文字が「出勤」「退勤」ちょうどの、表(勤務表)の外にある一番大きい要素。
+   * 文字の要素がボタンの中の子要素なら、押せる親(button/a/onclick 等)を返す。
+   */
+  const punchEl = (label) => {
+    const c = [...document.querySelectorAll('body *')]
+      .filter(el => vis(el) && !el.closest('table, select, option') && txt(el) === label && ![...el.children].some(ch => txt(ch) === label))
+      .map(el => el.closest('button, a, input, [role=button], [onclick]') || el);
+    if (!c.length) return null;
+    const area = (el) => { const r = el.getBoundingClientRect(); return r.width * r.height; };
+    return c.sort((a, b) => area(b) - area(a))[0];
+  };
   window.__dk = {
     /** 勤務表本体の「更新」に印を付ける(休憩ダイアログの「更新」と取り違えないため) */
     markMain() {
@@ -107,6 +120,15 @@ function pageLib() {
       return false;
     },
     loginForm() { return !!(byId('loginForm') || (byId('contractId') && byId('password'))); },
+    /** ホームの打刻ボタン(「出勤」「退勤」)があるか */
+    hasPunch(label) { return !!punchEl(label); },
+    /** 打刻メモ欄に入力(欄が無ければ false) */
+    setPunchMemo(text) {
+      const el = [...document.querySelectorAll('input[type=text], input:not([type]), textarea')].find(e => vis(e) && /打刻メモ/.test(e.placeholder || ''));
+      if (!el) return false;
+      setVal(el, text);
+      return true;
+    },
     loginError() {
       const f = byId('loginForm');
       const el = f && [...f.querySelectorAll('.error, .errorMessage, .err, .alert, [class*=error]')].find(vis);
@@ -187,6 +209,7 @@ function pageLib() {
       if (kind === 'breakLink') { const r = row(arg); return rectOf(r && r.children[5] && r.children[5].querySelector('a')); }
       if (kind === 'addBreak') return rectOf([...document.querySelectorAll("input[type=button][value='休憩を追加']")].find(vis));
       if (kind === 'dialogSave') return rectOf(dialogSaveEl());
+      if (kind === 'punch') return rectOf(punchEl(arg));
       if (kind === 'mainSave') return rectOf([...document.querySelectorAll('input.common-btn.submit')].find(el => vis(el) && isUpdate(el)));
       if (kind === 'loginSubmit') {
         return rectOf([...document.querySelectorAll('input.common-btn.submit')].find(el => vis(el) && txt(el) === 'ログイン') ||
@@ -271,9 +294,9 @@ class Bot {
     return m.filter(s => String(s).startsWith('alert: ')).map(s => String(s).slice(7).replace(/\s+/g, ' ').trim());
   }
 
-  /** 勤務表を開く。ログイン画面なら保存済みのログイン情報で入る */
-  async open(cred) {
-    if (!(await this.load(TIMESHEET_URL))) return { ok: false, error: 'レコルを開けませんでした(ネットワークを確認してください)' };
+  /** 勤務表(または url)を開く。ログイン画面なら保存済みのログイン情報で入る */
+  async open(cred, url = TIMESHEET_URL) {
+    if (!(await this.load(url))) return { ok: false, error: 'レコルを開けませんでした(ネットワークを確認してください)' };
     if (await this.ev('__dk.loginForm()')) {
       if (!cred || !cred.contractId || !cred.authId || !cred.password) return { ok: false, login: true, error: 'レコルのログイン情報が未設定です' };
       this.log('ログイン画面を検知。保存済みのログイン情報でログインします');
@@ -291,12 +314,44 @@ class Bot {
         const msg = await this.ev('__dk.loginError()');
         return { ok: false, login: true, error: 'レコルにログインできませんでした' + (msg ? `(${msg})` : '') };
       }
-      if (!(await this.load(TIMESHEET_URL))) return { ok: false, error: 'ログイン後に勤務表を開けませんでした' };
+      if (!(await this.load(url))) return { ok: false, error: 'ログイン後にレコルを開けませんでした' };
     }
     await this.waitIdle();
     if (await this.ev('__dk.loginForm()')) return { ok: false, login: true, error: 'レコルにログインできませんでした' };
-    if (!(await this.ev('__dk.hasRows()'))) return { ok: false, error: '勤務表の行が見つかりません(画面の構成が変わった可能性があります)' };
+    if (url === TIMESHEET_URL && !(await this.ev('__dk.hasRows()'))) return { ok: false, error: '勤務表の行が見つかりません(画面の構成が変わった可能性があります)' };
     return { ok: true };
+  }
+
+  /**
+   * ホームの「出勤」「退勤」ボタンで打刻し、勤務表の開始・終了で記録を確かめる。
+   * @returns {status:'ok'|'unverified'|'fail', reason, rk:{date,start,end}}
+   */
+  async punch(kind, memo, now = Date.now()) {
+    const label = kind === 'in' ? '出勤' : '退勤';
+    await this.waitFor(async () => (await this.ev(`__dk.hasPunch(${JSON.stringify(label)})`)) === true, 10000);
+    if (!(await this.ev(`__dk.hasPunch(${JSON.stringify(label)})`))) return { status: 'fail', reason: `ホームに「${label}」ボタンが見つかりません` };
+    if (memo) await this.ev(`__dk.setPunchMemo(${JSON.stringify(memo)})`);
+    await this.ev('__dk.hook()');
+    await this.ev('__dk.takeMsgs()');
+    if (!(await this.click('punch', label))) return { status: 'fail', reason: `「${label}」ボタンを押せませんでした` };
+    // ここから先は押せている。確認できなくても二重に打刻しないよう 'unverified' で返す
+    await this.waitIdle();
+    const al = await this.alerts();
+    if (al.length) return { status: 'fail', reason: 'レコルのエラー: ' + al.join(' / ') };
+    // 勤務表で確認(退勤は日付をまたぐことがあるため、当日と前日の行を見る)
+    if (!(await this.load(TIMESHEET_URL)) || !(await this.ev('__dk.hasRows()'))) return { status: 'unverified', reason: '打刻後に勤務表を開けず、記録を確認できませんでした' };
+    await this.waitIdle();
+    const want = P.parseHM(P.fmtHM(new Date(now).getHours() * 60 + new Date(now).getMinutes()));
+    const near = (v) => { const m = P.parseHM(v); return m != null && Math.min(Math.abs(m - want), 1440 - Math.abs(m - want)) <= 3; };
+    const today = new Date(now);
+    const rows = [today, new Date(now - 24 * 3600 * 1000)]
+      .filter(d => d.getMonth() === today.getMonth()) // 前日が前月なら当月の表には無い
+      .map(d => ({ d, r: null }));
+    for (const x of rows) x.r = await this.ev(`__dk.readRow(${x.d.getDate() - 1})`);
+    const hit = rows.find(x => x.r && near(kind === 'in' ? x.r.start : x.r.end));
+    if (hit) return { status: 'ok', reason: '', rk: { date: hit.r.date, start: hit.r.start, end: hit.r.end } };
+    const r0 = rows[0].r;
+    return { status: 'unverified', reason: `勤務表に${label}時刻が見当たりません(レコルの表示: ${r0 ? (r0.start || '--:--') + '〜' + (r0.end || '--:--') : '不明'})`, rk: r0 ? { date: r0.date, start: r0.start, end: r0.end } : null };
   }
 
   /** 対象月の勤務表に切り替える(前月へ / 翌月へ) */
@@ -430,17 +485,24 @@ class Bot {
 
 /**
  * ログイン確認、または転記。
- * @param opts.mode 'test' | 'post'
+ * @param opts.mode 'test' | 'post' | 'punch'(opts.punch = {kind:'in'|'out', memo, now})
  * @param opts.prepare async () => items  ログイン成功後に呼ばれ、転記する値(dayValues の配列)を返す
  * @returns {ok, error, login, results}
  */
-async function run({ mode = 'post', cred, prepare, overwrite = false, show = false, timeoutMs = 3 * 60 * 1000, log = () => {} }) {
+async function run({ mode = 'post', cred, prepare, punch = null, overwrite = false, show = false, timeoutMs = 3 * 60 * 1000, log = () => {} }) {
   let bot = null;
   const results = [];
   const deadline = Date.now() + timeoutMs;
   let timer;
   const work = (async () => {
     bot = new Bot({ show, log });
+    if (mode === 'punch') {
+      const o = await bot.open(cred, HOME_URL);
+      if (!o.ok) return { ok: false, error: o.error, login: !!o.login, results };
+      const r = await bot.punch(punch.kind, punch.memo, punch.now);
+      log(`打刻 ${punch.kind}: ${r.status}${r.reason ? ' ' + r.reason : ''}`);
+      return { ok: r.status !== 'fail', error: r.status === 'fail' ? r.reason : '', punch: r, results };
+    }
     const o = await bot.open(cred);
     if (!o.ok) {
       if (o.login) bot.showForLogin();
@@ -479,4 +541,4 @@ async function run({ mode = 'post', cred, prepare, overwrite = false, show = fal
   }
 }
 
-module.exports = { run, TIMESHEET_URL, PARTITION, pageLib };
+module.exports = { run, TIMESHEET_URL, HOME_URL, PARTITION, pageLib };

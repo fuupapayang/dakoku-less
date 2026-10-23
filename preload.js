@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('api', {
   recoruTest: () => ipcRenderer.invoke('recoru:test'),
   recoruPost: (keys) => ipcRenderer.invoke('recoru:post', keys),
   recoruSnooze: () => ipcRenderer.invoke('recoru:snooze'),
+  recoruPunch: (kind) => ipcRenderer.invoke('recoru:punch', kind),
   onRecoruPrompt: (cb) => ipcRenderer.on('recoru:prompt', () => cb()),
   onUpdate: (cb) => ipcRenderer.on('state:update', (e, state) => cb(state))
 });

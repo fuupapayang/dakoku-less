@@ -109,6 +109,7 @@ function normTracking(t) {
   if (t.recoruPost) {
     const d = String(t.recoruPost.lastOkDay || '');
     out.recoruPost = { enabled: !!t.recoruPost.enabled, lastOkDay: /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : '' };
+    if (t.recoruPost.punch) out.recoruPost.punch = true; // リアルタイム打刻を使っている
   }
   return out;
 }
