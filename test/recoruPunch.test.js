@@ -78,13 +78,26 @@ assert.strictEqual(R.punchKey(at(24, 5, 0)), K(24));
   assert.deepStrictEqual(kinds(p2), ['out@00:30']);
 }
 
-// ---- 0〜5時: 2時以降に30分操作がない → 寝落ちとみなして退勤(2時前の無操作では退勤しない)
+// ---- 夜に作業を終えてPCを放置: 22〜24時は退勤しない → 0時の時点で既に30分操作がないので0時に退勤
 {
   const st = R.emptyState();
-  run(st, at(23, 21, 0), at(23, 23, 0), true);
-  // 23時から無操作(深夜0時の確認は操作がないため出ない)
-  const p = run(st, at(23, 23, 0, 15), at(24, 3, 0), false);
-  assert.deepStrictEqual(kinds(p), ['out@02:00']);
+  run(st, at(23, 21, 0), at(23, 22, 30), true);
+  const p = run(st, at(23, 22, 30, 15), at(24, 3, 0), false);
+  assert.deepStrictEqual(kinds(p), ['out@00:00']);
+}
+// ---- 0時台に作業を終えて放置: 30分後に退勤
+{
+  const st = R.emptyState();
+  run(st, at(23, 21, 0), at(24, 0, 40), true, { answer: 'yes' });
+  const p = run(st, at(24, 0, 40, 15), at(24, 3, 0), false);
+  assert.deepStrictEqual(kinds(p), ['out@01:10']);
+}
+// ---- 23:50まで作業して放置: 0時ではまだ30分たっていない → 0:20に退勤
+{
+  const st = R.emptyState();
+  run(st, at(23, 21, 0), at(23, 23, 50), true);
+  const p = run(st, at(23, 23, 50, 15), at(24, 3, 0), false);
+  assert.deepStrictEqual(kinds(p), ['out@00:20']);
 }
 
 // ---- 深夜0〜5時の作業は前日扱い(出勤しない)・5時以降の操作で新しい日の出勤

@@ -7,7 +7,7 @@
  *  - 5:00〜0:00: ロック・スリープ・無操作では退勤しない(自宅作業で頻繁にあるため)。
  *          シャットダウン時に「退勤を打刻しますか？」を出して選んでもらう
  *  - 0:00〜5:00: 1時間おきに「深夜残業となりますが作業を続けますか？」を出す。
- *          「いいえ」→退勤 / 30分答えがない→退勤 / 2:00以降に30分操作がない→寝落ちとみなして退勤。
+ *          「いいえ」→退勤 / 30分答えがない→退勤 / 30分操作がない→退勤(0時の時点で既に30分操作がなければ0時に退勤)。
  *          シャットダウン時は確認を出す
  *  - 休憩は打刻しない
  *
@@ -19,8 +19,7 @@
 const MIN = 60000;
 const DAY_START_HOUR = 5;   // 打刻の日付の区切り
 const LATE_HOUR = 22;       // 22時以降はロック・スリープで退勤しない
-const IDLE_MIN = 30;        // 深夜(2時以降)の無操作で退勤(寝落ち)
-const SLEEP_FROM_HOUR = 2;  // 深夜はこの時刻以降の無操作を寝落ちとみなす
+const IDLE_MIN = 30;        // 深夜(0〜5時)にこの分数操作がなければ退勤(夜に作業を終えてPCを放置した場合は0時に退勤)
 const PROMPT_EVERY_MIN = 60;
 const PROMPT_WAIT_MIN = 30;
 const KEEP_DAYS = 14;
@@ -92,7 +91,7 @@ function tick(st, { now, active, inFlight = false }) {
   if (!o || !canRetry(o.d.outFail, now)) return null;
   const idle = now - o.d.lastActiveAt >= IDLE_MIN * MIN;
   const p = period(now);
-  if (idle && p === 'night' && new Date(now).getHours() >= SLEEP_FROM_HOUR) {
+  if (idle && p === 'night') {
     return { kind: 'out', key: o.k, reason: 'idle' };
   }
   return null;
@@ -185,6 +184,6 @@ function summary(st, keys) {
 }
 
 module.exports = {
-  DAY_START_HOUR, LATE_HOUR, IDLE_MIN, SLEEP_FROM_HOUR, PROMPT_EVERY_MIN, PROMPT_WAIT_MIN,
+  DAY_START_HOUR, LATE_HOUR, IDLE_MIN, PROMPT_EVERY_MIN, PROMPT_WAIT_MIN,
   calKey, hm, punchKey, period, emptyState, tick, away, promptShown, promptAnswer, record, missedOuts, summary, hasIn
 };
