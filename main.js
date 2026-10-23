@@ -772,7 +772,6 @@ function recoruState() {
     punch: {
       enabled: !!s.recoruPunchEnabled,
       busy: recoruPunchBusy,
-      memo: RECORU_PUNCH_MEMO,
       idleMin: recoruPunchLib.IDLE_MIN, promptWaitMin: recoruPunchLib.PROMPT_WAIT_MIN,
       days: recoruPunchLib.summary(punchState(), Array.from({ length: 7 }, (_, i) => recoruPostLib.addDays(recoruPunchLib.punchKey(Date.now()), -i)))
     }
@@ -882,10 +881,9 @@ async function recoruPostNow(keys) {
 
 // ---- レコル リアルタイム打刻 -------------------------------------------------
 // レコルで本人が勤務表を編集できない(打刻のみの)運用向け。操作を検知したその時刻に、ホームの「出勤」「退勤」を押す。
-// 時刻はさかのぼらず、打刻メモに自動打刻であることを残す(判定は src/recoruPunch.js)。
+// 時刻はさかのぼらない。打刻メモは入力しない(判定は src/recoruPunch.js)。
 let recoruPunchBusy = false;
 let recoruPunchMissKey = '';
-const RECORU_PUNCH_MEMO = '自動打刻(全自動勤怠管理くん)';
 function punchState() {
   const s = settings();
   if (!s.recoruPunch || typeof s.recoruPunch !== 'object') s.recoruPunch = recoruPunchLib.emptyState();
@@ -967,7 +965,7 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
   let r;
   try {
     const out = await recoruBotLib.run({
-      mode: 'punch', punch: { kind: a.kind, memo: RECORU_PUNCH_MEMO, now },
+      mode: 'punch', punch: { kind: a.kind, memo: '', now }, // 打刻メモは空のまま
       cred: { ...recoruCred(), password: recoruPassword() },
       show: !!settings().recoruShowWindow, timeoutMs: 90 * 1000,
       log: (m) => console.log('[recoru]', m)
