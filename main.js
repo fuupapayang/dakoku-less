@@ -656,7 +656,7 @@ async function sample() {
     }
     lastPrivateWhy = why;
     trackNoEvidence(day, now, key, fg, active);
-    recoruPunchTick(now, key, active);
+    recoruPunchTick(now, active);
 
     if (active) {
       if (currentInterval && now - currentInterval.e <= settings().mergeGapMin * engine.MIN) {
@@ -696,12 +696,12 @@ function startTracker() {
   sample();
   sampleTimer = setInterval(sample, SAMPLE_MS);
   powerMonitor.on('suspend', () => { forcedIdle = true; noteSystem('スリープを検知'); recoruPunchAway('suspend'); });
-  // シャットダウン: 退勤を打刻してから終了(macOS/Linux。打刻が済むまで終了を少し待ってもらう)
+  // シャットダウン: 退勤を打刻(夜間は確認)してから終了(macOS/Linux。打刻が済むまで終了を少し待ってもらう)
   powerMonitor.on('shutdown', (e) => {
     const p = recoruPunchAway('shutdown');
     if (!p) return;
     try { e.preventDefault(); } catch (_) {}
-    Promise.race([p, new Promise(r => setTimeout(r, 40000))]).finally(() => { quitting = true; app.quit(); });
+    Promise.race([p, new Promise(r => setTimeout(r, 90000))]).finally(() => { quitting = true; app.quit(); });
   });
   powerMonitor.on('resume', () => { forcedIdle = false; noteSystem('復帰を検知'); sample(); });
   powerMonitor.on('lock-screen', () => { forcedIdle = true; noteSystem('画面ロックを検知'); recoruPunchAway('lock'); });
@@ -773,8 +773,8 @@ function recoruState() {
       enabled: !!s.recoruPunchEnabled,
       busy: recoruPunchBusy,
       memo: RECORU_PUNCH_MEMO,
-      inStreakMin: recoruPunchLib.IN_STREAK_MIN, outIdleMin: recoruPunchLib.OUT_IDLE_MIN,
-      days: recoruPunchLib.summary(punchState(), Array.from({ length: 7 }, (_, i) => recoruPostLib.addDays(todayKeyNow(), -i)))
+      idleMin: recoruPunchLib.IDLE_MIN, promptWaitMin: recoruPunchLib.PROMPT_WAIT_MIN,
+      days: recoruPunchLib.summary(punchState(), Array.from({ length: 7 }, (_, i) => recoruPostLib.addDays(recoruPunchLib.punchKey(Date.now()), -i)))
     }
   };
 }
@@ -892,17 +892,65 @@ function punchState() {
   return s.recoruPunch;
 }
 function recoruPunchOn() { return !!(store && settings().recoruPunchEnabled && recoruHasCred()); }
-function recoruPunchTick(now, key, active) {
+function recoruPunchTick(now, active) {
   if (!recoruPunchOn()) return;
+  const key = recoruPunchLib.punchKey(now);
   if (recoruPunchMissKey !== key) { recoruPunchMissKey = key; recoruPunchNotifyMissed(key); }
-  const a = recoruPunchLib.tick(punchState(), { now, key, active, inFlight: recoruPunchBusy || recoruPosting });
-  if (a) recoruPunchDo(a, now);
+  const a = recoruPunchLib.tick(punchState(), { now, active, inFlight: recoruPunchBusy || recoruPosting });
+  if (!a) return;
+  if (a.kind === 'prompt') recoruPunchPrompt(a, now);
+  else {
+    if (a.reason === 'noanswer' && recoruPunchDialog) { try { recoruPunchDialog.abort(); } catch (_) {} }
+    recoruPunchDo(a, now);
+  }
 }
-/** 画面ロック・スリープ・シャットダウン。打刻する場合は Promise を返す */
+/** 画面ロック・スリープ・シャットダウン。打刻(または夜間のシャットダウン確認)をする場合は Promise を返す */
 function recoruPunchAway(reason) {
   if (!recoruPunchOn() || recoruPunchBusy || recoruPosting) return null;
   const a = recoruPunchLib.away(punchState(), { now: Date.now(), reason });
-  return a ? recoruPunchDo(a, Date.now()) : null;
+  if (!a) return null;
+  if (a.kind === 'confirm') return recoruPunchConfirmShutdown(a);
+  return recoruPunchDo(a, Date.now());
+}
+
+/** 深夜(0〜5時)の1時間おきの確認。30分答えがなければ次のサンプリングで退勤(recoruPunchLib.tick) */
+let recoruPunchDialog = null;
+function recoruPunchPrompt(a, now) {
+  recoruPunchLib.promptShown(punchState(), { key: a.key, now });
+  store.save();
+  const ctl = new AbortController();
+  recoruPunchDialog = ctl;
+  try { if (process.platform === 'darwin') app.focus({ steal: true }); } catch (_) {}
+  dialog.showMessageBox({
+    type: 'question', title: '全自動勤怠管理くん',
+    message: '深夜残業となりますが作業を続けますか？',
+    detail: `「いいえ」を押すと、今の時刻でレコルに退勤を打刻します。\n${recoruPunchLib.PROMPT_WAIT_MIN}分以内に答えがない場合も退勤を打刻します。`,
+    buttons: ['はい(作業を続ける)', 'いいえ(退勤する)'], defaultId: 0, cancelId: 0, noLink: true, signal: ctl.signal
+  }).then(({ response }) => {
+    if (ctl.signal.aborted) return;
+    const b = recoruPunchLib.promptAnswer(punchState(), { key: a.key, now: Date.now(), answer: response === 1 ? 'no' : 'yes' });
+    store.save();
+    if (b) recoruPunchDo(b, Date.now());
+  }).catch(() => {}).finally(() => { if (recoruPunchDialog === ctl) recoruPunchDialog = null; });
+}
+
+/** シャットダウン: 退勤するか確認(1分答えがなければ退勤) */
+async function recoruPunchConfirmShutdown(a) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 60 * 1000);
+  let out = true;
+  try {
+    try { app.focus({ steal: true }); } catch (_) {}
+    const { response } = await dialog.showMessageBox({
+      type: 'question', title: '全自動勤怠管理くん',
+      message: 'レコルに退勤を打刻しますか？',
+      detail: 'PCを終了します。今の時刻で退勤を打刻します(1分以内に答えがない場合も打刻します)。',
+      buttons: ['退勤を打刻する', '打刻しない(この後も作業する)'], defaultId: 0, cancelId: 0, noLink: true, signal: ctl.signal
+    });
+    out = ctl.signal.aborted || response === 0;
+  } catch (_) { out = true; } finally { clearTimeout(timer); }
+  if (!out) return { ok: true, skipped: true };
+  return recoruPunchDo({ kind: 'out', key: a.key, reason: 'shutdown' }, Date.now());
 }
 /** 退勤を打刻できないまま日が変わった日を知らせる(レコルで修正の申請が必要) */
 function recoruPunchNotifyMissed(todayKey) {
@@ -946,7 +994,7 @@ async function recoruPunchManual(kind) {
   if (!recoruHasCred()) return { ok: false, error: 'レコルのログイン情報を設定してください' };
   if (kind !== 'in' && kind !== 'out') return { ok: false, error: '不明な打刻です' };
   const st = punchState();
-  const key = kind === 'out' && st.lastKey ? st.lastKey : todayKeyNow();
+  const key = kind === 'out' && st.lastKey ? st.lastKey : recoruPunchLib.punchKey(Date.now());
   return recoruPunchDo({ kind, key }, Date.now(), { manual: true });
 }
 
@@ -1602,6 +1650,12 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true
     }
+  });
+  // Windows はシステム終了を待たせられない(powerMonitor の shutdown が無い)ため、確認なしで退勤の打刻を試みる
+  win.on('session-end', () => {
+    if (!recoruPunchOn() || recoruPunchBusy) return;
+    const a = recoruPunchLib.away(punchState(), { now: Date.now(), reason: 'shutdown' });
+    if (a) recoruPunchDo({ kind: 'out', key: a.key, reason: 'shutdown' }, Date.now());
   });
   win.loadFile(path.join(__dirname, 'renderer/index.html'));
   win.on('close', (e) => {
