@@ -45,8 +45,10 @@ function pageLib() {
     s: [...document.querySelectorAll('input.breaktimeStart')].filter(vis),
     e: [...document.querySelectorAll('input.breaktimeEnd')].filter(vis)
   });
-  const isUpdate = (el) => txt(el) === '更新';
-  const clickables = () => [...document.querySelectorAll('button, input[type=button], input[type=submit], a')].filter(vis);
+  const isUpdate = (el) => /^更\s*新(する)?$/.test(txt(el));
+  const CLICKABLE = 'button, input[type=button], input[type=submit], a, [role=button], [onclick], span.ui-button-text';
+  const clickables = () => [...document.querySelectorAll(CLICKABLE)].filter(vis);
+  const desc = (el) => el.tagName + (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : '');
   let last = null;
   const rectOf = (el) => {
     if (!el) return null;
@@ -55,7 +57,35 @@ function pageLib() {
     const r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height, vw: window.innerWidth, vh: window.innerHeight };
   };
+  /**
+   * 休憩ダイアログの「更新」。ダイアログのボタンも勤務表本体と同じ input.common-btn.submit の場合があるため、
+   * クラスでは除外せず、ダイアログを開く前に印を付けた本体の「更新」(data-dk-main)だけを除外する。
+   * 休憩の入力欄から親をたどり、最初に「更新」が見つかった範囲で一番下のものを選ぶ。
+   */
+  const dialogSaveEl = () => {
+    const inp = breakInputs().s[0];
+    if (!inp) return null;
+    for (let a = inp.parentElement; a; a = a.parentElement) {
+      const c = [...a.querySelectorAll(CLICKABLE)]
+        .map(el => (el.matches('span.ui-button-text') && el.closest('button')) || el)
+        .filter((el, i, arr) => arr.indexOf(el) === i && vis(el) && isUpdate(el) && !el.hasAttribute('data-dk-main'));
+      if (c.length) return c.sort((x, y) => y.getBoundingClientRect().top - x.getBoundingClientRect().top)[0];
+    }
+    return null;
+  };
   window.__dk = {
+    /** 勤務表本体の「更新」に印を付ける(休憩ダイアログの「更新」と取り違えないため) */
+    markMain() {
+      for (const el of document.querySelectorAll('[data-dk-main]')) el.removeAttribute('data-dk-main');
+      const els = [...document.querySelectorAll('input.common-btn.submit')].filter(el => vis(el) && isUpdate(el));
+      els.forEach(el => el.setAttribute('data-dk-main', '1'));
+      return els.length;
+    },
+    /** 失敗時の手がかり: 画面に見えている「更新」らしき要素 */
+    updateCandidates() {
+      return [...document.querySelectorAll('*')].filter(el => vis(el) && /更\s*新/.test(txt(el)) && txt(el).length <= 6 && !el.children.length)
+        .slice(0, 6).map(el => desc(el) + (el.hasAttribute('data-dk-main') ? '(本体)' : '') + '「' + txt(el) + '」').join(', ');
+    },
     hook() {
       window.__msgs = window.__msgs || [];
       if (window.__dkHooked) return true;
@@ -156,16 +186,7 @@ function pageLib() {
     target(kind, arg) {
       if (kind === 'breakLink') { const r = row(arg); return rectOf(r && r.children[5] && r.children[5].querySelector('a')); }
       if (kind === 'addBreak') return rectOf([...document.querySelectorAll("input[type=button][value='休憩を追加']")].find(vis));
-      if (kind === 'dialogSave') {
-        const inp = breakInputs().s[0];
-        if (!inp) return null;
-        for (let a = inp.parentElement; a; a = a.parentElement) {
-          const c = [...a.querySelectorAll('button, input[type=button], input[type=submit], a')]
-            .filter(el => vis(el) && isUpdate(el) && !el.matches('input.common-btn.submit'));
-          if (c.length) return rectOf(c.sort((x, y) => y.getBoundingClientRect().top - x.getBoundingClientRect().top)[0]);
-        }
-        return null;
-      }
+      if (kind === 'dialogSave') return rectOf(dialogSaveEl());
       if (kind === 'mainSave') return rectOf([...document.querySelectorAll('input.common-btn.submit')].find(el => vis(el) && isUpdate(el)));
       if (kind === 'loginSubmit') {
         return rectOf([...document.querySelectorAll('input.common-btn.submit')].find(el => vis(el) && txt(el) === 'ログイン') ||
@@ -306,6 +327,7 @@ class Bot {
   /** 休憩ダイアログで休憩を入れて「更新」 */
   async doBreaks(i, breaks) {
     await this.ev('__dk.hook()');
+    await this.ev('__dk.markMain()');
     let open = false;
     for (let t = 0; t < 2 && !open; t++) {
       if (!(await this.click('breakLink', i))) return '休憩の編集リンクが見つかりません';
@@ -326,7 +348,11 @@ class Bot {
     await this.ev(`__dk.clearBreaksFrom(${breaks.length})`);
     await this.ev('__dk.hook()');
     await this.ev('__dk.takeMsgs()');
-    if (!(await this.click('dialogSave'))) return '休憩の「更新」ボタンが見つかりません';
+    // 画面外にはみ出して実クリックできない場合は、要素への直接クリックも試す
+    if (!(await this.click('dialogSave')) && !(await this.ev(`__dk.target('dialogSave') && __dk.clickLast()`))) {
+      const seen = await this.ev('__dk.updateCandidates()').catch(() => '');
+      return '休憩の「更新」ボタンが見つかりません' + (seen ? `(画面上の候補: ${seen})` : '');
+    }
     await this.waitIdle();
     await this.ev('__dk.hook()');
     const al = await this.alerts();
