@@ -374,7 +374,12 @@ class Bot {
     if (!r) return fail('勤務表の行が見つかりません');
     if (!P.rowDateMatches(r.date, m, d)) return fail(`勤務表の行の日付が一致しません(「${r.date}」)`);
     if (!r.hasInputs) return fail('開始・終了の入力欄が見つかりません');
-    if (r.locked) return skip('レコルで確定済み(編集できません)');
+    // 開始・終了の入力欄が編集不可(このアプリは確定・申請を行わない。レコル側の確定・申請・締め・権限による)
+    if (r.locked) {
+      return skip(r.start || r.end
+        ? `レコルで編集できない状態です(${r.start || '--:--'}〜${r.end || '--:--'}。確定・申請済みなど)`
+        : 'レコルで開始・終了が編集できない状態です(空欄のまま。レコルで確定・申請済み、締め済み、または入力権限がない可能性があります)');
+    }
     if (!overwrite && (r.start || r.end)) return skip(`レコルに入力済み(${r.start || '--:--'}〜${r.end || '--:--'})`);
     if (!overwrite && LEAVE_RE.test(r.attendText)) return skip(`レコルの勤務区分が「${r.attendText}」のため`);
     if (!r.hasAttend1) return fail('勤務区分「出勤」が選べません');
