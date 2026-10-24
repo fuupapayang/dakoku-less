@@ -124,6 +124,25 @@ function pageLib() {
       return false;
     },
     loginForm() { return !!(byId('loginForm') || (byId('contractId') && byId('password'))); },
+    /**
+     * ホームの「打刻ログと勤務チェック」を読む。[{m, d, time:'HH:MM', kind:'出勤'|'退勤'|'休憩'|'戻り'}]
+     * 画面の文字を上から読み、「10/25 (日)」の行で日付を切り替える
+     */
+    punchLog() {
+      const t = (document.body && document.body.innerText) || '';
+      const i = t.indexOf('打刻ログと勤務チェック');
+      if (i < 0) return null;
+      const out = [];
+      let m = 0, d = 0;
+      for (const line of t.slice(i).split('\n').map(x => x.trim())) {
+        if (line === 'もっと見る') break;
+        let x = line.match(/^(\d{1,2})\/(\d{1,2})\s*[(（]/);
+        if (x) { m = +x[1]; d = +x[2]; continue; }
+        x = line.match(/^(\d{1,2}:\d{2})\s*(出勤|退勤|休憩|戻り)しました/);
+        if (x && m) out.push({ m, d, time: x[1], kind: x[2] });
+      }
+      return out;
+    },
     /** ホームの打刻ボタン(「出勤」「退勤」)があるか */
     hasPunch(label) { return !!punchEl(label); },
     /** 打刻メモ欄に入力(欄が無ければ false) */
@@ -342,13 +361,21 @@ class Bot {
     await this.waitIdle();
     const al = await this.alerts();
     if (al.length) return { status: 'fail', reason: 'レコルのエラー: ' + al.join(' / ') };
-    // 勤務表で確認(退勤は日付をまたぐことがあるため、当日と前日の行を見る)
-    if (!(await this.load(TIMESHEET_URL)) || !(await this.ev('__dk.hasRows()'))) return { status: 'unverified', reason: '打刻後に勤務表を開けず、記録を確認できませんでした' };
-    await this.waitIdle();
     const want = P.parseHM(P.fmtHM(new Date(now).getHours() * 60 + new Date(now).getMinutes()));
     const near = (v) => { const m = P.parseHM(v); return m != null && Math.min(Math.abs(m - want), 1440 - Math.abs(m - want)) <= 3; };
     const today = new Date(now);
-    const rows = [today, new Date(now - 24 * 3600 * 1000)]
+    const days = [today, new Date(now - 24 * 3600 * 1000)]; // 退勤は日付をまたぐことがあるため前日も見る
+    // ホームの「打刻ログと勤務チェック」で確認(本人が勤務表を編集できない場合、勤務表は読み取れないことがある)
+    if (await this.load(HOME_URL)) {
+      await this.waitIdle();
+      const log = (await this.ev('__dk.punchLog()')) || [];
+      const hit = log.find(e => e.kind === label && near(e.time) && days.some(d => d.getMonth() + 1 === e.m && d.getDate() === e.d));
+      if (hit) return { status: 'ok', reason: '', rk: { date: `${hit.m}/${hit.d}`, start: kind === 'in' ? hit.time : '', end: kind === 'out' ? hit.time : '' } };
+    }
+    // 勤務表で確認(当日と前日の行を見る)
+    if (!(await this.load(TIMESHEET_URL)) || !(await this.ev('__dk.hasRows()'))) return { status: 'unverified', reason: 'ボタンは押しましたが、打刻ログで記録を確認できませんでした' };
+    await this.waitIdle();
+    const rows = days
       .filter(d => d.getMonth() === today.getMonth()) // 前日が前月なら当月の表には無い
       .map(d => ({ d, r: null }));
     for (const x of rows) x.r = await this.ev(`__dk.readRow(${x.d.getDate() - 1})`);

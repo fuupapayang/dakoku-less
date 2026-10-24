@@ -922,7 +922,7 @@ function recoruPunchConfirmHoliday(a) {
   dialog.showMessageBox({
     type: 'question', title: '全自動勤怠管理くん',
     message: '今日は休日です。レコルに出勤を打刻しますか？',
-    detail: '仕事をする場合は「出勤を打刻する」を押してください(押した時刻で打刻します)。\n「打刻しない」を選ぶと、今日は自動では打刻しません(必要になったらトレイの「レコルに出勤を打刻」から打刻できます)。',
+    detail: '仕事をする場合は「出勤を打刻する」を押してください(押した時刻で打刻します)。\n「打刻しない」を選ぶと、今日は自動では打刻しません(必要になったらメニューバーの「レコルの打刻」から打刻できます)。',
     buttons: ['出勤を打刻する', '打刻しない'], defaultId: 0, cancelId: 1, noLink: true
   }).then(({ response }) => {
     if (response === 0) return recoruPunchDo({ kind: 'in', key: a.key }, Date.now());
@@ -981,7 +981,7 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
   if (recoruPunchBusy || recoruPosting) return { ok: false, error: 'レコルを操作中です' };
   const label = a.kind === 'in' ? '出勤' : '退勤';
   recoruPunchBusy = true;
-  pushUpdate();
+  buildTrayMenu(); pushUpdate();
   let r;
   try {
     const out = await recoruBotLib.run({
@@ -993,7 +993,7 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
     r = out.punch || { status: 'fail', reason: out.error || '打刻できませんでした' };
   } catch (e) {
     r = { status: 'fail', reason: String((e && e.message) || e).slice(0, 200) };
-  } finally { recoruPunchBusy = false; }
+  } finally { recoruPunchBusy = false; buildTrayMenu(); }
   recoruPunchLib.record(punchState(), { kind: a.kind, key: a.key, now, status: r.status, reason: r.reason || '', rk: r.rk || null });
   const t = recoruPunchLib.hm(now);
   const d = store.data.days[a.key];
@@ -1006,6 +1006,19 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
     : r.status === 'unverified' ? `${t} に${label}ボタンを押しましたが、記録を確認できませんでした。レコルの勤務表を確認してください。` : `${t} にレコルへ${label}を打刻しました。`;
   try { if (Notification.isSupported()) new Notification({ title: `レコル ${label}打刻`, body, silent: r.status === 'ok' }).show(); } catch (_) {}
   return { ok: r.status !== 'fail', status: r.status, reason: r.reason || '', time: t };
+}
+/** レコルのホーム(出勤・退勤・休憩・戻りのボタン)を開く。ログインは自動打刻と共有 */
+let recoruHomeWin = null;
+function recoruOpenHome() {
+  if (recoruHomeWin && !recoruHomeWin.isDestroyed()) { recoruHomeWin.show(); recoruHomeWin.focus(); return; }
+  recoruHomeWin = new BrowserWindow({
+    width: 1100, height: 800, title: 'レコル',
+    webPreferences: { partition: recoruBotLib.PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false }
+  });
+  recoruHomeWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  recoruHomeWin.on('closed', () => { recoruHomeWin = null; });
+  recoruHomeWin.loadURL(recoruBotLib.HOME_URL).catch(() => {});
+  try { if (process.platform === 'darwin') app.focus({ steal: true }); } catch (_) {}
 }
 /** 手動の打刻(設定画面・トレイ) */
 async function recoruPunchManual(kind) {
@@ -1818,7 +1831,15 @@ function buildTrayMenu() {
   const until = settings().privateUntil || 0;
   const on = until > Date.now();
   const mt = todayOpenMeeting();
+  const punchBusy = recoruPunchBusy || recoruPosting;
   tray.setContextMenu(Menu.buildFromTemplate([
+    // 手動で打刻する時に探しやすいよう一番上に置く
+    ...(store && recoruHasCred() ? [{ label: punchBusy ? 'レコルの打刻(打刻中…)' : 'レコルの打刻', submenu: [
+      { label: '出勤を打刻(今の時刻)', enabled: !punchBusy, click: () => recoruPunchManual('in') },
+      { label: '退勤を打刻(今の時刻)', enabled: !punchBusy, click: () => recoruPunchManual('out') },
+      { type: 'separator' },
+      { label: 'レコルの打刻画面を開く', click: recoruOpenHome }
+    ] }, { type: 'separator' }] : []),
     { label: '全自動勤怠管理くんを開く', click: () => { win.show(); win.focus(); } },
     { type: 'separator' },
     on
@@ -1836,14 +1857,6 @@ function buildTrayMenu() {
       } },
     { type: 'separator' },
     { label: '今日の分を今すぐ提出', click: () => { if (currentKey) { submitDay(currentKey); pushUpdate(); } } },
-    ...(() => {
-      if (!store || !settings().recoruPunchEnabled || !recoruHasCred()) return [];
-      if (recoruPunchBusy) return [{ label: 'レコルに打刻中…', enabled: false }];
-      return [
-        { label: 'レコルに出勤を打刻', click: () => recoruPunchManual('in') },
-        { label: 'レコルに退勤を打刻', click: () => recoruPunchManual('out') }
-      ];
-    })(),
     ...(() => {
       if (!store || !settings().recoruEnabled || settings().recoruPunchEnabled) return [];
       const n = recoruCandidates().length;
