@@ -75,10 +75,14 @@ function pageLib() {
     return null;
   };
   /**
-   * ホームの打刻ボタン。文字が「出勤」「退勤」ちょうどの、表(勤務表)の外にある一番大きい要素。
+   * ホームの打刻ボタン。実画面は <table class="h-tbl-punchGadget"> の中の
+   * <input type="button" class="punch-btn" value="出勤" onclick="doPunch(...)">。
+   * 見つからない場合は、文字が「出勤」「退勤」ちょうどの、表(勤務表)の外にある一番大きい要素。
    * 文字の要素がボタンの中の子要素なら、押せる親(button/a/onclick 等)を返す。
    */
   const punchEl = (label) => {
+    const btn = [...document.querySelectorAll('.punch-btn, [onclick*="doPunch"]')].find(el => vis(el) && txt(el) === label);
+    if (btn) return btn;
     const c = [...document.querySelectorAll('body *')]
       .filter(el => vis(el) && !el.closest('table, select, option') && txt(el) === label && ![...el.children].some(ch => txt(ch) === label))
       .map(el => el.closest('button, a, input, [role=button], [onclick]') || el);
