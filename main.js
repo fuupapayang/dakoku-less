@@ -1017,9 +1017,16 @@ function recoruOpenHome() {
   });
   recoruHomeWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
   // ホームでは打刻ボタン(出勤・退勤・休憩・戻り)の部分だけを残す。ログイン画面などはそのまま表示
-  recoruHomeWin.webContents.on('did-finish-load', () => {
+  let loginTries = 0, goHome = false;
+  recoruHomeWin.webContents.on('did-finish-load', async () => {
     const w = recoruHomeWin;
     if (!w || w.isDestroyed()) return;
+    // レコルの再ログイン(時間切れ)は、自動打刻と同じ保存済みのログイン情報で自動ログインする
+    try {
+      if (loginTries < 2 && await recoruHomeAutoLogin(w)) { loginTries++; goHome = true; return; }
+    } catch (_) {}
+    if (goHome && !/\/ap\/home\/?/.test(w.webContents.getURL())) { goHome = false; w.loadURL(recoruBotLib.HOME_URL).catch(() => {}); return; }
+    goHome = false;
     w.webContents.executeJavaScript(`(${recoruPunchOnly.toString()})()`).then((ok) => {
       if (w.isDestroyed()) return;
       if (ok) { w.setTitle('レコルの打刻'); w.setContentSize(560, 440); }
@@ -1029,6 +1036,25 @@ function recoruOpenHome() {
   recoruHomeWin.on('closed', () => { recoruHomeWin = null; });
   recoruHomeWin.loadURL(recoruBotLib.HOME_URL).catch(() => {});
   try { if (process.platform === 'darwin') app.focus({ steal: true }); } catch (_) {}
+}
+/** 打刻画面のウィンドウがログイン画面なら、保存済みのログイン情報を入れてログインする。ログインを始めたら true */
+async function recoruHomeAutoLogin(w) {
+  const wc = w.webContents;
+  const ev = (expr) => wc.executeJavaScript(`(function(){ if (!window.__dk) (${recoruBotLib.pageLib.toString()})(); return (${expr}); })()`);
+  if (!(await ev('__dk.loginForm()')) || !recoruHasCred()) return false;
+  const err = await ev(`__dk.fillLogin(${JSON.stringify({ ...recoruCred(), password: recoruPassword() })})`);
+  if (err !== '') return false;
+  const r = await ev("__dk.target('loginSubmit', null)");
+  if (r && r.w && r.h) {
+    const x = Math.round(r.x), y = Math.round(r.y);
+    wc.sendInputEvent({ type: 'mouseMove', x, y });
+    wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    await new Promise(res => setTimeout(res, 40));
+    wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+  } else {
+    await ev("(() => { const b = document.querySelector('input.common-btn.submit') || document.getElementById('submit'); if (b) b.click(); return !!b; })()");
+  }
+  return true;
 }
 /** レコルのページ内で実行: 打刻ボタンの部分(日付の見出し付き)だけを残して他を隠す。見つからなければ false */
 function recoruPunchOnly() {
