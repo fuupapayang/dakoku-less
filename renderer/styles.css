@@ -42,6 +42,8 @@ body {
 }
 .nav-btn:hover { background: rgba(255,255,255,.08); color: #fff; }
 .nav-btn.active { background: var(--green); color: #fff; font-weight: 700; box-shadow: 0 4px 14px rgba(40,203,80,.35); }
+.nav-recoru { border: 1px solid rgba(40,203,80,.55); color: #fff; margin-bottom: 12px; }
+.nav-recoru:hover { background: rgba(40,203,80,.18); }
 .nav-sep { font-size: 10px; letter-spacing: 1.6px; color: #61795e; padding: 18px 14px 7px; font-weight: 700; }
 .privacy-note { margin-top: auto; font-size: 11px; line-height: 1.65; color: #8ba894; background: rgba(255,255,255,.06); padding: 12px; border-radius: 12px; }
 

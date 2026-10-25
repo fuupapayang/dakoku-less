@@ -2957,6 +2957,10 @@ document.addEventListener('change', async (e) => {
 $('#nav').addEventListener('click', (e) => {
   const btn = e.target.closest('.nav-btn');
   if (!btn) return;
+  if (btn.dataset.act === 'recoru-home') { // タブではなくレコルの打刻画面を別ウィンドウで開く
+    window.api.recoruOpenHome().then(r => { if (r && !r.ok) toast(r.error); });
+    return;
+  }
   showTab(btn.dataset.tab);
 });
 

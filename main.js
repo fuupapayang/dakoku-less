@@ -2179,6 +2179,11 @@ function registerIpc() {
   ipcMain.handle('recoru:clearCred', () => ({ ...recoruClearCred(), state: buildState() }));
   ipcMain.handle('recoru:test', async () => ({ ...(await recoruTestLogin()), state: buildState() }));
   ipcMain.handle('recoru:post', async (e, keys) => ({ ...(await recoruPostNow(keys)), state: buildState() }));
+  ipcMain.handle('recoru:open-home', () => {
+    if (!recoruHasCred()) return { ok: false, error: '設定の「レコル連携」でログイン情報を設定してください' };
+    recoruOpenHome();
+    return { ok: true };
+  });
   ipcMain.handle('recoru:punch', async (e, kind) => ({ ...(await recoruPunchManual(kind)), state: buildState() }));
   ipcMain.handle('recoru:snooze', () => { recoruPromptState.open = false; buildTrayMenu(); return { ok: true }; });
 
