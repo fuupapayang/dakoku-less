@@ -1012,13 +1012,46 @@ let recoruHomeWin = null;
 function recoruOpenHome() {
   if (recoruHomeWin && !recoruHomeWin.isDestroyed()) { recoruHomeWin.show(); recoruHomeWin.focus(); return; }
   recoruHomeWin = new BrowserWindow({
-    width: 1100, height: 800, title: 'レコル',
+    width: 560, height: 480, title: 'レコルの打刻',
     webPreferences: { partition: recoruBotLib.PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false }
   });
   recoruHomeWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  // ホームでは打刻ボタン(出勤・退勤・休憩・戻り)の部分だけを残す。ログイン画面などはそのまま表示
+  recoruHomeWin.webContents.on('did-finish-load', () => {
+    const w = recoruHomeWin;
+    if (!w || w.isDestroyed()) return;
+    w.webContents.executeJavaScript(`(${recoruPunchOnly.toString()})()`).then((ok) => {
+      if (w.isDestroyed()) return;
+      if (ok) { w.setTitle('レコルの打刻'); w.setContentSize(560, 440); }
+      else { const [cw, ch] = w.getContentSize(); if (cw < 1000) w.setContentSize(1100, 800); w.center(); }
+    }).catch(() => {});
+  });
   recoruHomeWin.on('closed', () => { recoruHomeWin = null; });
   recoruHomeWin.loadURL(recoruBotLib.HOME_URL).catch(() => {});
   try { if (process.platform === 'darwin') app.focus({ steal: true }); } catch (_) {}
+}
+/** レコルのページ内で実行: 打刻ボタンの部分(日付の見出し付き)だけを残して他を隠す。見つからなければ false */
+function recoruPunchOnly() {
+  const btn = document.querySelector('.punch-btn, [onclick*="doPunch"]');
+  if (!btn) return false;
+  // ボタンの表から親をたどり、日付の見出しを含む範囲まで広げる(打刻ログなど他の部品は含めない)
+  let keep = btn.closest('table') || btn;
+  for (let a = keep.parentElement; a && a !== document.body; a = a.parentElement) {
+    const t = a.innerText || '';
+    if (/打刻ログ|勤務チェック|お知らせ/.test(t) || a.querySelectorAll('table').length > 3) break;
+    keep = a;
+    if (/\d{4}年\s*\d{1,2}月\s*\d{1,2}日/.test(t)) break;
+  }
+  for (let c = keep; c && c !== document.documentElement; c = c.parentElement) {
+    const p = c.parentElement;
+    if (!p) break;
+    for (const s of p.children) if (s !== c && !['SCRIPT', 'STYLE', 'LINK'].includes(s.tagName)) s.style.setProperty('display', 'none', 'important');
+    if (c !== keep) for (const [k, v] of [['margin', '0'], ['padding', '0'], ['width', 'auto'], ['min-width', '0'], ['max-width', 'none'], ['float', 'none'], ['position', 'static'], ['transform', 'none']]) c.style.setProperty(k, v, 'important');
+  }
+  Object.assign(keep.style, { margin: '16px auto', maxWidth: '520px', width: 'auto', float: 'none', position: 'static' });
+  document.documentElement.style.setProperty('overflow', 'auto', 'important');
+  window.scrollTo(0, 0);
+  return true;
 }
 /** 手動の打刻(設定画面・トレイ) */
 async function recoruPunchManual(kind) {
