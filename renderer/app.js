@@ -1752,6 +1752,10 @@ function sheetsCardHTML(s) {
         <button class="btn primary" data-act="sheets-export" ${cfg.url ? '' : 'disabled'}>今すぐ書き出し(自分の分)</button>
         ${s.lastExportMonth ? `<span class="muted">最終自動書き出し: ${esc(s.lastExportMonth)}</span>` : ''}
       </div>
+      ${state.gasScript ? `<div class="row mt8">
+        <button class="btn" data-act="gas-copy">最新のGASスクリプトをコピー</button>
+        <span class="muted">スプレッドシートの「拡張機能」→「Apps Script」に貼り替え、「デプロイを管理」→ 編集 →「新バージョン」でデプロイ(URLは変わりません)</span>
+      </div>` : ''}
       <details class="mt8"><summary class="muted" style="cursor:pointer">セットアップ手順(管理者が1回だけ・GASスクリプトを含む)</summary>
         <div class="muted mt8" style="line-height:1.7">
           1. Googleドライブの<b>共有ドライブ</b>に書き出し用フォルダを作り、その中に新しいGoogleスプレッドシートを作成<br>
@@ -1763,6 +1767,7 @@ function sheetsCardHTML(s) {
           <b>注意:</b> デプロイしたアカウントの権限で書き込まれます。退職・異動で消えない管理者アカウントでのデプロイがおすすめです。
           「全員」が選べない場合は、Google Workspaceの管理者に外部共有の制限を確認してください。
           以前のスクリプトを使っている場合は、貼り替えた後「デプロイを管理」→ 編集 →「新バージョン」で更新してください(URLは変わりません)。<br>
+          ${state.gasScript ? '<button class="btn sm mt8" data-act="gas-copy">スクリプトをコピー</button>' : ''}
           <pre style="background:#f5f7f6;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;font-size:11px;white-space:pre-wrap;word-break:break-all">${esc(state.gasScript || '(スクリプトはデスクトップ版の設定画面に表示されます)')}</pre>
         </div>
       </details>
@@ -2800,6 +2805,18 @@ document.addEventListener('click', async (e) => {
     const r = await window.api.shareSheets(null);
     if (r.ok) { state = r.state; sheetsEditing = false; renderSettings(); toast('チーム共有を解除しました'); }
     else toast(`エラー: ${r.error}`);
+  }
+  if (act === 'gas-copy') {
+    const text = state.gasScript || '';
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); toast('GASスクリプトをコピーしました'); } catch (_) { toast('コピーできませんでした。セットアップ手順のコードを選択してコピーしてください'); }
+      ta.remove();
+    };
+    navigator.clipboard.writeText(text).then(() => toast('GASスクリプトをコピーしました'), fallback);
+    return;
   }
   if (act === 'sheets-export') {
     const sel = $('#sh-month').value;
