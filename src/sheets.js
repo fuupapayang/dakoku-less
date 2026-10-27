@@ -11,7 +11,7 @@
  * これにより、複数人が同じスプレッドシートへ書き込んでも互いに上書きし合わない。
  */
 const GAS_VERSION = 3; // 3: 列数の違う個人タブ(旧版の書き出し)も揃えて連結
-const GAS_MIN_VERSION = 2; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う
+const GAS_MIN_VERSION = 3; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う(v2 以前は列数の違う個人タブの連結で失敗する)
 const recoru = require('./recoru');
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -175,7 +175,12 @@ async function post(url, token, sheets, summaries) {
   const text = await res.text();
   if (!res.ok) throw new Error(`スプレッドシート書き込み失敗: HTTP ${res.status} ${text.slice(0, 150)}`);
   let json; try { json = JSON.parse(text); } catch (e) { json = null; }
-  if (json && json.ok === false) throw new Error(`スプレッドシート側エラー: ${json.error || '不明'}`);
+  if (json && json.ok === false) {
+    const e = String(json.error || '不明');
+    // v2 以前のGASは、旧版(9列)と新版(14列)の個人タブを連結できない
+    if (/列数|number of columns/i.test(e)) throw new Error('スプレッドシート側のGASスクリプトが古いため書き出せません。設定画面の「スプレッドシート連携」にある最新のスクリプトに貼り替えて、新しいバージョンとしてデプロイし直してください(URLは変わりません)。' + `(${e})`);
+    throw new Error(`スプレッドシート側エラー: ${e}`);
+  }
   return json || { ok: true };
 }
 
