@@ -3,7 +3,7 @@
  * レコルへのリアルタイム打刻(出勤・退勤)の判定。純粋なロジックのみ(実際の打刻は src/recoruBot.js)。
  *
  * レコルで本人が勤務表を編集できない(打刻のみの)運用向け。時刻はさかのぼれないため、その時点で打刻する。
- *  - 出勤: その日(朝5時区切り)の最初の操作の瞬間
+ *  - 出勤: その日(朝5時区切り)の最初の操作の瞬間に「出勤を打刻しますか？」を出し、押した時刻で打刻
  *  - 5:00〜0:00: ロック・スリープ・無操作では退勤しない(自宅作業で頻繁にあるため)。
  *          シャットダウン時に「退勤を打刻しますか？」を出して選んでもらう
  *  - 0:00〜5:00: 1時間おきに「深夜残業となりますが作業を続けますか？」を出す。
@@ -51,7 +51,9 @@ function hasIn(st, key) { return done(st.days[key] && st.days[key].in); }
  */
 function canRetry(rec, now) {
   if (!rec) return true;
-  if (done(rec) || rec.status === 'declined') return false; // declined: 休日の確認で「打刻しない」を選んだ
+  if (done(rec)) return false;
+  // declined: 出勤の確認で「打刻しない」を選んだ。retryAt(平日)を過ぎたら再び確認、休日はその日はもう確認しない
+  if (rec.status === 'declined') return !!rec.retryAt && now >= rec.retryAt;
   return (rec.tries || 1) < 3 && now - (rec.firstAt || rec.at) <= 10 * MIN && now - rec.at >= MIN;
 }
 const failRec = (prev, now) => prev && prev.status === 'fail'
@@ -136,10 +138,11 @@ function promptAnswer(st, { key, now, answer }) {
 }
 
 /** 打刻結果を記録 */
-function record(st, { kind, key, now, status, reason = '', rk = null }) {
+function record(st, { kind, key, now, status, reason = '', rk = null, retryAt = 0 }) {
   st = norm(st);
   const d = dayOf(st, key);
   const rec = { at: now, status, reason, rk };
+  if (retryAt) rec.retryAt = retryAt;
   if (kind === 'in') {
     if (status === 'fail') Object.assign(rec, failRec(d.in, now));
     d.in = rec;
@@ -183,7 +186,33 @@ function summary(st, keys) {
   });
 }
 
+/**
+ * レコルの「打刻ログと勤務チェック」(新しい順 [{m,d,time,kind}]) から今の状態を求める。
+ * 今日(朝5時区切り)の最後の打刻: 出勤・戻り → 出勤中 / 休憩 → 休憩中 / 退勤・打刻なし → 退勤中。
+ * 前日に退勤を打ち忘れていても、5時を過ぎたら新しい日として「退勤中」(出勤できるように)
+ * @returns {state:'working'|'break'|'off', label, kind, time, key, allowed:[ボタン名]}
+ */
+const STATES = {
+  working: { label: '出勤中', allowed: ['退勤', '休憩'] },
+  break: { label: '休憩中', allowed: ['戻り'] },
+  off: { label: '退勤中', allowed: ['出勤'] }
+};
+function statusFromLog(log, now) {
+  const today = punchKey(now);
+  const y = new Date(now).getFullYear();
+  const entKey = (e) => {
+    // 1月に12月の打刻を見る場合は前年
+    const yy = e.m > new Date(now).getMonth() + 1 + 1 ? y - 1 : y;
+    const [h, mi] = String(e.time).split(':').map(Number);
+    return punchKey(new Date(yy, e.m - 1, e.d, h, mi).getTime());
+  };
+  const last = (log || []).find(e => e && e.m && e.time && entKey(e) === today);
+  const state = !last ? 'off' : last.kind === '休憩' ? 'break' : last.kind === '退勤' ? 'off' : 'working';
+  return { state, label: STATES[state].label, allowed: STATES[state].allowed, kind: last ? last.kind : '', time: last ? last.time : '', key: today };
+}
+
 module.exports = {
+  statusFromLog,
   DAY_START_HOUR, LATE_HOUR, IDLE_MIN, PROMPT_EVERY_MIN, PROMPT_WAIT_MIN,
   calKey, hm, punchKey, period, emptyState, tick, away, promptShown, promptAnswer, record, missedOuts, summary, hasIn
 };

@@ -11,6 +11,7 @@
  * 純粋なロジック(値の組み立て・検証)は src/recoruPost.js。
  */
 const P = require('./recoruPost');
+const PL = require('./recoruPunch');
 
 const TIMESHEET_URL = 'https://app.recoru.in/ap/menuAttendance/';
 const HOME_URL = 'https://app.recoru.in/ap/home/'; // 打刻ボタン(出勤・退勤・休憩・戻り)と打刻メモ欄がある画面
@@ -352,7 +353,13 @@ class Bot {
   async punch(kind, memo, now = Date.now()) {
     const label = kind === 'in' ? '出勤' : '退勤';
     await this.waitFor(async () => (await this.ev(`__dk.hasPunch(${JSON.stringify(label)})`)) === true, 10000);
-    if (!(await this.ev(`__dk.hasPunch(${JSON.stringify(label)})`))) return { status: 'fail', reason: `ホームに「${label}」ボタンが見つかりません` };
+    const before = (await this.ev('__dk.punchLog()')) || null;
+    // 既にレコルで出勤している(手動・スマホなど)なら、出勤を二重に打刻しない
+    if (kind === 'in' && before) {
+      const st = PL.statusFromLog(before, now);
+      if (st.state !== 'off') return { status: 'ok', reason: `レコルで出勤済み(${st.time} ${st.kind})のため打刻しませんでした`, log: before };
+    }
+    if (!(await this.ev(`__dk.hasPunch(${JSON.stringify(label)})`))) return { status: 'fail', reason: `ホームに「${label}」ボタンが見つかりません`, log: before };
     if (memo) await this.ev(`__dk.setPunchMemo(${JSON.stringify(memo)})`);
     await this.ev('__dk.hook()');
     await this.ev('__dk.takeMsgs()');
@@ -370,7 +377,7 @@ class Bot {
       await this.waitIdle();
       const log = (await this.ev('__dk.punchLog()')) || [];
       const hit = log.find(e => e.kind === label && near(e.time) && days.some(d => d.getMonth() + 1 === e.m && d.getDate() === e.d));
-      if (hit) return { status: 'ok', reason: '', rk: { date: `${hit.m}/${hit.d}`, start: kind === 'in' ? hit.time : '', end: kind === 'out' ? hit.time : '' } };
+      if (hit) return { status: 'ok', reason: '', log, rk: { date: `${hit.m}/${hit.d}`, start: kind === 'in' ? hit.time : '', end: kind === 'out' ? hit.time : '' } };
     }
     // 勤務表で確認(当日と前日の行を見る)
     if (!(await this.load(TIMESHEET_URL)) || !(await this.ev('__dk.hasRows()'))) return { status: 'unverified', reason: 'ボタンは押しましたが、打刻ログで記録を確認できませんでした' };

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   syncNow: () => ipcRenderer.invoke('sync:now'),
   saveSheets: (patch) => ipcRenderer.invoke('sheets:save', patch),
   exportSheets: (ym) => ipcRenderer.invoke('sheets:export', ym),
+  exportTeamSheets: (ym) => ipcRenderer.invoke('sheets:export-team', ym),
   shareSheets: (cfg) => ipcRenderer.invoke('sheets:share', cfg),
   resolveReview: (arg) => ipcRenderer.invoke('review:resolve', arg),
   recoruCSV: (range) => ipcRenderer.invoke('recoru:csv', range),

@@ -773,6 +773,7 @@ function recoruState() {
     punch: {
       enabled: !!s.recoruPunchEnabled,
       busy: recoruPunchBusy,
+      status: recoruStatusToday(),
       idleMin: recoruPunchLib.IDLE_MIN, promptWaitMin: recoruPunchLib.PROMPT_WAIT_MIN,
       days: recoruPunchLib.summary(punchState(), Array.from({ length: 7 }, (_, i) => recoruPostLib.addDays(recoruPunchLib.punchKey(Date.now()), -i)))
     }
@@ -897,7 +898,7 @@ function recoruPunchTick(now, active) {
   if (recoruPunchMissKey !== key) { recoruPunchMissKey = key; recoruPunchNotifyMissed(key); }
   const a = recoruPunchLib.tick(punchState(), { now, active, inFlight: recoruPunchBusy || recoruPosting });
   if (!a) return;
-  if (a.kind === 'in' && recoruLib.dayType(a.key) !== 'work') { recoruPunchConfirmHoliday(a); return; }
+  if (a.kind === 'in') { recoruPunchConfirmIn(a); return; } // 出勤は毎回確認してから打刻
   if (a.kind === 'prompt') recoruPunchPrompt(a, now);
   else {
     if (a.reason === 'noanswer' && recoruPunchDialog) { try { recoruPunchDialog.abort(); } catch (_) {} }
@@ -913,22 +914,37 @@ function recoruPunchAway(reason) {
   return recoruPunchDo(a, Date.now());
 }
 
-/** 土日・祝日は出勤を打刻する前に確認(私用でPCを開いただけの日に休日出勤を記録しない) */
-let recoruPunchAskingHoliday = '';
-function recoruPunchConfirmHoliday(a) {
-  if (recoruPunchAskingHoliday === a.key) return;
-  recoruPunchAskingHoliday = a.key;
+/**
+ * 出勤を打刻する前に確認(押した時刻で打刻)。
+ * 「打刻しない」: 平日は1時間後に操作があれば再び確認、土日・祝日はその日はもう確認しない
+ */
+const RECORU_IN_REASK_MIN = 60;
+let recoruPunchAskingIn = '';
+function recoruPunchConfirmIn(a) {
+  if (recoruPunchAskingIn === a.key) return;
+  const cur = recoruStatusToday();
+  if (cur && cur.state !== 'off') { // レコルで既に出勤している(手動・スマホなど)
+    recoruPunchLib.record(punchState(), { kind: 'in', key: a.key, now: Date.now(), status: 'ok', reason: `レコルで出勤済み(${cur.time} ${cur.kind})` });
+    store.save(); pushUpdate();
+    return;
+  }
+  recoruPunchAskingIn = a.key;
+  const holiday = recoruLib.dayType(a.key) !== 'work';
   try { if (process.platform === 'darwin') app.focus({ steal: true }); } catch (_) {}
   dialog.showMessageBox({
     type: 'question', title: '全自動勤怠管理くん',
-    message: '今日は休日です。レコルに出勤を打刻しますか？',
-    detail: '仕事をする場合は「出勤を打刻する」を押してください(押した時刻で打刻します)。\n「打刻しない」を選ぶと、今日は自動では打刻しません(必要になったらメニューバーの「レコルの打刻」から打刻できます)。',
+    message: holiday ? '今日は休日です。レコルに出勤を打刻しますか？' : 'レコルに出勤を打刻しますか？',
+    detail: '仕事を始める場合は「出勤を打刻する」を押してください(押した時刻で打刻します)。\n' +
+      (holiday ? '「打刻しない」を選ぶと、今日は自動では確認しません。' : `「打刻しない」を選ぶと、${RECORU_IN_REASK_MIN}分後に操作があれば再び確認します。`) +
+      '\n後から打刻する場合は、画面左の「⏱ レコルの打刻」から打刻できます。',
     buttons: ['出勤を打刻する', '打刻しない'], defaultId: 0, cancelId: 1, noLink: true
   }).then(({ response }) => {
     if (response === 0) return recoruPunchDo({ kind: 'in', key: a.key }, Date.now());
-    recoruPunchLib.record(punchState(), { kind: 'in', key: a.key, now: Date.now(), status: 'declined', reason: '休日のため打刻しない' });
+    const now = Date.now();
+    recoruPunchLib.record(punchState(), { kind: 'in', key: a.key, now, status: 'declined',
+      reason: holiday ? '休日のため打刻しない' : '打刻しないを選択', retryAt: holiday ? 0 : now + RECORU_IN_REASK_MIN * 60000 });
     store.save(); pushUpdate();
-  }).catch(() => {}).finally(() => { recoruPunchAskingHoliday = ''; });
+  }).catch(() => {}).finally(() => { recoruPunchAskingIn = ''; });
 }
 
 /** 深夜(0〜5時)の1時間おきの確認。30分答えがなければ次のサンプリングで退勤(recoruPunchLib.tick) */
@@ -995,6 +1011,11 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
     r = { status: 'fail', reason: String((e && e.message) || e).slice(0, 200) };
   } finally { recoruPunchBusy = false; buildTrayMenu(); }
   recoruPunchLib.record(punchState(), { kind: a.kind, key: a.key, now, status: r.status, reason: r.reason || '', rk: r.rk || null });
+  if (r.log) recoruSetStatus(recoruPunchLib.statusFromLog(r.log, Date.now()));
+  else if (r.status !== 'fail') {
+    const kindLabel = a.kind === 'in' ? '出勤' : '退勤';
+    recoruSetStatus(recoruPunchLib.statusFromLog([{ m: new Date(now).getMonth() + 1, d: new Date(now).getDate(), time: recoruPunchLib.hm(now), kind: kindLabel }], Date.now()));
+  }
   const t = recoruPunchLib.hm(now);
   const d = store.data.days[a.key];
   if (d) logEvent(d, `レコル${label}打刻 ${t}${manual ? '(手動)' : ''}: ${{ ok: '完了', unverified: '押したが記録を確認できず', fail: '失敗' }[r.status]}${r.reason ? '(' + r.reason + ')' : ''}`);
@@ -1003,7 +1024,8 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
   // レコル連携は本人が有効にした機能のため、通知設定に関係なく結果を知らせる
   const body = r.status === 'fail'
     ? `${t} の${label}打刻に失敗しました: ${r.reason}。${manual ? '' : '少し後に自動でやり直します。'}続けて失敗する場合はレコルで手動で打刻してください。`
-    : r.status === 'unverified' ? `${t} に${label}ボタンを押しましたが、記録を確認できませんでした。レコルの勤務表を確認してください。` : `${t} にレコルへ${label}を打刻しました。`;
+    : r.status === 'unverified' ? `${t} に${label}ボタンを押しましたが、記録を確認できませんでした。レコルの勤務表を確認してください。`
+      : r.reason ? `${r.reason}。` : `${t} にレコルへ${label}を打刻しました。`;
   try { if (Notification.isSupported()) new Notification({ title: `レコル ${label}打刻`, body, silent: r.status === 'ok' }).show(); } catch (_) {}
   return { ok: r.status !== 'fail', status: r.status, reason: r.reason || '', time: t };
 }
@@ -1027,7 +1049,14 @@ function recoruOpenHome() {
     } catch (_) {}
     if (goHome && !/\/ap\/home\/?/.test(w.webContents.getURL())) { goHome = false; w.loadURL(recoruBotLib.HOME_URL).catch(() => {}); return; }
     goHome = false;
-    w.webContents.executeJavaScript(`(${recoruPunchOnly.toString()})()`).then((ok) => {
+    // 打刻ログから今の状態(出勤中・休憩中・退勤中)を求め、押せるボタンだけを残す(隠す前に読む)
+    let status = null;
+    try {
+      const log = await w.webContents.executeJavaScript(`(function(){ if (!window.__dk) (${recoruBotLib.pageLib.toString()})(); return __dk.punchLog(); })()`);
+      if (log) status = recoruSetStatus(recoruPunchLib.statusFromLog(log, Date.now()));
+    } catch (_) {}
+    if (w.isDestroyed()) return;
+    w.webContents.executeJavaScript(`(${recoruPunchOnly.toString()})(${JSON.stringify(status)})`).then((ok) => {
       if (w.isDestroyed()) return;
       if (ok) { w.setTitle('レコルの打刻'); w.setContentSize(560, 440); }
       else { const [cw, ch] = w.getContentSize(); if (cw < 1000) w.setContentSize(1100, 800); w.center(); }
@@ -1057,9 +1086,11 @@ async function recoruHomeAutoLogin(w) {
   return true;
 }
 /** レコルのページ内で実行: 打刻ボタンの部分(日付の見出し付き)だけを残して他を隠す。見つからなければ false */
-function recoruPunchOnly() {
-  const btn = document.querySelector('.punch-btn, [onclick*="doPunch"]');
+function recoruPunchOnly(status) {
+  const btns = [...document.querySelectorAll('.punch-btn, [onclick*="doPunch"]')];
+  const btn = btns[0];
   if (!btn) return false;
+  const label = (b) => String(b.value || b.innerText || '').trim();
   // ボタンの表から親をたどり、日付の見出しを含む範囲まで広げる(打刻ログなど他の部品は含めない)
   let keep = btn.closest('table') || btn;
   for (let a = keep.parentElement; a && a !== document.body; a = a.parentElement) {
@@ -1075,9 +1106,39 @@ function recoruPunchOnly() {
     if (c !== keep) for (const [k, v] of [['margin', '0'], ['padding', '0'], ['width', 'auto'], ['min-width', '0'], ['max-width', 'none'], ['float', 'none'], ['position', 'static'], ['transform', 'none']]) c.style.setProperty(k, v, 'important');
   }
   Object.assign(keep.style, { margin: '16px auto', maxWidth: '520px', width: 'auto', float: 'none', position: 'static' });
+  if (status && status.allowed) {
+    // 今の状態で押せるボタンだけ(出勤中: 退勤・休憩 / 休憩中: 戻り / 退勤中: 出勤)
+    for (const b of btns) {
+      if (status.allowed.includes(label(b))) continue;
+      const cell = b.closest('td');
+      const el = cell && cell.querySelectorAll('.punch-btn, [onclick*="doPunch"]').length === 1 ? cell : b;
+      el.style.setProperty('display', 'none', 'important');
+    }
+    const color = { working: '#28a745', break: '#3b6fd4', off: '#666' }[status.state] || '#666';
+    const bar = document.createElement('div');
+    bar.id = 'dk-status';
+    bar.style.cssText = `margin:0 0 10px;padding:10px 14px;border-radius:10px;background:${color};color:#fff;font:700 18px sans-serif;text-align:center`;
+    bar.textContent = `現在: ${status.label}` + (status.time ? `(${status.time} ${status.kind})` : '(今日はまだ打刻していません)');
+    const old = document.getElementById('dk-status');
+    if (old) old.remove();
+    keep.insertBefore(bar, keep.firstChild);
+    // 打刻後は画面を読み直して状態を更新(レコルが自分で読み直す場合はそちらが先に動く)
+    for (const b of btns) b.addEventListener('click', () => setTimeout(() => location.reload(), 3500));
+  }
   document.documentElement.style.setProperty('overflow', 'auto', 'important');
   window.scrollTo(0, 0);
   return true;
+}
+/** レコルの今の状態(打刻ログから。打刻画面を開いた時・自動打刻の時に更新) */
+let recoruStatus = null;
+function recoruSetStatus(st) {
+  recoruStatus = st ? { ...st, at: Date.now() } : null;
+  buildTrayMenu(); pushUpdate();
+  return recoruStatus;
+}
+/** 今日(朝5時区切り)の状態が分かっていれば返す */
+function recoruStatusToday() {
+  return recoruStatus && recoruStatus.key === recoruPunchLib.punchKey(Date.now()) ? recoruStatus : null;
 }
 /** 手動の打刻(設定画面・トレイ) */
 async function recoruPunchManual(kind) {
@@ -1576,6 +1637,40 @@ async function exportSheets(ym) {
   return r;
 }
 
+/**
+ * 総管理者: チーム全員分をまとめて書き出す(各メンバーの最終同期時点のデータ)。
+ * 各PCの書き出しを待たずに、管理者のPCから全員の個人タブとチーム集計タブを作り直す
+ */
+async function exportTeamSheets(ym) {
+  if (!adminUnlocked()) return { ok: false, error: '総管理者モードでのみ実行できます' };
+  const cfg = sheetsConfig();
+  if (!cfg.url) return { ok: false, error: 'スプレッドシート連携URLが未設定です' };
+  if (sync && sync.enabled()) await runSync(true).catch(() => {}); // 最新のサマリーを取得
+  const rt = store.data.remoteTeam;
+  const myId = (settings().sync || {}).memberId;
+  // 自分の分は手元の詳しいデータを使う
+  const members = [{ name: settings().userName, days: store.data.days },
+    ...((rt && rt.members) || []).filter(m => m.id !== myId && m.name !== settings().userName)];
+  const projById = Object.fromEntries((store.data.projects || []).map(p => [p.id, p]));
+  const sheets = [];
+  let summaries = [], people = 0, historyRows = 0;
+  for (const m of members) {
+    const x = sheetsLib.personalExport(m, ym, projById, (st) => STATUS_LABEL[st] || st);
+    if (!x.sheets[0].rows.length && !x.sheets[1].rows.length) continue; // その月の記録がない人(旧メンバーなど)は送らない
+    sheets.push(...x.sheets);
+    summaries = x.summaries;
+    people++; historyRows += x.sheets[0].rows.length;
+  }
+  if (!people) return { ok: false, error: `${ym} の記録がある人がいません` };
+  sheets.push(sheetsLib.projectListSheet(store.data.projects));
+  const res = await sheetsLib.post(cfg.url, cfg.token, sheets, summaries);
+  const r = { ok: true, month: ym, people, historyRows };
+  if (!res || !(res.v >= sheetsLib.GAS_MIN_VERSION)) {
+    r.warning = 'スプレッドシート側のGASスクリプトが古いため、チーム全員分のタブが更新されません。設定画面の最新スクリプトに貼り替えて再デプロイしてください。';
+  }
+  return r;
+}
+
 function prevMonthKey(d = new Date()) {
   const m = new Date(d.getFullYear(), d.getMonth() - 1, 1);
   return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, '0')}`;
@@ -1891,11 +1986,14 @@ function buildTrayMenu() {
   const on = until > Date.now();
   const mt = todayOpenMeeting();
   const punchBusy = recoruPunchBusy || recoruPosting;
+  const curSt = recoruStatusToday();
   tray.setContextMenu(Menu.buildFromTemplate([
     // 手動で打刻する時に探しやすいよう一番上に置く
-    ...(store && recoruHasCred() ? [{ label: punchBusy ? 'レコルの打刻(打刻中…)' : 'レコルの打刻', submenu: [
-      { label: '出勤を打刻(今の時刻)', enabled: !punchBusy, click: () => recoruPunchManual('in') },
-      { label: '退勤を打刻(今の時刻)', enabled: !punchBusy, click: () => recoruPunchManual('out') },
+    ...(store && recoruHasCred() ? [{ label: punchBusy ? 'レコルの打刻(打刻中…)' : 'レコルの打刻' + (curSt ? `(${curSt.label})` : ''), submenu: [
+      // 状態が分かっていれば押せるものだけ(休憩・戻りは打刻画面から)
+      ...(!curSt || curSt.allowed.includes('出勤') ? [{ label: '出勤を打刻(今の時刻)', enabled: !punchBusy, click: () => recoruPunchManual('in') }] : []),
+      ...(!curSt || curSt.allowed.includes('退勤') ? [{ label: '退勤を打刻(今の時刻)', enabled: !punchBusy, click: () => recoruPunchManual('out') }] : []),
+      ...(curSt && curSt.state !== 'off' ? [{ label: curSt.state === 'break' ? '戻りを打刻(打刻画面を開く)' : '休憩を打刻(打刻画面を開く)', click: recoruOpenHome }] : []),
       { type: 'separator' },
       { label: 'レコルの打刻画面を開く', click: recoruOpenHome }
     ] }, { type: 'separator' }] : []),
@@ -2389,6 +2487,10 @@ function registerIpc() {
       await runSync(true);
       return { ok: true, state: buildState() };
     } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
+  });
+  ipcMain.handle('sheets:export-team', async (e, ym) => {
+    try { return await exportTeamSheets(ym || prevMonthKey()); }
+    catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
   });
   ipcMain.handle('sheets:export', async (e, ym) => {
     try {

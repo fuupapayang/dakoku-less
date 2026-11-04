@@ -384,7 +384,7 @@ function recoruCardHTML() {
 function recoruPunchHTML(r) {
   const p = r.punch;
   if (!p) return '';
-  const st = { ok: ['STABLE', '完了'], unverified: ['UNSURE', '要確認'], fail: ['LOW', '失敗'], declined: ['UNSURE', '打刻しない(休日)'] };
+  const st = { ok: ['STABLE', '完了'], unverified: ['UNSURE', '要確認'], fail: ['LOW', '失敗'], declined: ['UNSURE', '打刻しない'] };
   const cell = (x) => x ? `${esc(x.time)} <span class="chip ${st[x.status][0]}">${st[x.status][1]}</span>${x.count > 1 ? ` <span class="muted">(${x.count}回目)</span>` : ''}${x.reason ? `<div class="muted" style="font-size:11px">${esc(x.reason)}</div>` : ''}` : '<span class="muted">-</span>';
   const rows = p.days.filter(d => d.in || d.out || d.lastFail).map(d => `<tr><td style="white-space:nowrap">${esc(fmtDate(d.key))}</td><td>${cell(d.in)}</td>
     <td>${cell(d.out)}${!d.out && d.lastFail ? cell({ time: new Date(d.lastFail.at).toTimeString().slice(0, 5), status: 'fail', reason: d.lastFail.reason }) : ''}${d.in && d.needOut ? '<div class="muted" style="font-size:11px">作業中(離れたら退勤を打刻)</div>' : ''}</td></tr>`).join('');
@@ -393,13 +393,15 @@ function recoruPunchHTML(r) {
       <div class="toggle ${p.enabled ? 'on' : ''}" data-act="recoru-punch-toggle"></div>
       <div class="grow"><b>出勤・退勤をレコルに自動で打刻する</b>
         <div class="muted">レコルで勤務表を編集できない(打刻のみの)場合に使います。オンの間は転記の確認は出ません。<br>
-        出勤: その日(朝5時区切り)の最初の操作の瞬間(土日・祝日は打刻するか確認します)。<br>
+        出勤: その日(朝5時区切り)の最初の操作の時に「出勤を打刻しますか？」を出し、押した時刻で打刻します。<br>
         退勤: 5〜24時はPCのシステム終了時に「退勤を打刻しますか？」を出します(画面ロック・スリープでは打刻しません。終業時はシステム終了してください)。0〜5時は1時間おきに「深夜残業となりますが作業を続けますか？」を出し、「いいえ」または${p.promptWaitMin}分答えがない場合、${p.idleMin}分操作がない場合に退勤(夜に作業を終えてPCをつけたままにした場合は0時に退勤)。休憩は打刻しません。<br>
         打刻はその時刻にレコルのホームの「出勤」「退勤」ボタンを押すもので、時刻をさかのぼることはありません。</div></div>
     </div>
     <div class="row mt8">
-      <button class="btn sm" data-act="recoru-punch" data-id="in" ${r.ready && !p.busy && !r.posting ? '' : 'disabled'}>今すぐ出勤を打刻</button>
-      <button class="btn sm" data-act="recoru-punch" data-id="out" ${r.ready && !p.busy && !r.posting ? '' : 'disabled'}>今すぐ退勤を打刻</button>
+      ${p.status ? `<span class="chip ${{ working: 'STABLE', break: 'UNSURE', off: '' }[p.status.state]}">現在: ${esc(p.status.label)}${p.status.time ? `(${esc(p.status.time)} ${esc(p.status.kind)})` : ''}</span>` : ''}
+      ${!p.status || p.status.allowed.includes('出勤') ? `<button class="btn sm" data-act="recoru-punch" data-id="in" ${r.ready && !p.busy && !r.posting ? '' : 'disabled'}>今すぐ出勤を打刻</button>` : ''}
+      ${!p.status || p.status.allowed.includes('退勤') ? `<button class="btn sm" data-act="recoru-punch" data-id="out" ${r.ready && !p.busy && !r.posting ? '' : 'disabled'}>今すぐ退勤を打刻</button>` : ''}
+      ${p.status && p.status.state !== 'off' ? `<button class="btn sm" data-act="recoru-home">${p.status.state === 'break' ? '戻り' : '休憩'}を打刻(打刻画面)</button>` : ''}
       ${p.busy ? '<span class="muted">打刻中…</span>' : ''}
     </div>
     ${rows ? `<div class="table-wrap"><table class="mt8"><thead><tr><th>日付</th><th>出勤</th><th>退勤(最後)</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}`;
@@ -1750,6 +1752,7 @@ function sheetsCardHTML(s) {
           <option value="__this__">今月</option>
         </select>
         <button class="btn primary" data-act="sheets-export" ${cfg.url ? '' : 'disabled'}>今すぐ書き出し(自分の分)</button>
+        ${state.adminUnlocked ? `<button class="btn" data-act="sheets-export-team" ${cfg.url ? '' : 'disabled'} title="総管理者のみ。各メンバーの最終同期時点のデータで全員分を書き出します">全員分を書き出し(管理者)</button>` : ''}
         ${s.lastExportMonth ? `<span class="muted">最終自動書き出し: ${esc(s.lastExportMonth)}</span>` : ''}
       </div>
       ${state.gasScript ? `<div class="row mt8">
@@ -2818,12 +2821,19 @@ document.addEventListener('click', async (e) => {
     navigator.clipboard.writeText(text).then(() => toast('GASスクリプトをコピーしました'), fallback);
     return;
   }
-  if (act === 'sheets-export') {
+  if (act === 'sheets-export' || act === 'sheets-export-team') {
     const sel = $('#sh-month').value;
     const now = new Date();
     let ym;
     if (sel === '__this__') ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     else { const p = new Date(now.getFullYear(), now.getMonth() - 1, 1); ym = `${p.getFullYear()}-${String(p.getMonth() + 1).padStart(2, '0')}`; }
+    if (act === 'sheets-export-team') {
+      if (!confirm(`${ym} のチーム全員分の勤怠・工数を書き出します。\n各メンバーの最終同期時点のデータで、スプレッドシートの全員分のタブを上書きします。よろしいですか？`)) return;
+      toast('全員分を書き出しています…');
+      const r = await window.api.exportTeamSheets(ym);
+      toast(r.ok ? `${ym} の全員分(${r.people}人・履歴${r.historyRows}行)を書き出しました${r.warning ? ' ※' + r.warning : ''}` : `エラー: ${r.error}`);
+      return;
+    }
     toast('書き出しています…');
     const r = await window.api.exportSheets(ym);
     toast(r.ok ? `${ym} を書き出しました(履歴${r.historyRows}行・工数${r.reportRows}行)${r.warning ? ' ※' + r.warning : ''}` : `エラー: ${r.error}`);
@@ -2873,10 +2883,15 @@ document.addEventListener('click', async (e) => {
   if (act === 'recoru-punch-toggle') {
     if (!state.recoru.ready) { toast('先にレコルのログイン情報を保存してください'); return; }
     const next = !state.recoru.punch.enabled;
-    if (next && !confirm('出勤・退勤をレコルに自動で打刻します。\n操作を検知したその時刻に、レコルのホームの「出勤」「退勤」ボタンを押します(打刻メモに自動打刻と残します)。\nオンにしますか？')) return;
+    if (next && !confirm('出勤・退勤をレコルに自動で打刻します。\n操作を検知したその時刻に、レコルのホームの「出勤」「退勤」ボタンを押します(出勤は毎回確認します)。\nオンにしますか？')) return;
     state = await window.api.updateSettings({ recoruPunchEnabled: next });
     renderSettings();
     toast(next ? 'リアルタイム打刻をオンにしました' : 'リアルタイム打刻をオフにしました');
+  }
+  if (act === 'recoru-home') {
+    const r = await window.api.recoruOpenHome();
+    if (r && !r.ok) toast(r.error);
+    return;
   }
   if (act === 'recoru-punch') {
     const kind = btn.dataset.id, label = kind === 'in' ? '出勤' : '退勤';
@@ -3002,7 +3017,14 @@ function renderTab(tab) {
   if (tab === 'settings') renderSettings();
   if (tab === 'admin') renderAdmin();
 }
-function renderAll() { renderTab(activeTab); }
+function renderAll() { renderTab(activeTab); updateRecoruNav(); }
+/** 画面左の「⏱ レコルの打刻」に今の状態を表示(打刻画面を開いた時・自動打刻の時点の状態) */
+function updateRecoruNav() {
+  const b = document.querySelector('.nav-recoru');
+  if (!b) return;
+  const st = state && state.recoru && state.recoru.punch && state.recoru.punch.status;
+  b.innerHTML = '⏱ レコルの打刻' + (st ? `<span class="nav-recoru-st st-${esc(st.state)}">${esc(st.label)}${st.time ? ' ' + esc(st.time) + '〜' : ''}</span>` : '');
+}
 
 // レコル転記の確認(起動・復帰・毎日の時刻、トレイの「レコルに転記」)
 if (window.api.onRecoruPrompt) window.api.onRecoruPrompt(async () => {
@@ -3016,6 +3038,7 @@ window.api.onUpdate((s) => {
   // 入力中のフォームを壊さないよう、閲覧系タブのみ自動更新
   // 管理者ビューで入力・選択を始めたら、次の操作まで自動更新しない(チェックや入力が消えないように)
   if (activeTab === 'admin' && renderAdmin.dirty) return;
+  updateRecoruNav();
   if (['today', 'dashboard', 'history', 'admin', 'calendar'].includes(activeTab) && !$('#modal-root').innerHTML) renderTab(activeTab);
 });
 

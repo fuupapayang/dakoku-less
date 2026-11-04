@@ -44,6 +44,10 @@ body {
 .nav-btn.active { background: var(--green); color: #fff; font-weight: 700; box-shadow: 0 4px 14px rgba(40,203,80,.35); }
 .nav-recoru { border: 1px solid rgba(40,203,80,.55); color: #fff; margin-bottom: 12px; }
 .nav-recoru:hover { background: rgba(40,203,80,.18); }
+.nav-recoru-st { display: block; margin-top: 4px; font-size: 11.5px; font-weight: 700; }
+.nav-recoru-st.st-working { color: #6fe08a; }
+.nav-recoru-st.st-break { color: #8fb4ff; }
+.nav-recoru-st.st-off { color: #a8c2b1; }
 .nav-sep { font-size: 10px; letter-spacing: 1.6px; color: #61795e; padding: 18px 14px 7px; font-weight: 700; }
 .privacy-note { margin-top: auto; font-size: 11px; line-height: 1.65; color: #8ba894; background: rgba(255,255,255,.06); padding: 12px; border-radius: 12px; }
 

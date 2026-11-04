@@ -159,4 +159,32 @@ assert.strictEqual(R.punchKey(at(24, 5, 0)), K(24));
   assert.ok(!R.hasIn(st, K(24)));
 }
 
+// ---- 平日の確認で「打刻しない」: retryAt を過ぎたら再び確認
+{
+  const st = R.emptyState();
+  const a = R.tick(st, { now: at(26, 6, 0), active: true });
+  R.record(st, { kind: 'in', key: a.key, now: at(26, 6, 0), status: 'declined', retryAt: at(26, 7, 0) });
+  assert.deepStrictEqual(kinds(run(st, at(26, 6, 1), at(26, 6, 59), true)), []);
+  assert.deepStrictEqual(kinds(run(st, at(26, 7, 0), at(26, 7, 1), true)), ['in@07:00']);
+}
+
+// ---- レコルの打刻ログから状態
+{
+  const log = [{ m: 10, d: 25, time: '12:00', kind: '休憩' }, { m: 10, d: 25, time: '08:17', kind: '出勤' }, { m: 10, d: 24, time: '19:08', kind: '退勤' }];
+  const s = R.statusFromLog(log, at(25, 12, 5));
+  assert.deepStrictEqual([s.state, s.label, s.allowed, s.time], ['break', '休憩中', ['戻り'], '12:00']);
+  assert.strictEqual(R.statusFromLog([{ m: 10, d: 25, time: '13:00', kind: '戻り' }, ...log], at(25, 13, 1)).state, 'working');
+  assert.deepStrictEqual(R.statusFromLog([{ m: 10, d: 25, time: '19:00', kind: '退勤' }, ...log], at(25, 19, 1)).allowed, ['出勤']);
+  // 打刻なし → 退勤中
+  assert.strictEqual(R.statusFromLog([], at(26, 9)).state, 'off');
+  // 前日に退勤を打ち忘れ: 5時を過ぎたら新しい日なので退勤中
+  const forgot = [{ m: 10, d: 25, time: '08:17', kind: '出勤' }];
+  assert.strictEqual(R.statusFromLog(forgot, at(26, 8)).state, 'off');
+  // 深夜(0〜5時)は前日の続き: 23時に出勤 → 1時はまだ出勤中、0時台の退勤は前日扱い
+  assert.strictEqual(R.statusFromLog([{ m: 10, d: 25, time: '23:00', kind: '出勤' }], at(26, 1)).state, 'working');
+  assert.strictEqual(R.statusFromLog([{ m: 10, d: 26, time: '00:30', kind: '退勤' }, { m: 10, d: 25, time: '23:00', kind: '出勤' }], at(26, 1)).state, 'off');
+  // 年またぎ: 1月1日 1時に 12/31 23時の出勤
+  assert.strictEqual(R.statusFromLog([{ m: 12, d: 31, time: '23:00', kind: '出勤' }], new Date(2027, 0, 1, 1).getTime()).state, 'working');
+}
+
 console.log('recoruPunch tests passed');
