@@ -10,8 +10,8 @@
  * チーム全員分のタブ(履歴_2026-09)はGAS側が個人タブを連結して作り直す(summaries)。
  * これにより、複数人が同じスプレッドシートへ書き込んでも互いに上書きし合わない。
  */
-const GAS_VERSION = 3; // 3: 列数の違う個人タブ(旧版の書き出し)も揃えて連結
-const GAS_MIN_VERSION = 3; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う(v2 以前は列数の違う個人タブの連結で失敗する)
+const GAS_VERSION = 4; // 3: 列数の違う個人タブ(旧版の書き出し)も揃えて連結 / 4: 見出しの違う個人タブ(旧形式の工数)は連結しない
+const GAS_MIN_VERSION = 4; // 下記 GAS_SCRIPT が返す v。古いスクリプトの検出に使う(v2 以前は列数の違う個人タブの連結で失敗する)
 const recoru = require('./recoru');
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -66,26 +66,28 @@ function historyRows(members, ym, statusLabel) {
   return { tab: `履歴_${ym}`, headers, rows };
 }
 
-/** 工数タブの行: [ユーザ,案件コード,案件名,分,時間(h)]。時間は小数(時刻と誤認されないよう) */
+/**
+ * 工数タブの行(1行 = 1日 × 1人 × 1案件): [年月日, 案件コード, ユーザ, 案件コード, 案件名, 合計(h)]
+ * 案件コードは集計表の都合で2列に同じ値を入れる。合計(h)は小数2桁(時刻と誤認されないよう)
+ */
+const REPORT_HEADERS = ['年月日', '案件コード', 'ユーザ', '案件コード', '案件名', '合計(h)'];
 function reportRows(members, ym, projById) {
-  const headers = ['ユーザ', '案件コード', '案件名', '分', '時間(h)'];
   const rows = [];
   for (const m of members) {
-    const agg = {}; // pid -> min(端数のまま合計し、最後に1回だけ丸める。日ごとに丸めると小さな工数が消えるため)
-    for (const [k, d] of Object.entries(m.days || {})) {
+    for (const k of Object.keys(m.days || {}).sort()) {
       if (!inMonth(k, ym)) continue;
-      for (const [pid, min] of Object.entries(d.projectMin || {})) agg[pid] = (agg[pid] || 0) + (Number(min) || 0);
-    }
-    for (const [pid, raw] of Object.entries(agg)) {
-      const min = Math.round(raw);
-      if (min <= 0) continue;
-      const p = projById[pid];
-      rows.push([m.name, p ? p.code : pid, p ? p.name : '(削除済み)', min, Math.round(min / 60 * 100) / 100]);
+      for (const [pid, raw] of Object.entries(m.days[k].projectMin || {})) {
+        const h = Math.round((Number(raw) || 0) / 60 * 100) / 100;
+        if (h <= 0) continue; // 0.3分未満は出さない
+        const p = projById[pid];
+        const code = p ? p.code : pid;
+        rows.push([k.replace(/-/g, '/'), code, m.name, code, p ? p.name : '(削除済み)', h]);
+      }
     }
   }
-  // 案件コード順で見やすく
-  rows.sort((a, b) => String(a[1]).localeCompare(String(b[1])) || String(a[0]).localeCompare(String(b[0])));
-  return { tab: `工数_${ym}`, headers, rows };
+  // 日付 → 案件コード → ユーザの順
+  rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1])) || String(a[2]).localeCompare(String(b[2])));
+  return { tab: `工数_${ym}`, headers: REPORT_HEADERS, rows };
 }
 
 /** シート名に使えない文字を除去(Googleスプレッドシートの制約: []*?:/\\ 不可・100文字以内) */
@@ -126,13 +128,17 @@ function doPost(e) {
     (body.sheets || []).forEach(function(s) { writeTab(ss, s.tab, s.headers, s.rows || []); });
     // チーム全員分: 「履歴_2026-09_〇〇」などの個人タブを連結して作り直す
     (body.summaries || []).forEach(function(sum) {
-      let headers = null, rows = [];
+      // 一番列の多い見出しに揃える。見出しがその先頭部分と一致しない個人タブ(旧形式・更新前のアプリ)は混ぜない
+      const tabs = [];
       ss.getSheets().forEach(function(sh) {
-        const name = sh.getName();
-        if (name.indexOf(sum.from) !== 0) return;
+        if (sh.getName().indexOf(sum.from) !== 0) return;
         const v = sh.getDataRange().getDisplayValues(); // 表示どおりの文字列で連結(時刻の型変換を避ける)
-        if (!v.length) return;
-        if (!headers || v[0].length > headers.length) headers = v[0];
+        if (v.length) tabs.push(v);
+      });
+      let headers = null, rows = [];
+      tabs.forEach(function(v){ if (!headers || v[0].length > headers.length) headers = v[0]; });
+      tabs.forEach(function(v){
+        if (v[0].join('\\t') !== headers.slice(0, v[0].length).join('\\t')) return;
         rows = rows.concat(v.slice(1).filter(function(r){ return r.join('') !== ''; }));
       });
       if (headers) writeTab(ss, sum.tab, headers, rows);

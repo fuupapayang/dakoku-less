@@ -17,18 +17,20 @@ assert.strictEqual(hist.rows.length, 1);
 assert.deepStrictEqual(hist.rows[0].slice(0, 7), ['佐藤', '2026-09-01', '火', '09:00', '18:00', '01:00', '08:00']);
 assert.strictEqual(hist.rows[0][7], '00:30'); // 会議
 
-// 工数: 2026-09 の案件別
+// 工数: 1行 = 1日 × 1人 × 1案件(案件コードは2列に同じ値)
 const rep = sh.reportRows(members, '2026-09', projById);
 assert.strictEqual(rep.tab, '工数_2026-09');
-assert.strictEqual(rep.rows.length, 2);
-const f = rep.rows.find(r => r[1] === 'F001');
-assert.deepStrictEqual(f, ['佐藤', 'F001', 'A案件', 300, 5]);   // 時間(h)は小数
+assert.deepStrictEqual(rep.headers, ['年月日', '案件コード', 'ユーザ', '案件コード', '案件名', '合計(h)']);
+assert.deepStrictEqual(rep.rows, [
+  ['2026/09/01', 'F001', '佐藤', 'F001', 'A案件', 5],
+  ['2026/09/01', 'T002', '佐藤', 'T002', 'B案件', 3]
+]);
 
-// 端数の工数: 日ごとに丸めず月合計で1回だけ丸める(0.4分×5日=2分。以前は日ごとに0へ丸めて消えていた)
+// 端数の工数: 0.4分は 0.01h として出す。0.3分未満(0.05分)は出さない
 const frac = { name: '中村', days: {} };
 for (let i = 1; i <= 5; i++) frac.days[`2026-09-0${i}`] = { projectMin: { p1: 0.4, p2: 0.05 } };
 const fr = sh.reportRows([frac], '2026-09', projById);
-assert.deepStrictEqual(fr.rows.map(r => [r[1], r[3]]), [['F001', 2]]); // p2(合計0.25分)は丸めて0なので出さない
+assert.deepStrictEqual(fr.rows.map(r => [r[0], r[1], r[5]]), [1, 2, 3, 4, 5].map(i => [`2026/09/0${i}`, 'F001', 0.01]));
 
 // 月ハッシュ・月キー
 assert.strictEqual(sh.monthKey(new Date(2026, 9, 7)), '2026-10');
@@ -97,5 +99,13 @@ const team = ss.getSheetByName('履歴_2026-09').getDataRange().getDisplayValues
 assert.strictEqual(team[0][0], 'ユーザ');
 assert.deepStrictEqual(team.slice(1).map(r => r[0]).sort(), ['佐藤', '鈴木']);
 assert.strictEqual(ss.getSheetByName('工数_2026-09').getDataRange().getDisplayValues().length, 1 + 4);
+// 旧形式(ユーザ,案件コード,案件名,分,時間(h))の個人タブは、新形式のチーム集計に混ぜない
+send({ token: 'abc', sheets: [{ tab: '工数_2026-09_旧版さん', headers: ['ユーザ', '案件コード', '案件名', '分', '時間(h)'], rows: [['旧版さん', 'F001', 'A案件', 60, 1]] }], summaries: px.summaries });
+const rep2 = ss.getSheetByName('工数_2026-09').getDataRange().getDisplayValues();
+assert.strictEqual(rep2[0][0], '年月日');
+assert.ok(!rep2.some(r => r.includes('旧版さん')));
+// 旧版(9列)の履歴は、新版(14列)の先頭部分と同じ見出しなので引き続き連結する
+send({ token: 'abc', sheets: [{ tab: '履歴_2026-09_旧版さん', headers: ['ユーザ', '日付', '曜日', '始業', '終業', '休憩', '実働', '会議', '状態'], rows: [['旧版さん', '2026-09-02', '水', '09:00', '18:00', '01:00', '08:00', '00:00', '承認済み']] }], summaries: px.summaries });
+assert.ok(ss.getSheetByName('履歴_2026-09').getDataRange().getDisplayValues().some(r => r[0] === '旧版さん'));
 
 console.log('✓ v0.12 team sheets tests passed');
