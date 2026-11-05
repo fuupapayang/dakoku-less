@@ -67,10 +67,10 @@ function historyRows(members, ym, statusLabel) {
 }
 
 /**
- * 工数タブの行(1行 = 1日 × 1人 × 1案件): [年月日, 案件コード, ユーザ, 案件コード, 案件名, 合計(h)]
- * 案件コードは集計表の都合で2列に同じ値を入れる。合計(h)は小数2桁(時刻と誤認されないよう)
+ * 工数タブの行(1行 = 1日 × 1人 × 1案件): [年月日, ユーザ, 案件コード, 案件名, 楽楽販売の案件ID, 合計(h)]
+ * 楽楽販売の案件IDは案件の編集で入力したもの(未入力は空欄)。合計(h)は小数2桁(時刻と誤認されないよう)
  */
-const REPORT_HEADERS = ['年月日', '案件コード', 'ユーザ', '案件コード', '案件名', '合計(h)'];
+const REPORT_HEADERS = ['年月日', 'ユーザ', '案件コード', '案件名', '楽楽販売の案件ID', '合計(h)'];
 function reportRows(members, ym, projById) {
   const rows = [];
   for (const m of members) {
@@ -80,13 +80,12 @@ function reportRows(members, ym, projById) {
         const h = Math.round((Number(raw) || 0) / 60 * 100) / 100;
         if (h <= 0) continue; // 0.3分未満は出さない
         const p = projById[pid];
-        const code = p ? p.code : pid;
-        rows.push([k.replace(/-/g, '/'), code, m.name, code, p ? p.name : '(削除済み)', h]);
+        rows.push([k.replace(/-/g, '/'), m.name, p ? p.code : pid, p ? p.name : '(削除済み)', (p && p.rakurakuId) || '', h]);
       }
     }
   }
   // 日付 → 案件コード → ユーザの順
-  rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1])) || String(a[2]).localeCompare(String(b[2])));
+  rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[2]).localeCompare(String(b[2])) || String(a[1]).localeCompare(String(b[1])));
   return { tab: `工数_${ym}`, headers: REPORT_HEADERS, rows };
 }
 
@@ -166,8 +165,8 @@ function projectListSheet(projects) {
   const rows = (projects || []).filter(p => p.code)
     .sort((a, b) => String(a.code).localeCompare(String(b.code)))
     .map(p => [p.code, p.name || '', (p.makers || []).join(', '), (p.sales || []).join(', '), p.createdBy || '',
-      (p.status || 'active') === 'active' ? '稼働中' : '納品完了', ymd(p.createdAt)]);
-  return { tab: '案件リスト', headers: ['案件コード', '案件名', '制作', '担当営業', '登録者', 'ステータス', '登録日'], rows };
+      (p.status || 'active') === 'active' ? '稼働中' : '納品完了', ymd(p.createdAt), p.rakurakuId || '']);
+  return { tab: '案件リスト', headers: ['案件コード', '案件名', '制作', '担当営業', '登録者', 'ステータス', '登録日', '楽楽販売の案件ID'], rows };
 }
 
 /** GASウェブアプリへPOST */

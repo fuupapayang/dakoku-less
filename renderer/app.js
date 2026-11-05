@@ -1138,6 +1138,9 @@ function renderProjAdd() {
         <label class="field">見積金額(円)<input type="number" id="pj-est" placeholder="例: 1500000" min="0"></label>
         <label class="field">予算工数(h) ― 80%消化で自動アラート<input type="number" id="pj-budget" placeholder="例: 120" min="0"></label>
       </div>
+      <div class="field-row">
+        <label class="field">楽楽販売の案件ID(スプレッドシートの工数に書き出し)<input type="text" id="pj-raku" placeholder="例: 12345"></label>
+      </div>
       <div class="row">
         <button class="btn primary" data-act="proj-add">案件を追加</button>
         <button class="btn" data-act="proj-import">📁 フォルダから一括インポート</button>
@@ -1396,7 +1399,10 @@ function openProjectEditModal(pid) {
       <label class="field">顧客<input type="text" id="pe-client" value="${esc(p.client || '')}"></label>
     </div>
     ${staffFieldsHTML('pe', p.sales || [], p.makers || [])}
-    <label class="field">制作データ(Box URL)<input type="text" id="pe-box" value="${esc(p.boxUrl || '')}" placeholder="https://app.box.com/folder/..."></label>
+    <div class="field-row">
+      <label class="field">制作データ(Box URL)<input type="text" id="pe-box" value="${esc(p.boxUrl || '')}" placeholder="https://app.box.com/folder/..."></label>
+      <label class="field">楽楽販売の案件ID<input type="text" id="pe-raku" value="${esc(p.rakurakuId || '')}" placeholder="例: 12345"></label>
+    </div>
     <div class="field-row">
       <label class="field">予算工数(h)<input type="number" id="pe-budget" min="0" value="${+p.budgetHours || ''}"></label>
       <label class="field">見積金額(円)<input type="number" id="pe-est" min="0" value="${+p.estimateAmount || ''}"></label>
@@ -1427,7 +1433,7 @@ function openProjectEditModal(pid) {
       if (!staff) { $('#pe-err').textContent = '担当営業と制作は必須です(どちらも1名以上)'; return; }
       const res = await window.api.updateProject(pid, {
         name, client: $('#pe-client').value.trim(), sales: staff.sales, makers: staff.makers,
-        boxUrl: $('#pe-box').value.trim(), budgetHours: +$('#pe-budget').value || 0,
+        boxUrl: $('#pe-box').value.trim(), rakurakuId: $('#pe-raku').value.trim(), budgetHours: +$('#pe-budget').value || 0,
         estimateAmount: +$('#pe-est').value || 0, status: $('#pe-status').value
       });
       if (res.error) { $('#pe-err').textContent = res.error; return; }
@@ -2570,7 +2576,8 @@ document.addEventListener('click', async (e) => {
       boxUrl: $('#pj-box').value.trim(),
       keywords: split($('#pj-kw').value),
       estimateAmount: +$('#pj-est').value || 0,
-      budgetHours: +$('#pj-budget').value || 0
+      budgetHours: +$('#pj-budget').value || 0,
+      rakurakuId: $('#pj-raku').value.trim()
     });
     if (res.error) { toast(res.error); return; }
     state = res;

@@ -17,20 +17,20 @@ assert.strictEqual(hist.rows.length, 1);
 assert.deepStrictEqual(hist.rows[0].slice(0, 7), ['佐藤', '2026-09-01', '火', '09:00', '18:00', '01:00', '08:00']);
 assert.strictEqual(hist.rows[0][7], '00:30'); // 会議
 
-// 工数: 1行 = 1日 × 1人 × 1案件(案件コードは2列に同じ値)
-const rep = sh.reportRows(members, '2026-09', projById);
+// 工数: 1行 = 1日 × 1人 × 1案件。楽楽販売の案件IDは未入力なら空欄
+const rep = sh.reportRows(members, '2026-09', { ...projById, p1: { ...projById.p1, rakurakuId: 'R-77' } });
 assert.strictEqual(rep.tab, '工数_2026-09');
-assert.deepStrictEqual(rep.headers, ['年月日', '案件コード', 'ユーザ', '案件コード', '案件名', '合計(h)']);
+assert.deepStrictEqual(rep.headers, ['年月日', 'ユーザ', '案件コード', '案件名', '楽楽販売の案件ID', '合計(h)']);
 assert.deepStrictEqual(rep.rows, [
-  ['2026/09/01', 'F001', '佐藤', 'F001', 'A案件', 5],
-  ['2026/09/01', 'T002', '佐藤', 'T002', 'B案件', 3]
+  ['2026/09/01', '佐藤', 'F001', 'A案件', 'R-77', 5],
+  ['2026/09/01', '佐藤', 'T002', 'B案件', '', 3]
 ]);
 
 // 端数の工数: 0.4分は 0.01h として出す。0.3分未満(0.05分)は出さない
 const frac = { name: '中村', days: {} };
 for (let i = 1; i <= 5; i++) frac.days[`2026-09-0${i}`] = { projectMin: { p1: 0.4, p2: 0.05 } };
 const fr = sh.reportRows([frac], '2026-09', projById);
-assert.deepStrictEqual(fr.rows.map(r => [r[0], r[1], r[5]]), [1, 2, 3, 4, 5].map(i => [`2026/09/0${i}`, 'F001', 0.01]));
+assert.deepStrictEqual(fr.rows.map(r => [r[0], r[2], r[5]]), [1, 2, 3, 4, 5].map(i => [`2026/09/0${i}`, 'F001', 0.01]));
 
 // 月ハッシュ・月キー
 assert.strictEqual(sh.monthKey(new Date(2026, 9, 7)), '2026-10');
@@ -51,7 +51,7 @@ assert.strictEqual(hs.rows[0][4], '25:50');      // 日をまたぐ終業は24�
 const pl = sh.projectListSheet([{ code: 'T2', name: 'B', makers: [], sales: ['営業'], createdBy: '福永', createdAt: new Date(2026, 9, 7).getTime() }, { code: 'F1', name: 'A', makers: ['田部', '宮成'] }, { name: 'コードなし' }]);
 assert.strictEqual(pl.tab, '案件リスト');
 assert.deepStrictEqual(pl.rows.map(r => r[0]), ['F1', 'T2']);
-assert.deepStrictEqual(pl.rows[1], ['T2', 'B', '', '営業', '福永', '稼働中', '2026/10/07']);
+assert.deepStrictEqual(pl.rows[1], ['T2', 'B', '', '営業', '福永', '稼働中', '2026/10/07', '']);
 assert.strictEqual(pl.rows[0][2], '田部, 宮成');
 
 console.log('✓ all sheets tests passed');

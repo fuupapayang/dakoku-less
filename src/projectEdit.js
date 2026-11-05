@@ -78,6 +78,7 @@ function normalizePatch(patch, knownNames = []) {
   }
   if ('client' in out) out.client = String(out.client || '').trim();
   if ('boxUrl' in out) out.boxUrl = String(out.boxUrl || '').trim();
+  if ('rakurakuId' in out) out.rakurakuId = String(out.rakurakuId || '').trim();
   for (const k of ['budgetHours', 'estimateAmount']) {
     if (k in out) out[k] = Math.max(0, Number(out[k]) || 0);
   }

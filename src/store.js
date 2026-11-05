@@ -46,7 +46,7 @@ class Store {
       },
       days: {},        // { 'YYYY-MM-DD': dayRecord }
       rules: [],       // マイルール
-      projects: [],    // 案件マスター [{id,code,name,client,sales[],makers[],boxUrl,status,keywords,active}]
+      projects: [],    // 案件マスター [{id,code,name,client,sales[],makers[],boxUrl,rakurakuId(楽楽販売の案件ID),status,keywords,active}]
       calEvents: [],   // 共有カレンダー [{id,date,sMin,eMin,title,projectId,members,createdBy,updatedAt,deleted}]
       learnStats: { tokens: {}, slots: {}, totals: {}, n: 0 }, // 動向学習(語句・時間帯→案件回数のみ)
       remoteTeam: null, // Firebase同期で取得したチームの実データ
@@ -212,7 +212,7 @@ class Store {
     // 端末をまたいで衝突しないグローバル一意ID(旧: 連番p1,p2は衝突の原因だった)
     const proj = {
       id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), active: true, keywords: [],
-      client: '', sales: [], makers: [], boxUrl: '', status: 'active',
+      client: '', sales: [], makers: [], boxUrl: '', rakurakuId: '', status: 'active',
       budgetHours: 0, estimateAmount: 0, alert80: false, alert100: false,
       createdAt: Date.now(), updatedAt: Date.now(),
       ...p, code: String(p.code || '').trim(), name: String(p.name || '').trim()
