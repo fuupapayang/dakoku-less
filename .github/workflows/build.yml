@@ -14,9 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOSは署名まわりが安定している macos-14(Apple Silicon)に固定
+          # macOS(Apple Silicon)。macos-14 は GitHub 側で廃止されたため 2026-11 に macos-15 へ移行
           # 自動アップデート用に zip / blockmap / latest*.yml もリリースへ添付する
-          - os: macos-14
+          - os: macos-15
             platform: mac
             artifact: |
               dist/*.dmg
