@@ -69,6 +69,75 @@ function sanitizeInput(input, validProjectIds) {
   };
 }
 
+/** 繰り返し登録の上限(1回の登録で作る予定の数) */
+const MAX_REPEAT = 200;
+/** 繰り返しの終了日は開始日から最長1年 */
+const MAX_REPEAT_DAYS = 366;
+
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const parseYmd = (k) => { const [y, m, d] = String(k).split('-').map(Number); return new Date(y, m - 1, d); };
+
+/**
+ * 繰り返し予定の日付一覧を作る。
+ * rule = { type: 'daily'|'weekly'|'monthly', until: 'YYYY-MM-DD',
+ *          skipWeekend (daily: 土日を除く), weekdays: [0..6] (weekly、空なら開始日の曜日),
+ *          monthly: 'date'(毎月◯日) | 'nth'(毎月第◯◯曜日) }
+ * 開始日は必ず含む(weekly で開始日の曜日が対象外でも、開始日以降の対象曜日から始まる)。
+ * 戻り値: { dates: [...] } または { error }
+ */
+function expandRepeat(startKey, rule) {
+  const r = rule || {};
+  if (!r.type || r.type === 'none') return { dates: [startKey] };
+  if (!['daily', 'weekly', 'monthly'].includes(r.type)) return { error: '繰り返しの種類が不正です' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startKey))) return { error: '日付が不正です' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(r.until || ''))) return { error: '繰り返しの終了日を入力してください' };
+  const start = parseYmd(startKey), until = parseYmd(r.until);
+  if (until < start) return { error: '終了日は開始日以降にしてください' };
+  if ((until - start) / 86400000 > MAX_REPEAT_DAYS) return { error: '繰り返しは最長1年までです' };
+  const dates = [];
+  if (r.type === 'daily' || r.type === 'weekly') {
+    const wds = r.type === 'weekly'
+      ? ((Array.isArray(r.weekdays) && r.weekdays.length ? r.weekdays : [start.getDay()]).map(Number).filter(w => w >= 0 && w <= 6))
+      : null;
+    for (let d = new Date(start); d <= until; d.setDate(d.getDate() + 1)) {
+      const w = d.getDay();
+      if (r.type === 'daily' && r.skipWeekend && (w === 0 || w === 6)) continue;
+      if (wds && !wds.includes(w)) continue;
+      dates.push(ymd(d));
+    }
+  } else {
+    const day = start.getDate(), wd = start.getDay(), nth = Math.ceil(day / 7);
+    for (let i = 0; ; i++) {
+      const y = start.getFullYear(), m = start.getMonth() + i;
+      let d;
+      if (r.monthly === 'nth') {
+        const first = new Date(y, m, 1);
+        d = new Date(y, m, 1 + ((wd - first.getDay() + 7) % 7) + (nth - 1) * 7);
+        if (d.getMonth() !== first.getMonth()) continue; // 第5◯曜日が無い月は飛ばす
+      } else {
+        d = new Date(y, m, day);
+        if (d.getDate() !== day) { if (new Date(y, m, 1) > until) break; continue; } // 31日が無い月は飛ばす
+      }
+      if (d > until) break;
+      dates.push(ymd(d));
+    }
+  }
+  if (!dates.length) return { error: '条件に合う日がありません' };
+  if (dates.length > MAX_REPEAT) return { error: `繰り返しは1回の登録で${MAX_REPEAT}件までです(${dates.length}件になります)` };
+  return { dates };
+}
+
+/** 繰り返しの説明文(例: 毎週 月・水 / 毎月 第2金曜日) */
+function repeatLabel(startKey, rule) {
+  const r = rule || {};
+  const WD = ['日', '月', '火', '水', '木', '金', '土'];
+  const s = parseYmd(startKey);
+  if (r.type === 'daily') return r.skipWeekend ? '期間(土日を除く毎日)' : '期間(毎日)';
+  if (r.type === 'weekly') return '毎週 ' + ((r.weekdays && r.weekdays.length ? r.weekdays : [s.getDay()]).slice().sort().map(w => WD[w]).join('・'));
+  if (r.type === 'monthly') return r.monthly === 'nth' ? `毎月 第${Math.ceil(s.getDate() / 7)}${WD[s.getDay()]}曜日` : `毎月 ${s.getDate()}日`;
+  return '';
+}
+
 /** 新規イベントを作成 */
 function createEvent(fields, creator, now = Date.now()) {
   return {
@@ -139,5 +208,6 @@ function nextEventFor(events, projectId, todayKey) {
 module.exports = {
   EVENT_KINDS, KIND_IDS, normKind, kindLabel,
   mergeEvents, canEdit, sanitizeInput, createEvent, applyEdit,
-  eventsForEngine, activeKindAt, nextEventFor
+  eventsForEngine, activeKindAt, nextEventFor,
+  expandRepeat, repeatLabel, MAX_REPEAT
 };

@@ -1802,6 +1802,7 @@ function buildState() {
     appVersion: app.getVersion(),
     update: updateState,
     holidays: [...recoruLib.HOLIDAYS],
+    holidayNames: require('./src/holidays').HOLIDAY_NAMES,
     folderStatus: folderStatus(),
     gasScript: sheetsLib.gasScript(sheetsConfig().token),
     syncReady: !!(sync && sync.enabled()),
@@ -2562,7 +2563,16 @@ function registerIpc() {
   ipcMain.handle('cal:add', (e, ev) => {
     const f = calendarLib.sanitizeInput(ev, store.data.projects.map(p => p.id));
     if (f.error) return { ok: false, error: f.error };
-    store.data.calEvents.push(calendarLib.createEvent(f, calCreator()));
+    // 繰り返し(期間・毎週・毎月): 日付ごとに個別の予定を作り、seriesId で束ねる
+    const rep = ev && ev.repeat && ev.repeat.type && ev.repeat.type !== 'none' ? ev.repeat : null;
+    const x = calendarLib.expandRepeat(f.date, rep);
+    if (x.error) return { ok: false, error: x.error };
+    const creator = calCreator();
+    const now = Date.now();
+    const series = rep ? { seriesId: 's' + now.toString(36) + Math.random().toString(36).slice(2, 6), seriesLabel: calendarLib.repeatLabel(f.date, rep) } : {};
+    x.dates.forEach((date, i) => {
+      store.data.calEvents.push({ ...calendarLib.createEvent({ ...f, date }, creator, now + i), ...series });
+    });
     if (currentKey) reestimate(currentKey);
     store.save(); pushUpdate();
     return buildState();
@@ -2579,13 +2589,18 @@ function registerIpc() {
     store.save(); pushUpdate();
     return buildState();
   });
-  ipcMain.handle('cal:delete', (e, id) => {
+  // scope: 'one'(この予定だけ) / 'future'(この日以降の繰り返し) / 'all'(繰り返しすべて)
+  ipcMain.handle('cal:delete', (e, id, scope) => {
     const ev = store.data.calEvents.find(ev => ev.id === id);
     // 削除も登録者本人のみ(作成者不明の旧データ整理用に、総管理者モード中は削除可)
-    if (ev && !calendarLib.canEdit(ev, calMe()) && !adminUnlocked()) {
+    const allowed = (x) => calendarLib.canEdit(x, calMe()) || adminUnlocked();
+    if (ev && !allowed(ev)) {
       return { ok: false, error: '予定を削除できるのは登録者本人だけです' };
     }
-    if (ev) { ev.deleted = true; ev.updatedAt = Math.max(Date.now(), (ev.updatedAt || 0) + 1); ev.updatedBy = settings().userName; }
+    const targets = !ev ? [] : (ev.seriesId && (scope === 'future' || scope === 'all'))
+      ? store.data.calEvents.filter(x => !x.deleted && x.seriesId === ev.seriesId && (scope === 'all' || x.date >= ev.date) && allowed(x))
+      : [ev];
+    for (const t of targets) { t.deleted = true; t.updatedAt = Math.max(Date.now(), (t.updatedAt || 0) + 1); t.updatedBy = settings().userName; }
     if (currentKey) reestimate(currentKey);
     store.save(); pushUpdate();
     return buildState();

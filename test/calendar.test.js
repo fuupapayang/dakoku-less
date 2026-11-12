@@ -101,5 +101,33 @@ assert.ok(est.segments.some(sg => sg.kind === 'work' && sg.s === base + 780 * 60
 // 「撮影・ロケハン」の語句自体は私用・移動の正規表現に当たらない
 assert.ok(!/通院|私用|中抜け|離席/.test('撮影・ロケハン') && !/移動|外出|直行|直帰|出張/.test('撮影・ロケハン'));
 
+// 9) 繰り返し(期間・毎週・毎月)
+{
+  const ex = (k, r) => cal.expandRepeat(k, r);
+  assert.deepStrictEqual(ex('2026-11-13', null).dates, ['2026-11-13']);
+  // 期間(連日) 金〜火、土日を除く → 金・月・火
+  assert.deepStrictEqual(ex('2026-11-13', { type: 'daily', until: '2026-11-17' }).dates.length, 5);
+  assert.deepStrictEqual(ex('2026-11-13', { type: 'daily', until: '2026-11-17', skipWeekend: true }).dates, ['2026-11-13', '2026-11-16', '2026-11-17']);
+  // 毎週(曜日指定なし=開始日の曜日、年またぎ)
+  assert.deepStrictEqual(ex('2026-12-18', { type: 'weekly', until: '2027-01-08' }).dates, ['2026-12-18', '2026-12-25', '2027-01-01', '2027-01-08']);
+  // 毎週 月・水
+  assert.deepStrictEqual(ex('2026-11-16', { type: 'weekly', until: '2026-11-25', weekdays: [1, 3] }).dates, ['2026-11-16', '2026-11-18', '2026-11-23', '2026-11-25']);
+  // 毎月31日 → 31日が無い月は飛ばす
+  assert.deepStrictEqual(ex('2027-01-31', { type: 'monthly', until: '2027-05-31' }).dates, ['2027-01-31', '2027-03-31', '2027-05-31']);
+  // 毎月 第2金曜(2026-11-13 は第2金曜)
+  assert.deepStrictEqual(ex('2026-11-13', { type: 'monthly', monthly: 'nth', until: '2027-02-28' }).dates, ['2026-11-13', '2026-12-11', '2027-01-08', '2027-02-12']);
+  // 第5◯曜日が無い月は飛ばす(2026-10-30 = 第5金曜)
+  assert.deepStrictEqual(ex('2026-10-30', { type: 'monthly', monthly: 'nth', until: '2027-01-31' }).dates, ['2026-10-30', '2027-01-29']);
+  // エラー
+  assert.ok(ex('2026-11-13', { type: 'daily', until: '2026-11-12' }).error);
+  assert.ok(ex('2026-11-13', { type: 'daily' }).error);
+  assert.ok(ex('2026-11-13', { type: 'daily', until: '2028-01-01' }).error);
+  assert.ok(ex('2026-11-14', { type: 'daily', until: '2026-11-15', skipWeekend: true }).error); // 土日だけ
+  assert.ok(ex('2026-11-13', { type: 'yearly', until: '2026-12-01' }).error);
+  assert.strictEqual(cal.repeatLabel('2026-11-13', { type: 'monthly', monthly: 'nth' }), '毎月 第2金曜日');
+  assert.strictEqual(cal.repeatLabel('2026-11-16', { type: 'weekly', weekdays: [3, 1] }), '毎週 月・水');
+  assert.strictEqual(cal.repeatLabel('2026-11-13', { type: 'daily', skipWeekend: true }), '期間(土日を除く毎日)');
+}
+
 console.log('✓ all calendar tests passed');
 

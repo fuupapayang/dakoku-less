@@ -1178,9 +1178,10 @@ function renderCalendarTab() {
       const kindStyle = ev.kind ? ` style="background:#eef3fb;color:${KIND_COLORS[ev.kind] || 'var(--sub)'}"` : '';
       return `<div class="cal-ev ${pre ? '' : 'noproj'}"${kindStyle} title="${esc(pre + ev.title)}">${hm(ev.sMin)} ${esc(pre)}${esc(ev.title)}</div>`;
     }).join('');
-    cells += `<div class="cal-cell ${d.getMonth() !== st.m ? 'other' : ''} ${k === state.todayKey ? 'today-cell' : ''}"
-      data-act="cal-day" data-date="${k}">
-      <div class="dnum">${d.getDate()}</div>${shown}
+    const hol = (state.holidayNames || {})[k];
+    cells += `<div class="cal-cell ${d.getMonth() !== st.m ? 'other' : ''} ${k === state.todayKey ? 'today-cell' : ''} ${hol ? 'holiday-cell' : ''}"
+      data-act="cal-day" data-date="${k}"${hol ? ` title="${esc(hol)}"` : ''}>
+      <div class="dnum">${d.getDate()}${hol ? ` <span class="hol-name">${esc(hol)}</span>` : ''}</div>${shown}
       ${evs.length > 3 ? `<div class="cal-ev noproj">+${evs.length - 3}件</div>` : ''}
     </div>`;
   }
@@ -1247,10 +1248,10 @@ function openDayModal(dateKey, editId) {
       const p = !ev.kind && ev.projectId ? byId[ev.projectId] : null;
       const creator = ev.createdByName || ev.createdBy || '不明';
       return `<div class="rule-item"${edit && edit.id === ev.id ? ' style="outline:2px solid var(--green);border-radius:8px"' : ''}>
-        <div class="grow"><b>${hm(ev.sMin)}〜${hm(ev.eMin)}</b> ${p ? `<span class="tag work">${esc(p.code)}</span>` : ''}${ev.kind ? `<span class="tag" style="background:#eef3fb;color:${KIND_COLORS[ev.kind] || 'var(--sub)'}">${esc(kindLabel(ev.kind))}</span>` : ''} ${esc(ev.title)}
+        <div class="grow"><b>${hm(ev.sMin)}〜${hm(ev.eMin)}</b> ${p ? `<span class="tag work">${esc(p.code)}</span>` : ''}${ev.kind ? `<span class="tag" style="background:#eef3fb;color:${KIND_COLORS[ev.kind] || 'var(--sub)'}">${esc(kindLabel(ev.kind))}</span>` : ''} ${esc(ev.title)}${ev.seriesId ? ` <span class="tag" title="繰り返し登録した予定">🔁 ${esc(ev.seriesLabel || '繰り返し')}</span>` : ''}
           <div class="meta">${ev.members && ev.members.length ? '参加: ' + ev.members.map(esc).join('、') : '全員'} ／ 登録: ${esc(creator)}${ev.updatedBy && ev.updatedAt && ev.createdAt && ev.updatedAt > ev.createdAt ? ` ／ 修正: ${esc(ev.updatedBy)} ${new Date(ev.updatedAt).toLocaleString('ja-JP')}` : ''}${ev.canEdit ? '' : ' ／ <span class="muted">閲覧のみ(修正は登録者のみ)</span>'}</div></div>
-        ${ev.canEdit ? `<button class="btn sm" data-act="cal-edit" data-id="${esc(ev.id)}">編集</button>
-        <button class="btn sm ghost danger" data-act="cal-del" data-id="${esc(ev.id)}">削除</button>` : ''}
+        ${ev.canEdit ? `<span class="ce-btns"><button class="btn sm" data-act="cal-edit" data-id="${esc(ev.id)}">編集</button>
+        <button class="btn sm ghost danger" data-act="cal-del" data-id="${esc(ev.id)}"${ev.seriesId ? ' data-series="1"' : ''}>削除</button></span>` : ''}
       </div>`;
     }).join('') || '<div class="muted">予定はありません</div>'}
     <h2 class="mt16">${edit ? '予定を修正' : '予定を追加'}</h2>
@@ -1272,6 +1273,18 @@ function openDayModal(dateKey, editId) {
         </optgroup></select>
         <span class="muted" id="ce-proj-hit" style="font-size:12px"></span></label>
     </div>
+    ${edit ? (edit.seriesId ? '<div class="muted">※ 繰り返し予定のうち、この日の予定だけを修正します。</div>' : '') : `
+    <div class="field-row">
+      <label class="field">繰り返し<select id="ce-rep">
+        <option value="none">なし(この日だけ)</option>
+        <option value="daily">期間(連日) … 撮影・出張など</option>
+        <option value="weekly">毎週 … 定例など</option>
+        <option value="monthly">毎月</option>
+      </select></label>
+      <label class="field" id="ce-until-wrap" style="display:none">終了日<input type="date" id="ce-until" min="${dateKey}"></label>
+    </div>
+    <div id="ce-rep-opts" class="mt8" style="display:none"></div>
+    <div class="muted" id="ce-rep-note" style="font-size:12px"></div>`}
     <label class="field">参加メンバー(カンマ区切り・空欄=チーム全員)<input type="text" id="ce-members" placeholder="例: 佐藤, 田中" value="${edit ? esc((edit.members || []).join(', ')) : ''}"></label>
     <div class="foot">
       ${edit ? '<button class="btn" data-act="ce-cancel">修正をやめる</button>' : ''}
@@ -1280,6 +1293,35 @@ function openDayModal(dateKey, editId) {
     </div>
   </div></div>`;
   $('#ce-proj').value = selVal;
+  // 繰り返しの入力欄(新規追加のときだけ)
+  if (!edit) {
+    const WDN = ['日', '月', '火', '水', '木', '金', '土'];
+    const [yy, mm, dd] = dateKey.split('-').map(Number);
+    const d0 = new Date(yy, mm - 1, dd);
+    const keyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const nth = Math.ceil(dd / 7);
+    const renderRep = () => {
+      const t = $('#ce-rep').value;
+      $('#ce-until-wrap').style.display = t === 'none' ? 'none' : '';
+      const opts = $('#ce-rep-opts');
+      opts.style.display = t === 'none' ? 'none' : '';
+      if (t !== 'none' && !$('#ce-until').value) {
+        const u = t === 'daily' ? new Date(yy, mm - 1, dd + 2) : new Date(yy, mm + 2, dd);
+        $('#ce-until').value = keyOf(u);
+      }
+      if (t === 'daily') {
+        opts.innerHTML = `<label style="display:inline-flex;align-items:center;gap:4px;font-size:13px"><input type="checkbox" id="ce-skipwe"> 土日を除く</label>`;
+      } else if (t === 'weekly') {
+        opts.innerHTML = '<span class="muted" style="font-size:13px">曜日: </span>' + WDN.map((w, i) =>
+          `<label style="display:inline-flex;align-items:center;gap:3px;margin-right:10px;font-size:13px"><input type="checkbox" class="ce-wd" value="${i}" ${i === d0.getDay() ? 'checked' : ''}> ${w}</label>`).join('');
+      } else if (t === 'monthly') {
+        opts.innerHTML = `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;font-size:13px"><input type="radio" name="ce-mon" value="date" checked> 毎月 ${dd}日</label>
+          <label style="display:inline-flex;align-items:center;gap:4px;font-size:13px"><input type="radio" name="ce-mon" value="nth"> 毎月 第${nth}${WDN[d0.getDay()]}曜日</label>`;
+      } else opts.innerHTML = '';
+      $('#ce-rep-note').textContent = t === 'none' ? '' : `${fmtDate(dateKey)} から終了日まで、まとめて登録します(最長1年・${200}件まで)。あとで1件ずつ、またはまとめて削除できます。`;
+    };
+    $('#ce-rep').addEventListener('change', renderRep);
+  }
   // 入力するたびに案件の選択肢を部分一致で絞り込み・並べ替え(先頭の候補を自動で選択)
   $('#ce-proj-q').addEventListener('input', (e) => {
     const q = e.target.value;
@@ -1306,7 +1348,25 @@ function openDayModal(dateKey, editId) {
     if (act === 'cal-edit') { openDayModal(dateKey, e.target.dataset.id); return; }
     if (act === 'ce-cancel') { openDayModal(dateKey); return; }
     if (act === 'cal-del') {
+      if (e.target.dataset.series) {
+        // 繰り返し予定: 削除範囲を選んでもらう
+        const id = e.target.dataset.id;
+        e.target.closest('.ce-btns').innerHTML = `<span class="muted" style="font-size:12px">削除する範囲:</span>
+          <button class="btn sm ghost danger" data-act="cal-del-scope" data-scope="one" data-id="${esc(id)}">この日だけ</button>
+          <button class="btn sm ghost danger" data-act="cal-del-scope" data-scope="future" data-id="${esc(id)}">この日以降</button>
+          <button class="btn sm ghost danger" data-act="cal-del-scope" data-scope="all" data-id="${esc(id)}">すべて</button>
+          <button class="btn sm" data-act="cal-del-cancel">やめる</button>`;
+        return;
+      }
       done(await window.api.deleteCalEvent(e.target.dataset.id), '予定を削除しました');
+    }
+    if (act === 'cal-del-cancel') { openDayModal(dateKey); return; }
+    if (act === 'cal-del-scope') {
+      const scope = e.target.dataset.scope;
+      const before = (state.calEvents || []).length;
+      const r = await window.api.deleteCalEvent(e.target.dataset.id, scope);
+      const n = r && r.calEvents ? before - r.calEvents.length : 0;
+      done(r, scope === 'one' ? '予定を削除しました' : `繰り返し予定を${n}件削除しました`);
     }
     if (act === 'ce-save') {
       const toMin = (v) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
@@ -1320,8 +1380,22 @@ function openDayModal(dateKey, editId) {
       const members = $('#ce-members').value.split(/[,、]/).map(s => s.trim()).filter(Boolean);
       const date = edit ? ($('#ce-date').value || edit.date) : dateKey;
       const fields = { date, sMin, eMin, title: title || kindLabel(kind), projectId: kind ? null : (sel || null), kind, members };
-      if (edit) done(await window.api.updateCalEvent(edit.id, fields), '予定を修正しました');
-      else done(await window.api.addCalEvent(fields), '予定を追加しました');
+      if (edit) { done(await window.api.updateCalEvent(edit.id, fields), '予定を修正しました'); return; }
+      const rt = $('#ce-rep').value;
+      if (rt !== 'none') {
+        fields.repeat = {
+          type: rt, until: $('#ce-until').value,
+          skipWeekend: rt === 'daily' && !!($('#ce-skipwe') && $('#ce-skipwe').checked),
+          weekdays: rt === 'weekly' ? [...root.querySelectorAll('.ce-wd:checked')].map(i => +i.value) : [],
+          monthly: rt === 'monthly' ? ((root.querySelector('input[name="ce-mon"]:checked') || {}).value || 'date') : undefined
+        };
+        if (!fields.repeat.until) { toast('繰り返しの終了日を入力してください'); return; }
+        if (rt === 'weekly' && !fields.repeat.weekdays.length) { toast('曜日を1つ以上選んでください'); return; }
+      }
+      const before = (state.calEvents || []).length;
+      const r = await window.api.addCalEvent(fields);
+      const n = r && r.calEvents ? r.calEvents.length - before : 1;
+      done(r, rt === 'none' ? '予定を追加しました' : `繰り返し予定を${n}件追加しました`);
     }
   };
 }

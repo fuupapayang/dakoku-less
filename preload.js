@@ -53,7 +53,7 @@ contextBridge.exposeInMainWorld('api', {
   renameTeam: (id, label) => ipcRenderer.invoke('team:rename', { id, label }),
   addCalEvent: (ev) => ipcRenderer.invoke('cal:add', ev),
   updateCalEvent: (id, patch) => ipcRenderer.invoke('cal:update', { id, patch }),
-  deleteCalEvent: (id) => ipcRenderer.invoke('cal:delete', id),
+  deleteCalEvent: (id, scope) => ipcRenderer.invoke('cal:delete', id, scope),
   openUrl: (url) => ipcRenderer.invoke('misc:openUrl', url),
   openScreenSettings: (pane) => ipcRenderer.invoke('perm:openSettings', pane),
   importFolderProjects: (staff) => ipcRenderer.invoke('projects:importFolder', staff),
