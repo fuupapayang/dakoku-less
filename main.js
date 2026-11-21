@@ -2658,8 +2658,10 @@ function registerIpc() {
 
   // 共有カレンダー(編集・削除は登録者本人のみ。UIだけでなくここでも検証する)
   ipcMain.handle('cal:add', (e, ev) => {
-    const f = calendarLib.sanitizeInput(ev, store.data.projects.map(p => p.id));
-    if (f.error) return { ok: false, error: f.error };
+    const f0 = calendarLib.sanitizeInput(ev, store.data.projects.map(p => p.id));
+    if (f0.error) return { ok: false, error: f0.error };
+    // 休暇・申請は登録者の名前をタイトルに付け、本人の予定にする
+    const f = calendarLib.withRegistrant(f0, calCreator().name);
     // 繰り返し(期間・毎週・毎月): 日付ごとに個別の予定を作り、seriesId で束ねる
     const rep = ev && ev.repeat && ev.repeat.type && ev.repeat.type !== 'none' ? ev.repeat : null;
     const x = calendarLib.expandRepeat(f.date, rep);
@@ -2679,8 +2681,9 @@ function registerIpc() {
     if (idx < 0) return { ok: false, error: '予定が見つかりません(削除された可能性があります)' };
     const cur = store.data.calEvents[idx];
     if (!calendarLib.canEdit(cur, calMe())) return { ok: false, error: '予定を修正できるのは登録者本人だけです' };
-    const f = calendarLib.sanitizeInput({ ...cur, ...(patch || {}) }, store.data.projects.map(p => p.id));
-    if (f.error) return { ok: false, error: f.error };
+    const f0 = calendarLib.sanitizeInput({ ...cur, ...(patch || {}) }, store.data.projects.map(p => p.id));
+    if (f0.error) return { ok: false, error: f0.error };
+    const f = calendarLib.withRegistrant(f0, cur.createdByName || cur.createdBy || calCreator().name);
     store.data.calEvents[idx] = calendarLib.applyEdit(cur, f, calCreator());
     if (currentKey) reestimate(currentKey);
     store.save(); pushUpdate();

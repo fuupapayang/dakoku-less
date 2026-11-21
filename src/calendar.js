@@ -13,12 +13,46 @@ const EVENT_KINDS = {
   shoot: '撮影・ロケハン'
 };
 const KIND_IDS = Object.keys(EVENT_KINDS);
+/**
+ * 休暇・申請の区分(レコルの申請メニューと同じ並び)。renderer/app.js の LEAVE_KINDS と揃えること。
+ * 勤務の予定ではないため勤怠推定には渡さない。登録者の名前をタイトルに付け、参加メンバーは登録者本人にする。
+ */
+const LEAVE_KINDS = {
+  lv_paid: '有休申請',
+  lv_special: '特別休暇申請',
+  lv_maternity: '産前産後休業',
+  lv_childcare_f: '育児休業（女性）',
+  lv_childcare_m: '育児休業（男性）',
+  lv_care: '介護休業',
+  lv_nursing: '介護・看護休暇',
+  lv_confirm: '確定処理依頼'
+};
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+function isLeave(kind) { return has(LEAVE_KINDS, kind); }
 
 /** 不正な値は null に正規化 */
 function normKind(kind) {
-  return Object.prototype.hasOwnProperty.call(EVENT_KINDS, kind) ? kind : null;
+  return has(EVENT_KINDS, kind) || has(LEAVE_KINDS, kind) ? kind : null;
 }
-function kindLabel(kind) { return EVENT_KINDS[kind] || ''; }
+function kindLabel(kind) { return EVENT_KINDS[kind] || LEAVE_KINDS[kind] || ''; }
+
+/**
+ * 休暇・申請の予定に登録者の名前を付ける(タイトル「有休申請(福永)」、メモがあれば「有休申請(福永) 午前休」)。
+ * 参加メンバーが空なら登録者本人にする(チーム全員の予定にしない)。
+ */
+function withRegistrant(fields, name) {
+  if (!fields || !isLeave(fields.kind) || !name) return fields;
+  const label = kindLabel(fields.kind);
+  const head = `${label}（${name}）`;
+  let extra = String(fields.title || '').trim();
+  if (extra.startsWith(head)) extra = extra.slice(head.length).trim();
+  else if (extra === label) extra = '';
+  return {
+    ...fields,
+    title: (extra ? `${head} ${extra}` : head).slice(0, 80),
+    members: fields.members && fields.members.length ? fields.members : [name]
+  };
+}
 
 /**
  * 2つのイベント配列をマージ(id単位)
@@ -178,6 +212,7 @@ function eventsForEngine(events, dateKey, userName, projects) {
     const [y, m, d] = dateKey.split('-').map(Number);
     const base = new Date(y, m - 1, d).getTime();
     const kind = normKind(ev.kind);
+    if (isLeave(kind)) continue; // 休暇・申請は勤務の予定ではない
     const p = !kind && ev.projectId ? byId[ev.projectId] : null;
     const prefix = p ? p.code + '_' : kind ? kindLabel(kind) + '_' : '';
     const o = {
@@ -206,7 +241,7 @@ function nextEventFor(events, projectId, todayKey) {
 }
 
 module.exports = {
-  EVENT_KINDS, KIND_IDS, normKind, kindLabel,
+  EVENT_KINDS, KIND_IDS, LEAVE_KINDS, isLeave, withRegistrant, normKind, kindLabel,
   mergeEvents, canEdit, sanitizeInput, createEvent, applyEdit,
   eventsForEngine, activeKindAt, nextEventFor,
   expandRepeat, repeatLabel, MAX_REPEAT

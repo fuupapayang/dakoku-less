@@ -16,8 +16,15 @@ const MODES = [
 ];
 /** 案件外の予定区分(src/calendar.js の EVENT_KINDS と揃える)。カレンダー登録・今日の工数内訳で共通利用 */
 const EVENT_KINDS = { internal: '社内会議（案件外）', shoot: '撮影・ロケハン' };
-const KIND_COLORS = { internal: '#3577d4', shoot: '#8a5cd0' };
-const kindLabel = (k) => EVENT_KINDS[k] || '';
+/** 休暇・申請の区分(src/calendar.js の LEAVE_KINDS と揃える)。勤怠推定には使わず、登録者の名前が自動で付く */
+const LEAVE_KINDS = {
+  lv_paid: '有休申請', lv_special: '特別休暇申請', lv_maternity: '産前産後休業',
+  lv_childcare_f: '育児休業（女性）', lv_childcare_m: '育児休業（男性）', lv_care: '介護休業',
+  lv_nursing: '介護・看護休暇', lv_confirm: '確定処理依頼'
+};
+const KIND_COLORS = { internal: '#3577d4', shoot: '#8a5cd0', ...Object.fromEntries(Object.keys(LEAVE_KINDS).map(k => [k, '#d0563b'])) };
+const kindLabel = (k) => EVENT_KINDS[k] || LEAVE_KINDS[k] || '';
+const isLeaveKind = (k) => Object.prototype.hasOwnProperty.call(LEAVE_KINDS, k);
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
 function fmtTime(ts) {
@@ -1248,7 +1255,7 @@ function renderCalendarTab() {
     const evs = (evByDate[k] || []).sort((a, b) => a.sMin - b.sMin);
     const shown = evs.slice(0, 3).map(ev => {
       const pre = calEvPrefix(ev, byId);
-      const kindStyle = ev.kind ? ` style="background:#eef3fb;color:${KIND_COLORS[ev.kind] || 'var(--sub)'}"` : '';
+      const kindStyle = ev.kind ? ` style="background:${isLeaveKind(ev.kind) ? '#fdeceb' : '#eef3fb'};color:${KIND_COLORS[ev.kind] || 'var(--sub)'}"` : '';
       return `<div class="cal-ev ${pre ? '' : 'noproj'}"${kindStyle} title="${esc(pre + ev.title)}">${hm(ev.sMin)} ${esc(pre)}${esc(ev.title)}</div>`;
     }).join('');
     const hol = (state.holidayNames || {})[k];
@@ -1278,6 +1285,7 @@ function renderCalendarTab() {
 
 /** 予定の表示ラベル(案件コード or 案件外区分を前置) */
 function calEvPrefix(ev, byId) {
+  if (isLeaveKind(ev.kind)) return ''; // 休暇・申請はタイトルに区分と名前が入っている
   const p = !ev.kind && ev.projectId ? byId[ev.projectId] : null;
   if (p) return p.code + '_';
   return ev.kind ? kindLabel(ev.kind) + '_' : '';
@@ -1341,6 +1349,9 @@ function openDayModal(dateKey, editId) {
         <optgroup label="案件外">
           ${Object.entries(EVENT_KINDS).map(([k, label]) => `<option value="kind:${k}">${esc(label)}</option>`).join('')}
         </optgroup>
+        <optgroup label="休暇・申請(登録者の名前が自動で付きます)">
+          ${Object.entries(LEAVE_KINDS).map(([k, label]) => `<option value="kind:${k}">${esc(label)}</option>`).join('')}
+        </optgroup>
         <optgroup label="案件" id="ce-proj-group">
           ${searchProjects(projOpts, '').map(p => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join('')}
         </optgroup></select>
@@ -1366,6 +1377,15 @@ function openDayModal(dateKey, editId) {
     </div>
   </div></div>`;
   $('#ce-proj').value = selVal;
+  // 休暇・申請を選んだら、時間を勤務時間(9:00〜18:00)にし、タイトル欄を補足用にする
+  $('#ce-proj').addEventListener('change', () => {
+    const v = $('#ce-proj').value;
+    const leave = v.startsWith('kind:') && isLeaveKind(v.slice(5));
+    if (leave && !edit && $('#ce-from').value === '10:00' && $('#ce-to').value === '11:00') {
+      $('#ce-from').value = '09:00'; $('#ce-to').value = '18:00';
+    }
+    $('#ce-title').placeholder = leave ? `空欄でOK(「${kindLabel(v.slice(5))}（${state.settings.userName}）」で登録)。補足があれば: 午前休 など` : '例: 定例会議、納品、先方訪問';
+  });
   // 繰り返しの入力欄(新規追加のときだけ)
   if (!edit) {
     const WDN = ['日', '月', '火', '水', '木', '金', '土'];

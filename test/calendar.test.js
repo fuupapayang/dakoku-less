@@ -129,5 +129,27 @@ assert.ok(!/通院|私用|中抜け|離席/.test('撮影・ロケハン') && !/�
   assert.strictEqual(cal.repeatLabel('2026-11-13', { type: 'daily', skipWeekend: true }), '期間(土日を除く毎日)');
 }
 
+// 10) 休暇・申請: 登録者の名前を付け、本人の予定にする。勤怠推定には渡さない
+{
+  assert.strictEqual(cal.kindLabel('lv_paid'), '有休申請');
+  assert.ok(cal.isLeave('lv_confirm') && !cal.isLeave('internal'));
+  const f = cal.sanitizeInput({ date: '2026-11-25', sMin: 540, eMin: 1080, title: '', kind: 'lv_paid' });
+  assert.strictEqual(f.kind, 'lv_paid');
+  const w = cal.withRegistrant(f, '福永');
+  assert.strictEqual(w.title, '有休申請（福永）');
+  assert.deepStrictEqual(w.members, ['福永']);
+  // 補足つき・編集で再適用しても名前が二重にならない
+  const w2 = cal.withRegistrant({ ...f, title: '午前休' }, '福永');
+  assert.strictEqual(w2.title, '有休申請（福永） 午前休');
+  assert.strictEqual(cal.withRegistrant({ ...w2 }, '福永').title, '有休申請（福永） 午前休');
+  // 参加メンバー指定はそのまま
+  assert.deepStrictEqual(cal.withRegistrant({ ...f, members: ['佐藤'] }, '福永').members, ['佐藤']);
+  // 案件の予定は変えない
+  const g = { date: '2026-11-25', sMin: 600, eMin: 660, title: '定例', kind: null, members: [] };
+  assert.strictEqual(cal.withRegistrant(g, '福永'), g);
+  // 勤怠推定に渡さない
+  assert.deepStrictEqual(cal.eventsForEngine([{ id: 'l1', date: '2026-11-25', sMin: 540, eMin: 1080, title: '有休申請（福永）', kind: 'lv_paid', members: ['福永'] }], '2026-11-25', '福永', []), []);
+}
+
 console.log('✓ all calendar tests passed');
 
