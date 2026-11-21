@@ -1124,6 +1124,7 @@ function renderProjAdd() {
 
     <div class="card">
       <h2>案件を追加</h2>
+      <div id="pj-next" class="rule-item" style="flex-wrap:wrap;gap:8px">${projNextHTML()}</div>
       <div class="field-row">
         <label class="field">案件コード(大文字英字+数字)<input type="text" id="pj-code" placeholder="例: F000, T123"></label>
         <label class="field">案件名<input type="text" id="pj-name" placeholder="例: 在庫管理システム刷新"></label>
@@ -1156,6 +1157,78 @@ function renderProjAdd() {
       コード=F599、案件名・キーワード=D&Dホールディングス として自動登録します(登録済みコードはスキップ)。<br>
       運用のコツ: カレンダーの予定名・新規フォルダ・主要ファイル名の先頭に「F000_」のように<b>コード+アンダースコア</b>を付けてください(大文字必須)。macOSでアクセシビリティを許可すると、案件フォルダ内のファイルはファイル名を問わず自動判定されます。</p>
     </div>`;
+  loadProjNext(false);
+}
+
+/** 案件番号(WEB案件進行一覧)の「次の番号」表示 */
+let projNext = null; // {ok, tabs:[{label,prefix,last,next,error}], error, loading}
+function projNextHTML() {
+  const cfg = state.projSheetConfig || {};
+  if (!cfg.url) return `<span class="muted grow">案件番号の参照(WEB案件進行一覧)が未設定です。設定 →「案件番号の参照」で設定すると、次の案件番号を自動で入れられます。</span>`;
+  if (!projNext || projNext.loading) return '<span class="muted grow">WEB案件進行一覧から次の案件番号を読み込み中…</span>';
+  if (!projNext.ok) return `<span class="grow" style="color:var(--red)">案件番号を読み込めませんでした: ${esc(projNext.error || '')}</span>
+    <button class="btn sm" data-act="pj-next-reload">再読み込み</button>`;
+  return `<span class="muted">次の案件番号:</span>` + projNext.tabs.map(t => t.error
+    ? `<span class="tag" title="${esc(t.error)}">${esc(t.label)}: 取得できません</span>`
+    : `<button class="btn sm" data-act="pj-next-use" data-code="${esc(t.next)}" title="シートの最後の案件: ${esc(t.last ? t.last.code + ' ' + t.last.name : 'なし')}">${esc(t.label)} <b>${esc(t.next)}</b> を使う</button>
+       <span class="muted" style="font-size:12px">(最後: ${esc(t.last ? t.last.code + ' ' + t.last.name : 'なし')})</span>`).join('') +
+    `<span class="grow"></span><button class="btn sm ghost" data-act="pj-next-reload">再読み込み</button>`;
+}
+async function loadProjNext(force) {
+  if (!(state.projSheetConfig || {}).url) return;
+  if (!force && projNext && projNext.ok && Date.now() - projNext.at < 60 * 1000) return;
+  projNext = { loading: true };
+  const el = $('#pj-next'); if (el) el.innerHTML = projNextHTML();
+  const r = await window.api.projSheetGet(!!force);
+  projNext = { ...r, at: Date.now() };
+  const el2 = $('#pj-next'); if (el2) el2.innerHTML = projNextHTML();
+}
+
+/** 登録前に、案件番号・案件名がシート(WEB案件進行一覧)やアプリの案件と重複していないか確認。続けてよければ true */
+async function confirmProjDuplicates(code, name) {
+  if (!(state.projSheetConfig || {}).url) {
+    const same = (state.projects || []).filter(p => p.code !== code && String(p.name).replace(/\s/g, '') === name.replace(/\s/g, ''));
+    return !same.length || confirm(`同じ案件名の案件がアプリに登録されています:\n${same.map(p => `${p.code} ${p.name}`).join('\n')}\n\nそれでも登録しますか？`);
+  }
+  toast('WEB案件進行一覧と重複を確認しています…');
+  const r = await window.api.projSheetCheck(code, name);
+  if (!r.ok) return confirm(`WEB案件進行一覧を確認できませんでした(${r.error})。\n重複を確認せずに登録しますか？`);
+  const msgs = [];
+  if (r.codeInSheet && !r.sameAsSheet) msgs.push(`・案件番号 ${code} は、WEB案件進行一覧(${r.codeInSheet.tab})で「${r.codeInSheet.name}」に使われています。`);
+  if (r.nameInSheet.length) msgs.push(`・同じ案件名がWEB案件進行一覧にあります: ${r.nameInSheet.map(x => `${x.code} ${x.name}`).join('、')}`);
+  if (r.nameInApp.length) msgs.push(`・同じ案件名がアプリに登録されています: ${r.nameInApp.map(x => `${x.code} ${x.name}`).join('、')}`);
+  if (!msgs.length) return true;
+  return confirm(`重複の可能性があります。\n\n${msgs.join('\n')}\n\nそれでも ${code} ${name} を登録しますか？`);
+}
+
+/** 設定: 案件番号の参照(WEB案件進行一覧) */
+function projSheetCardHTML() {
+  const cfg = state.projSheetConfig || {};
+  const canEdit = !state.syncReady || state.adminUnlocked;
+  return `<div class="card">
+    <h2>案件番号の参照(WEB案件進行一覧)</h2>
+    <p class="muted">案件追加のときに、スプレッドシート「WEB案件進行一覧」の「東京」(T000)・「福岡・大阪」(F000)タブのA列を見て、
+    <b>案件名が入っている最後の行の次の番号</b>を「次の案件番号」として表示します。登録時には案件番号・案件名が重複していないかも確認します(シートには書き込みません)。</p>
+    ${cfg.url ? `<div class="rule-item mt8"><div class="grow">${cfg.shared ? '<span class="tag work">チーム共有中</span> ' : ''}<span class="meta" style="word-break:break-all">${esc(cfg.url)}</span></div></div>` : ''}
+    ${canEdit ? `<div class="row mt8">
+      <input type="text" id="ps-url" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/..../exec" class="grow" style="margin:0">
+      <button class="btn primary" data-act="ps-save">${state.syncReady ? 'チームで共有' : '保存'}</button>
+    </div>` : '<div class="muted mt8">設定の変更は総管理者モード(管理者ビューでロック解除)で行えます。</div>'}
+    <div class="row mt8">
+      <button class="btn" data-act="ps-copy">参照用スクリプトをコピー</button>
+      <span class="muted">合言葉は上の「Googleスプレッドシートへ書き出し」と共通です</span>
+    </div>
+    <details class="mt8"><summary class="muted" style="cursor:pointer">セットアップ手順(管理者が1回だけ)</summary>
+      <div class="muted mt8" style="line-height:1.7">
+        1. 「WEB案件進行一覧」のスプレッドシートを開き、「拡張機能」→「Apps Script」<br>
+        2. 左の「ファイル」の「＋」→「スクリプト」で新しいファイルを作り、名前を「案件番号参照」にする(既存のスクリプトは消さないでください)<br>
+        3. 上の「参照用スクリプトをコピー」を押し、新しいファイルの中身を全部消してから貼り付け → 保存<br>
+        4. 右上「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」→ 実行ユーザー「自分」、アクセスできるユーザー「全員」→ デプロイ(初回はGoogleの承認画面で「許可」)<br>
+        5. 表示された「ウェブアプリのURL(/exec)」を上の欄に貼り付けて「${state.syncReady ? 'チームで共有' : '保存'}」<br>
+        ※ このスクリプトはシートを読むだけで、書き込みはしません。合言葉を変えた場合は、スクリプトを貼り直して「デプロイを管理」→ 編集 →「新バージョン」で更新してください。
+      </div>
+    </details>
+  </div>`;
 }
 
 /* ---------- カレンダー ---------- */
@@ -1774,6 +1847,7 @@ function renderSettings() {
 
     ${recoruSettingsCardHTML()}
     ${sheetsCardHTML(s)}
+    ${projSheetCardHTML()}
     <div class="card">
       <h2>データ連携</h2>
       <p class="muted">カレンダーの予定(.ics)をかけ合わせると、会議中の無操作を稼働として、移動予定を対象外として推定できます。</p>
@@ -1859,6 +1933,17 @@ function sheetsCardHTML(s) {
 let sheetsEditing = false;
 
 /* ---------- 管理者 ---------- */
+/** メンバー勤怠の「案件工数」「実働率(案件工数÷実働)」セル */
+function projRateCells(r) {
+  const pm = Object.values(r.projectMin || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+  const work = Number(r.workMin) || 0;
+  if (!r.projectMin) return '<td class="muted">-</td><td class="muted">-</td>';
+  const rate = work > 0 ? Math.round(pm / work * 100) : null;
+  const color = rate == null ? '' : rate < 50 ? 'var(--red)' : rate < 80 ? '#b7791f' : 'inherit';
+  return `<td>${pm >= 1 ? fmtDur(Math.round(pm)) : '<span class="muted">0分</span>'}</td>
+    <td title="案件工数 ${fmtDur(Math.round(pm))} ÷ 実働 ${fmtDur(work)}">${rate == null ? '-' : `<b style="color:${color}">${rate}%</b>`}</td>`;
+}
+
 function selfRow(dateKey) {
   const day = state.days[dateKey];
   const est = day && (day.submitted || effective(day));
@@ -1868,7 +1953,8 @@ function selfRow(dateKey) {
     start: est.start, end: est.end, workMin: est.workMin, breakMin: est.breakMin,
     confidence: day.estimation ? day.estimation.confidence : 'LOW',
     status: day.status === 'recording' ? 'pending' : day.status,
-    discrepancyMin: 0, auto: day.submitted ? day.submitted.auto : false
+    discrepancyMin: 0, auto: day.submitted ? day.submitted.auto : false,
+    projectMin: day.projectMin || {}
   };
 }
 
@@ -2207,13 +2293,14 @@ function renderAdmin() {
       <div class="row"><h2 class="grow">メンバー勤怠</h2>
         <input type="date" id="adm-date" value="${sel}" style="width:170px;margin:0"></div>
       <table class="mt8">
-        <thead><tr><th>メンバー</th><th>部署</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>信頼度</th><th>状態</th><th></th></tr></thead>
+        <thead><tr><th>メンバー</th><th>部署</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th title="その日に案件へ記録された工数の合計">案件工数</th><th title="案件工数 ÷ 実働">実働率</th><th>信頼度</th><th>状態</th><th></th></tr></thead>
         <tbody>${rows.map(r => r.start == null ? `
           <tr class="member-row"><td>${esc(r.name)}</td><td>${esc(r.dept)}</td>
-          <td colspan="6" class="muted">記録なし(休暇・休日)</td><td></td></tr>` : `
+          <td colspan="8" class="muted">記録なし(休暇・休日)</td><td></td></tr>` : `
           <tr class="member-row"><td>${esc(r.name)}</td><td>${esc(r.dept)}</td>
           <td>${fmtTime(r.start)}</td><td>${fmtTime(r.end)}</td><td>${fmtDur(r.breakMin)}</td><td><b>${fmtDur(r.workMin)}</b>
             ${r.discrepancyMin > 30 ? `<div class="disc-warn">⚠ ログ乖離 ${r.discrepancyMin}分</div>` : ''}</td>
+          ${projRateCells(r)}
           <td><span class="chip ${esc(r.confidence)}">${CONF[r.confidence] || '-'}</span></td>
           <td><span class="chip status-${esc(r.status)}">${STATUS[r.status] || r.status}</span>${r.auto ? '<span class="tag">自動</span>' : ''}</td>
           <td>${r.status === 'submitted' ? `
@@ -2635,12 +2722,31 @@ document.addEventListener('click', async (e) => {
     renderProjects();
     toast(next ? 'タイトル判定をオンにしました(許可ダイアログが出た場合は許可→再起動)' : 'タイトル判定をオフにしました(フォルダ監視のみで計測)');
   }
+  if (act === 'pj-next-use') { $('#pj-code').value = btn.dataset.code; $('#pj-name').focus(); return; }
+  if (act === 'pj-next-reload') { loadProjNext(true); return; }
+  if (act === 'ps-save') {
+    const r = await window.api.projSheetSave($('#ps-url').value.trim());
+    if (!r.ok) { toast(`エラー: ${r.error}`); return; }
+    state = r.state; projNext = null; renderSettings(); toast('案件番号の参照先を保存しました');
+    return;
+  }
+  if (act === 'ps-copy') {
+    const text = state.projSheetScript || '';
+    navigator.clipboard.writeText(text).then(() => toast('参照用スクリプトをコピーしました'), () => {
+      const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); toast('参照用スクリプトをコピーしました'); } catch (_) { toast('コピーできませんでした'); }
+      ta.remove();
+    });
+    return;
+  }
   if (act === 'proj-add') {
     const code = $('#pj-code').value.trim().toUpperCase(), name = $('#pj-name').value.trim();
     if (!code || !name) { toast('コードと案件名を入力してください'); return; }
     if (!/^[A-Z]+\d+$/.test(code)) { toast('案件コードは「大文字英字+数字」(例: F000, T123)にしてください'); return; }
     const staff = readStaffFields('pj');
     if (!staff) { toast('担当営業と制作は必須です(どちらも1名以上)'); return; }
+    if (!(await confirmProjDuplicates(code, name))) return;
     const split = (v) => v.split(/[,、]/).map(s => s.trim()).filter(Boolean);
     const res = await window.api.addProject({
       code, name,
@@ -2657,7 +2763,7 @@ document.addEventListener('click', async (e) => {
     state = res;
     // 同じページに留まり、フォームをクリアして続けて登録できるようにする
     renderProjAdd.last = `<b>${esc(code)}</b> ${esc(name)} を案件リストに登録しました。`;
-    renderProjAdd(); toast('案件を追加しました');
+    projNext = null; renderProjAdd(); toast('案件を追加しました');
   }
   if (act === 'goto-tab') { showTab(btn.dataset.tab); return; }
   if (act === 'plist-filter') { renderProjects.filter = btn.dataset.f; renderProjects(); }

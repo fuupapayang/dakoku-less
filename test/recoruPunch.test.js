@@ -187,4 +187,23 @@ assert.strictEqual(R.punchKey(at(24, 5, 0)), K(24));
   assert.strictEqual(R.statusFromLog([{ m: 12, d: 31, time: '23:00', kind: '出勤' }], new Date(2027, 0, 1, 1).getTime()).state, 'working');
 }
 
+// existingPunch: 今日すでにある同じ種類の打刻(最新)
+{
+  const at = (d, h, mi) => new Date(2026, 9, d, h, mi).getTime();
+  const log = [
+    { m: 10, d: 25, time: '19:00', kind: '退勤' },
+    { m: 10, d: 25, time: '12:00', kind: '休憩' },
+    { m: 10, d: 25, time: '08:17', kind: '出勤' },
+    { m: 10, d: 24, time: '18:00', kind: '退勤' }
+  ];
+  assert.strictEqual(R.existingPunch(log, at(25, 20, 0), '出勤').time, '08:17');
+  assert.strictEqual(R.existingPunch(log, at(25, 20, 0), '退勤').time, '19:00');
+  // 翌朝5時以降は新しい日 → 前日の打刻は対象外
+  assert.strictEqual(R.existingPunch(log, at(26, 9, 0), '出勤'), null);
+  // 深夜2時は前日扱い
+  assert.strictEqual(R.existingPunch(log, at(26, 2, 0), '退勤').time, '19:00');
+  assert.strictEqual(R.existingPunch([], at(25, 9, 0), '出勤'), null);
+  assert.strictEqual(R.existingPunch(null, at(25, 9, 0), '出勤'), null);
+}
+
 console.log('recoruPunch tests passed');

@@ -9,6 +9,7 @@ const learnLib = require('./src/learn');
 const calendarLib = require('./src/calendar');
 const meetingsLib = require('./src/meetings');
 const sheetsLib = require('./src/sheets');
+const projSheetLib = require('./src/projectSheet');
 const recoruLib = require('./src/recoru');
 const recoruPostLib = require('./src/recoruPost');
 const recoruBotLib = require('./src/recoruBot');
@@ -999,16 +1000,27 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
   recoruPunchBusy = true;
   buildTrayMenu(); pushUpdate();
   let r;
+  const runBot = async (at, force) => {
+    try {
+      const out = await recoruBotLib.run({
+        mode: 'punch', punch: { kind: a.kind, memo: '', now: at, force }, // 打刻メモは空のまま
+        cred: { ...recoruCred(), password: recoruPassword() },
+        show: !!settings().recoruShowWindow, timeoutMs: 90 * 1000,
+        log: (m) => console.log('[recoru]', m)
+      });
+      return out.punch || { status: 'fail', reason: out.error || '打刻できませんでした' };
+    } catch (e) {
+      return { status: 'fail', reason: String((e && e.message) || e).slice(0, 200) };
+    }
+  };
   try {
-    const out = await recoruBotLib.run({
-      mode: 'punch', punch: { kind: a.kind, memo: '', now }, // 打刻メモは空のまま
-      cred: { ...recoruCred(), password: recoruPassword() },
-      show: !!settings().recoruShowWindow, timeoutMs: 90 * 1000,
-      log: (m) => console.log('[recoru]', m)
-    });
-    r = out.punch || { status: 'fail', reason: out.error || '打刻できませんでした' };
-  } catch (e) {
-    r = { status: 'fail', reason: String((e && e.message) || e).slice(0, 200) };
+    r = await runBot(now, false);
+    if (r.status === 'exists') {
+      // 今日すでに同じ打刻がある → 上書きするか確認(自動打刻は1分答えがなければ上書きしない)
+      const over = await recoruConfirmOverwrite(label, r.existing, manual);
+      if (over) { now = Date.now(); r = await runBot(now, true); }
+      else r = { status: 'ok', reason: `レコルにはすでに今日の${label}(${r.existing})が記録されているため、上書きしませんでした`, log: r.log };
+    }
   } finally { recoruPunchBusy = false; buildTrayMenu(); }
   recoruPunchLib.record(punchState(), { kind: a.kind, key: a.key, now, status: r.status, reason: r.reason || '', rk: r.rk || null });
   if (r.log) recoruSetStatus(recoruPunchLib.statusFromLog(r.log, Date.now()));
@@ -1028,6 +1040,22 @@ async function recoruPunchDo(a, now, { manual = false } = {}) {
       : r.reason ? `${r.reason}。` : `${t} にレコルへ${label}を打刻しました。`;
   try { if (Notification.isSupported()) new Notification({ title: `レコル ${label}打刻`, body, silent: r.status === 'ok' }).show(); } catch (_) {}
   return { ok: r.status !== 'fail', status: r.status, reason: r.reason || '', time: t };
+}
+/** 今日すでに出勤/退勤の記録がある場合に、上書きするか確認。手動は答えるまで待つ、自動は1分で「上書きしない」 */
+async function recoruConfirmOverwrite(label, existing, manual) {
+  const ctl = new AbortController();
+  const timer = manual ? null : setTimeout(() => ctl.abort(), 60 * 1000);
+  try {
+    try { if (process.platform === 'darwin') app.focus({ steal: true }); } catch (_) {}
+    const { response } = await dialog.showMessageBox({
+      type: 'warning', title: '全自動勤怠管理くん',
+      message: `レコルにはすでに今日の${label}(${existing})が記録されています。上書きしますか？`,
+      detail: `「上書きする」を押すと、押した時刻で${label}を打刻し直します。\n「上書きしない」を選ぶと、${existing} の記録をそのまま残します。` +
+        (manual ? '' : '\n1分以内に答えがない場合は上書きしません。'),
+      buttons: ['上書きする', '上書きしない'], defaultId: 1, cancelId: 1, noLink: true, signal: ctl.signal
+    });
+    return !ctl.signal.aborted && response === 0;
+  } catch (_) { return false; } finally { if (timer) clearTimeout(timer); }
 }
 /** レコルのホーム(出勤・退勤・休憩・戻りのボタン)を開く。ログインは自動打刻と共有 */
 let recoruHomeWin = null;
@@ -1051,12 +1079,17 @@ function recoruOpenHome() {
     goHome = false;
     // 打刻ログから今の状態(出勤中・休憩中・退勤中)を求め、押せるボタンだけを残す(隠す前に読む)
     let status = null;
+    const existing = {}; // 今日すでにある出勤・退勤の時刻(押す前に上書きの確認を出す)
     try {
       const log = await w.webContents.executeJavaScript(`(function(){ if (!window.__dk) (${recoruBotLib.pageLib.toString()})(); return __dk.punchLog(); })()`);
-      if (log) status = recoruSetStatus(recoruPunchLib.statusFromLog(log, Date.now()));
+      if (log) {
+        const now = Date.now();
+        status = recoruSetStatus(recoruPunchLib.statusFromLog(log, now));
+        for (const k of ['出勤', '退勤']) { const ex = recoruPunchLib.existingPunch(log, now, k); if (ex) existing[k] = ex.time; }
+      }
     } catch (_) {}
     if (w.isDestroyed()) return;
-    w.webContents.executeJavaScript(`(${recoruPunchOnly.toString()})(${JSON.stringify(status)})`).then((ok) => {
+    w.webContents.executeJavaScript(`(${recoruPunchOnly.toString()})(${JSON.stringify(status)}, ${JSON.stringify(existing)})`).then((ok) => {
       if (w.isDestroyed()) return;
       if (ok) { w.setTitle('レコルの打刻'); w.setContentSize(560, 440); }
       else { const [cw, ch] = w.getContentSize(); if (cw < 1000) w.setContentSize(1100, 800); w.center(); }
@@ -1086,11 +1119,25 @@ async function recoruHomeAutoLogin(w) {
   return true;
 }
 /** レコルのページ内で実行: 打刻ボタンの部分(日付の見出し付き)だけを残して他を隠す。見つからなければ false */
-function recoruPunchOnly(status) {
+function recoruPunchOnly(status, existing) {
   const btns = [...document.querySelectorAll('.punch-btn, [onclick*="doPunch"]')];
   const btn = btns[0];
   if (!btn) return false;
   const label = (b) => String(b.value || b.innerText || '').trim();
+  // 今日すでに出勤・退勤の記録がある場合は、押したときに上書きするか確認する(レコルの処理より先に動くよう capture で受ける)
+  window.__dkExisting = existing || {};
+  if (!window.__dkOverwriteHooked) {
+    window.__dkOverwriteHooked = true;
+    document.addEventListener('click', (e) => {
+      const b = e.target && e.target.closest && e.target.closest('.punch-btn, [onclick*="doPunch"]');
+      if (!b) return;
+      const l = String(b.value || b.innerText || '').trim();
+      const t = (window.__dkExisting || {})[l];
+      if (t && !window.confirm(`レコルにはすでに今日の${l}(${t})が記録されています。\n上書きしますか？\n\n「OK」で今の時刻で${l}を打刻し直します。`)) {
+        e.preventDefault(); e.stopImmediatePropagation();
+      }
+    }, true);
+  }
   // ボタンの表から親をたどり、日付の見出しを含む範囲まで広げる(打刻ログなど他の部品は含めない)
   let keep = btn.closest('table') || btn;
   for (let a = keep.parentElement; a && a !== document.body; a = a.parentElement) {
@@ -1610,6 +1657,23 @@ function sheetsConfig() {
   return { url: s.sheetsUrl, token: s.sheetsToken, autoExport: !!s.autoExportSheets, shared: false, by: '' };
 }
 
+/** 案件番号の参照先(WEB案件進行一覧のGAS /exec)。チーム共有(meta/sheets.projUrl)を優先。合言葉は書き出しと共通 */
+function projSheetConfig() {
+  const team = store.data.remoteTeam && store.data.remoteTeam.sheets;
+  const url = (team && team.projUrl) || settings().projSheetUrl || '';
+  return { url, token: sheetsConfig().token || '', shared: !!(team && team.projUrl) };
+}
+/** 案件一覧(シート)を取得。短時間のキャッシュあり */
+let projSheetCache = null;
+async function loadProjSheet(force) {
+  const cfg = projSheetConfig();
+  if (!cfg.url) return { ok: false, error: '案件番号の参照URLが未設定です。設定 → 「案件番号の参照(WEB案件進行一覧)」で設定してください', notConfigured: true };
+  if (!force && projSheetCache && projSheetCache.url === cfg.url && Date.now() - projSheetCache.at < 60 * 1000) return { ok: true, resp: projSheetCache.resp };
+  const resp = await projSheetLib.fetchSheet(cfg.url, cfg.token);
+  projSheetCache = { url: cfg.url, at: Date.now(), resp };
+  return { ok: true, resp };
+}
+
 /** 指定月(YYYY-MM)の「自分の」履歴・工数を個人タブへ書き出し(チーム集計タブはGASが再構成) */
 /** 案件の登録者(工数按分で「制作が空の案件」の配分先に使う) */
 function projectCreator() {
@@ -1805,6 +1869,8 @@ function buildState() {
     holidayNames: require('./src/holidays').HOLIDAY_NAMES,
     folderStatus: folderStatus(),
     gasScript: sheetsLib.gasScript(sheetsConfig().token),
+    projSheetConfig: projSheetConfig(),
+    projSheetScript: projSheetLib.gasScript(sheetsConfig().token),
     syncReady: !!(sync && sync.enabled()),
     syncStatus: sync ? sync.status : null,
     teamProfiles: (settings().teamProfiles || []).map(t => ({ id: t.id, label: t.label, teamId: t.teamId, projectId: t.projectId })),
@@ -2473,6 +2539,36 @@ function registerIpc() {
     store.save(); pushUpdate();
     return buildState();
   });
+  // 案件番号の参照(WEB案件進行一覧)
+  ipcMain.handle('projsheet:get', async (e, force) => {
+    try {
+      const r = await loadProjSheet(!!force);
+      if (!r.ok) return r;
+      return { ok: true, tabs: projSheetLib.summarize(r.resp, store.data.projects.map(p => p.code)), at: r.resp.at || '' };
+    } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
+  });
+  ipcMain.handle('projsheet:check', async (e, { code, name }) => {
+    try {
+      const r = await loadProjSheet(true);
+      if (!r.ok) return r;
+      return { ok: true, ...projSheetLib.findDuplicates(code, name, r.resp, store.data.projects) };
+    } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
+  });
+  // 参照URLの保存。チーム同期中は総管理者がチーム全員に配る(meta/sheets.projUrl)、それ以外はこの端末だけ
+  ipcMain.handle('projsheet:save', async (e, url) => {
+    const u = String(url || '').trim();
+    if (u && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(u)) return { ok: false, error: 'URLは https://script.google.com/…/exec の形式で入力してください' };
+    projSheetCache = null;
+    if (sync && sync.enabled()) {
+      if (!adminUnlocked()) return { ok: false, error: 'チームの設定は総管理者モードで変更してください(管理者ビューでロック解除)' };
+      try {
+        const cur = (await sync.getDoc('meta/sheets')) || {};
+        await sync.setDoc('meta/sheets', { ...cur, projUrl: u, updatedBy: settings().userName, updatedAt: Date.now() });
+        await runSync(true);
+      } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
+    } else { settings().projSheetUrl = u; store.save(); pushUpdate(); }
+    return { ok: true, state: buildState() };
+  });
   // チームで書き出し先を共有/解除(meta/sheets)。同期中の全メンバーに次回同期で反映される
   ipcMain.handle('sheets:share', async (e, cfg) => {
     if (!adminUnlocked()) return { ok: false, error: 'チーム共有の変更は総管理者モードで行ってください(管理者ビューでロック解除)' };
@@ -2484,7 +2580,8 @@ function registerIpc() {
       if (cfg && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(doc.url)) {
         return { ok: false, error: '連携URLは https://script.google.com/…/exec の形式で入力してください' };
       }
-      await sync.setDoc('meta/sheets', { ...doc, updatedBy: settings().userName, updatedAt: Date.now() });
+      const prevProj = (store.data.remoteTeam && store.data.remoteTeam.sheets && store.data.remoteTeam.sheets.projUrl) || '';
+      await sync.setDoc('meta/sheets', { ...doc, projUrl: prevProj, updatedBy: settings().userName, updatedAt: Date.now() });
       await runSync(true);
       return { ok: true, state: buildState() };
     } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }

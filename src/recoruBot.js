@@ -348,16 +348,16 @@ class Bot {
 
   /**
    * ホームの「出勤」「退勤」ボタンで打刻し、勤務表の開始・終了で記録を確かめる。
-   * @returns {status:'ok'|'unverified'|'fail', reason, rk:{date,start,end}}
+   * @returns {status:'ok'|'unverified'|'fail'|'exists', reason, rk:{date,start,end}, existing}
    */
-  async punch(kind, memo, now = Date.now()) {
+  async punch(kind, memo, now = Date.now(), force = false) {
     const label = kind === 'in' ? '出勤' : '退勤';
     await this.waitFor(async () => (await this.ev(`__dk.hasPunch(${JSON.stringify(label)})`)) === true, 10000);
     const before = (await this.ev('__dk.punchLog()')) || null;
-    // 既にレコルで出勤している(手動・スマホなど)なら、出勤を二重に打刻しない
-    if (kind === 'in' && before) {
-      const st = PL.statusFromLog(before, now);
-      if (st.state !== 'off') return { status: 'ok', reason: `レコルで出勤済み(${st.time} ${st.kind})のため打刻しませんでした`, log: before };
+    // 今日すでに同じ打刻(出勤/退勤)がある場合は押さずに知らせる(上書きするかはアプリ側で確認 → force で再実行)
+    if (before && !force) {
+      const ex = PL.existingPunch(before, now, label);
+      if (ex) return { status: 'exists', existing: ex.time, reason: `レコルにはすでに今日の${label}(${ex.time})が記録されています`, log: before };
     }
     if (!(await this.ev(`__dk.hasPunch(${JSON.stringify(label)})`))) return { status: 'fail', reason: `ホームに「${label}」ボタンが見つかりません`, log: before };
     if (memo) await this.ev(`__dk.setPunchMemo(${JSON.stringify(memo)})`);
@@ -537,7 +537,7 @@ async function run({ mode = 'post', cred, prepare, punch = null, overwrite = fal
     if (mode === 'punch') {
       const o = await bot.open(cred, HOME_URL);
       if (!o.ok) return { ok: false, error: o.error, login: !!o.login, results };
-      const r = await bot.punch(punch.kind, punch.memo, punch.now);
+      const r = await bot.punch(punch.kind, punch.memo, punch.now, !!punch.force);
       log(`打刻 ${punch.kind}: ${r.status}${r.reason ? ' ' + r.reason : ''}`);
       return { ok: r.status !== 'fail', error: r.status === 'fail' ? r.reason : '', punch: r, results };
     }

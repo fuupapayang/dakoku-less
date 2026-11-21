@@ -197,22 +197,33 @@ const STATES = {
   break: { label: '休憩中', allowed: ['戻り'] },
   off: { label: '退勤中', allowed: ['出勤'] }
 };
+/** 打刻ログ1件の勤務日(朝5時区切り)。1月に12月の打刻を見る場合は前年 */
+function logEntryKey(e, now) {
+  const y = new Date(now).getFullYear();
+  const yy = e.m > new Date(now).getMonth() + 1 + 1 ? y - 1 : y;
+  const [h, mi] = String(e.time).split(':').map(Number);
+  return punchKey(new Date(yy, e.m - 1, e.d, h, mi).getTime());
+}
+
+/**
+ * 今日(朝5時区切り)すでにある同じ種類の打刻(最新のもの)。無ければ null
+ * kind: '出勤' | '退勤'
+ */
+function existingPunch(log, now, kind) {
+  const today = punchKey(now);
+  return (log || []).find(e => e && e.m && e.time && e.kind === kind && logEntryKey(e, now) === today) || null;
+}
+
 function statusFromLog(log, now) {
   const today = punchKey(now);
-  const y = new Date(now).getFullYear();
-  const entKey = (e) => {
-    // 1月に12月の打刻を見る場合は前年
-    const yy = e.m > new Date(now).getMonth() + 1 + 1 ? y - 1 : y;
-    const [h, mi] = String(e.time).split(':').map(Number);
-    return punchKey(new Date(yy, e.m - 1, e.d, h, mi).getTime());
-  };
+  const entKey = (e) => logEntryKey(e, now);
   const last = (log || []).find(e => e && e.m && e.time && entKey(e) === today);
   const state = !last ? 'off' : last.kind === '休憩' ? 'break' : last.kind === '退勤' ? 'off' : 'working';
   return { state, label: STATES[state].label, allowed: STATES[state].allowed, kind: last ? last.kind : '', time: last ? last.time : '', key: today };
 }
 
 module.exports = {
-  statusFromLog,
+  statusFromLog, existingPunch,
   DAY_START_HOUR, LATE_HOUR, IDLE_MIN, PROMPT_EVERY_MIN, PROMPT_WAIT_MIN,
   calKey, hm, punchKey, period, emptyState, tick, away, promptShown, promptAnswer, record, missedOuts, summary, hasIn
 };
