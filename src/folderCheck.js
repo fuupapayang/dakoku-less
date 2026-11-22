@@ -10,7 +10,7 @@ const { isMaker } = require('./collisions');
 const { nameKey, looseMatch } = require('./projectEdit');
 
 const SNOOZE_MS = 7 * 86400000;
-const CODE_DIR = /^([A-Z]+\d+)_/; // 大文字のみ(工数の記録=フォルダ監視と同じ判定。小文字フォルダは記録されないため警告を消さない)
+const CODE_DIR = /^([A-Za-z]+\d+)_/; // 大文字・小文字を問わない(ikiiki0008_ → IKIIKI0008。工数の記録も同じく大文字にして照合)
 const SCAN_MAX_DEPTH = 3;
 const SCAN_MAX_DIRS = 20000; // 巨大ドライブ対策(読み込むフォルダ数の上限)
 
@@ -18,6 +18,11 @@ const SCAN_MAX_DIRS = 20000; // 巨大ドライブ対策(読み込むフォル�
 function codeOfFolderName(name) {
   const m = String(name || '').match(CODE_DIR);
   return m ? m[1].toUpperCase() : null;
+}
+
+/** フォルダ名のコード部分を大文字にする(ikiiki0008_プライムサイト → IKIIKI0008_プライムサイト)。該当しなければそのまま */
+function normalizeFolderName(name) {
+  return String(name || '').replace(/^([A-Za-z]+\d+)_/, (m, c) => c.toUpperCase() + '_');
 }
 
 /**
@@ -141,6 +146,6 @@ function isInside(parent, child) {
 }
 
 module.exports = {
-  SNOOZE_MS, codeOfFolderName, scanCodes, migrateSnooze, isSnoozed, missingFolderProjects,
+  SNOOZE_MS, codeOfFolderName, normalizeFolderName, scanCodes, migrateSnooze, isSnoozed, missingFolderProjects,
   folderNameFor, removeMeFromMakers, planNotifications, isInside
 };

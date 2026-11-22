@@ -85,7 +85,9 @@ async function getForeground() {
 }
 
 /** フォルダ監視: 案件フォルダ内のファイル更新を検知して案件を対応づける */
-function onFolderHit(folder) {
+function onFolderHit(folder0) {
+  // 「ikiiki0008_名称」のような小文字・混在のフォルダも、コード部分を大文字にして案件コードと照合する
+  const folder = folderCheckLib.normalizeFolderName(folder0);
   const hit = projectsLib.matchText(folder, store.data.projects);
   if (hit) {
     recentFolderHit = { folder, pid: hit.id, ts: Date.now() };
@@ -94,7 +96,7 @@ function onFolderHit(folder) {
     const now = Date.now();
     if (now - (onFolderHit.lastWarn || 0) > 3600000) {
       onFolderHit.lastWarn = now;
-      const code = (folder.match(/^([A-Z]+\d+)_/) || [])[1];
+      const code = (folder0.match(/^([A-Z]+\d+)_/) || [])[1]; // 小文字のフォルダ(img2_ など)は案件と限らないので案内しない
       if (code) notify('未登録の案件フォルダを検知', `${folder} を検知しましたが、案件コード ${code} が未登録です。案件タブで登録すると計上されます。`);
     }
   }
@@ -1993,7 +1995,7 @@ async function scanFileTimes(roots, fromTs, toTs) {
       visited++;
       if (SKIP.test(e.name)) continue;
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) await walk(full, depth + 1, inCase || /^[A-Z]+\d+_/.test(e.name));
+      if (e.isDirectory()) await walk(full, depth + 1, inCase || /^[A-Za-z]+\d+_/.test(e.name));
       else if (inCase && e.isFile()) {
         try {
           const st = await fsp.stat(full);
@@ -2726,9 +2728,9 @@ function registerIpc() {
     try {
       for (const ent of fs.readdirSync(res.filePaths[0], { withFileTypes: true })) {
         if (!ent.isDirectory()) continue;
-        const m = ent.name.match(/^([A-Z]+\d+)_(.+)$/);
+        const m = ent.name.match(/^([A-Za-z]+\d+)_(.+)$/);
         if (!m) continue;
-        const code = m[1], name = m[2].trim();
+        const code = m[1].toUpperCase(), name = m[2].trim(); // ikiiki0008_ → IKIIKI0008
         if (store.data.projects.some(p => p.code === code)) { skipped++; continue; }
         store.addProject({ code, name, keywords: [name], sales: [...sales], makers: [...makers], ...projectCreator() });
         added++;

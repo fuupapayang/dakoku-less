@@ -16,9 +16,15 @@ const CODE_SEG = /^([A-Z]+\d+)_/;
 
 /** パスに含まれる最初の「CODE_名称」フォルダのコード(なければnull) */
 function codeInPath(p) {
-  for (const seg of String(p).split(/[\\/]+/)) {
+  const segs = String(p).split(/[\\/]+/);
+  for (const seg of segs) {
     const m = seg.match(CODE_SEG);
     if (m) return m[1];
+  }
+  // 小文字・混在のフォルダ(ikiiki0008_)はコードを大文字にして扱う
+  for (const seg of segs) {
+    const m = seg.match(/^([A-Za-z]+\d+)_/);
+    if (m) return m[1].toUpperCase();
   }
   return null;
 }

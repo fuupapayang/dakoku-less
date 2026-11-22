@@ -96,12 +96,14 @@ class Watcher {
     this.lastScan = now;
   }
 
-  /** パス文字列から最初の「CODE_名称」フォルダ名を返す(なければnull) */
+  /**
+   * パス文字列から最初の「CODE_名称」フォルダ名を返す(なければnull)。
+   * 大文字のフォルダ(F000_)を優先し、無ければ小文字・混在(ikiiki0008_)も候補にする
+   * (案件として数えるかは、登録済みの案件コードと大文字にして一致するかで main 側が判断)。
+   */
   static projectFolderIn(p) {
-    for (const seg of String(p).split(/[\\/]+/)) {
-      if (/^[A-Z]+\d+_/.test(seg)) return seg;
-    }
-    return null;
+    const segs = String(p).split(/[\\/]+/);
+    return segs.find(seg => /^[A-Z]+\d+_/.test(seg)) || segs.find(seg => /^[A-Za-z]+\d+_/.test(seg)) || null;
   }
 
   status() {

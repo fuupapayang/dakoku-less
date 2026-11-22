@@ -11,11 +11,11 @@ const DAY = 86400000;
 
 // 1) フォルダ名 → コード(大文字小文字無視)
 assert.strictEqual(fc.codeOfFolderName('T724_メイツ川越南台'), 'T724');
-assert.strictEqual(fc.codeOfFolderName('t724_メイツ'), null);   // 小文字は工数が記録されないので「フォルダあり」としない
+assert.strictEqual(fc.codeOfFolderName('t724_メイツ'), 'T724');   // 小文字も工数を記録する(コードを大文字にして照合)
 assert.strictEqual(fc.codeOfFolderName('T724メイツ'), null);
 assert.strictEqual(fc.codeOfFolderName('資料'), null);
 
-// 2) 走査: 深さ3まで・ルート自身・小文字コードは対象外(工数が記録されないため)・隠しフォルダ除外
+// 2) 走査: 深さ3まで・ルート自身・小文字コードも対象(大文字にする)・隠しフォルダ除外
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-'));
 try {
   const mk = (...p) => fs.mkdirSync(path.join(tmp, ...p), { recursive: true });
@@ -26,7 +26,7 @@ try {
   mk('root', '.hidden', 'H001_隠し');
   mk('T555_ルート自身', 'sub');
   const codes = fc.scanCodes([path.join(tmp, 'root'), path.join(tmp, 'T555_ルート自身'), path.join(tmp, 'nope')]);
-  assert.deepStrictEqual([...codes].sort(), ['F001', 'T555', 'T724']);
+  assert.deepStrictEqual([...codes].sort(), ['F001', 'F002', 'T555', 'T724']);
   // 上限(フォルダ数)で打ち切っても例外にならない
   assert.ok(fc.scanCodes([path.join(tmp, 'root')], { maxDirs: 1 }).size <= 1);
 } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
