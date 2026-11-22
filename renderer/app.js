@@ -693,7 +693,7 @@ function renderHistory() {
   const hr = historyRange();
   const inRange = (k) => k >= hr.fromKey && k <= hr.toKey;
   const keys = Object.keys(state.days).filter(inRange).sort().reverse();
-  let sumWork = 0, sumBreak = 0, sumMeeting = 0, nDays = 0;
+  let sumWork = 0, sumBreak = 0, sumMeeting = 0, nDays = 0, nPending = 0;
   const rows = keys.map(k => {
     const day = state.days[k];
     const est = effective(day);
@@ -701,8 +701,9 @@ function renderHistory() {
     sumWork += est.workMin || 0; sumBreak += est.breakMin || 0; sumMeeting += day.meetingMin || 0; nDays++;
     const conf = day.estimation ? day.estimation.confidence : 'LOW';
     const canSubmit = day.status === 'pending' || day.status === 'rejected';
+    if (canSubmit) nPending++;
     return `<tr>
-      <td>${fmtDate(k)}${k === state.todayKey ? ' <span class="tag work">今日</span>' : ''}</td>
+      <td>${canSubmit ? `<input type="checkbox" class="hist-sel" value="${esc(k)}" checked style="width:auto;margin:0 6px 0 0">` : ''}${fmtDate(k)}${k === state.todayKey ? ' <span class="tag work">今日</span>' : ''}</td>
       <td>${fmtTime(est.start)}</td><td>${fmtTime(est.end)}</td>
       <td>${fmtDur(est.breakMin)}</td><td><b>${fmtDur(est.workMin)}</b></td>
       <td><span class="chip ${esc(conf)}">${CONF[conf]}</span></td>
@@ -733,6 +734,10 @@ function renderHistory() {
           <input type="date" id="hist-to" value="${esc(rr.to || '')}" style="width:150px;margin:0">` : ''}
         <button class="btn sm" data-act="csv-history" title="選択中の期間の勤怠履歴をCSVで保存">CSVダウンロード</button>
       </div>
+      ${nPending ? `<div class="row mt8">
+        <span class="grow muted">未提出・差し戻しの日が ${nPending}日 あります。内容を確認し、チェックした日をまとめて提出できます。</span>
+        <button class="btn sm primary" data-act="submit-bulk">チェックした日をまとめて提出</button>
+      </div>` : ''}
       <table class="mt8">
       <thead><tr><th>日付</th><th>始業</th><th>終業</th><th>休憩</th><th>実働</th><th>信頼度</th><th>状態</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="8" class="muted">この期間の記録はありません</td></tr>'}</tbody>
@@ -1820,6 +1825,19 @@ function renderSettings() {
             <h3>${m.name}</h3><p>${m.desc}</p>
           </div>`).join('')}
       </div>
+      <h3 class="mt16" style="font-size:14px">自動提出の前に確認する日</h3>
+      <div class="row mt8">
+        <div class="toggle ${s.reviewHolidays !== false ? 'on' : ''}" data-act="review-holiday"></div>
+        <span class="grow">休日・祝日に働いた日は、自分で確認してから提出する<span class="muted">(オフにすると提出モードどおり自動提出)</span></span>
+      </div>
+      <div class="row mt8">
+        <span class="grow">長時間の日は、自分で確認してから提出する</span>
+        <select id="review-long" style="width:180px;margin:0">
+          ${[[720, '実働12時間以上'], [840, '実働14時間以上'], [0, '確認しない(自動提出)']].map(([v, l]) =>
+            `<option value="${v}" ${(s.reviewLongMin === 0 ? 0 : (s.reviewLongMin || 720)) === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <p class="muted mt8">自動提出しても、管理者ビュー・レコル向けCSVには「休日」「長時間」の印・メモが残ります。</p>
     </div>
     <div class="card">
       <h2>検知パラメータ</h2>
@@ -2700,6 +2718,18 @@ document.addEventListener('click', async (e) => {
     const r = await window.api.submitDay(state.todayKey);
     toast(r.ok ? '勤怠を確定・提出しました' : r.error);
   }
+  if (act === 'submit-bulk') {
+    const keys = [...document.querySelectorAll('.hist-sel:checked')].map(i => i.value);
+    if (!keys.length) { toast('提出する日にチェックを付けてください'); return; }
+    if (!confirm(`${keys.length}日分の勤怠を提出します。よろしいですか？`)) return;
+    let ok = 0; const errs = [];
+    for (const k of keys.sort()) {
+      const r = await window.api.submitDay(k);
+      if (r && r.ok) ok++; else errs.push(`${fmtDate(k)}: ${(r && r.error) || '失敗'}`);
+    }
+    toast(`${ok}日分を提出しました${errs.length ? `(提出できなかった日: ${errs.join('、')})` : ''}`);
+    return;
+  }
   if (act === 'submit-day') {
     const r = await window.api.submitDay(btn.dataset.key);
     toast(r.ok ? '提出しました' : r.error);
@@ -3066,6 +3096,11 @@ document.addEventListener('click', async (e) => {
     toast(r.ok ? `同期完了(メンバー${r.members}人)` : `同期エラー: ${r.error}`);
   }
 
+  if (act === 'review-holiday') {
+    state = await window.api.updateSettings({ reviewHolidays: state.settings.reviewHolidays === false });
+    renderSettings(); toast(state.settings.reviewHolidays === false ? '休日に働いた日も自動提出します' : '休日に働いた日は確認してから提出します');
+    return;
+  }
   if (act === 'mode') { state = await window.api.updateSettings({ submitMode: btn.dataset.id }); renderSettings(); toast('提出モードを変更しました'); }
   if (act === 'autolaunch') { state = await window.api.updateSettings({ autoLaunch: !state.settings.autoLaunch }); renderSettings(); }
   if (act === 'save-settings') {
@@ -3174,6 +3209,10 @@ document.addEventListener('change', async (e) => {
   }
   if (e.target.id === 'rs-month') { const r = renderProjects.restore; r.ym = e.target.value; r.preview = null; renderProjects(); }
   if (e.target.id === 'mt-proj') renderToday.meetingPid = e.target.value; // 自動更新で選択が戻らないよう保持
+  if (e.target.id === 'review-long') {
+    state = await window.api.updateSettings({ reviewLongMin: Number(e.target.value) });
+    toast(Number(e.target.value) ? `実働${Number(e.target.value) / 60}時間以上の日は確認してから提出します` : '長時間の日も自動提出します');
+  }
   if (e.target.id === 'adm-date') { renderAdmin.date = e.target.value; renderAdmin(); }
   if (e.target.id === 'rep-preset') { renderAdmin.range.preset = e.target.value; renderAdmin(); }
   if (e.target.id === 'rec-preset') {

@@ -59,6 +59,11 @@ assert.strictEqual(sm[R.SUMMARY_HEADERS.indexOf('法定外残業')], '05:00');
 assert.strictEqual(sm[R.SUMMARY_HEADERS.indexOf('深夜')], '01:00');
 assert.deepStrictEqual(R.reviewReasons('2026-09-05', { start: 1, workMin: 100 }), ['休日の稼働']);
 assert.deepStrictEqual(R.reviewReasons('2026-09-04', e4, { longMin: 720 }), ['実働12時間以上']);
+// 本人の設定: 休日を理由にしない / 長時間チェックなし / 14時間
+assert.deepStrictEqual(R.reviewReasons('2026-09-05', { start: 1, workMin: 100 }, { holiday: false }), []);
+assert.deepStrictEqual(R.reviewReasons('2026-09-04', e4, { longMin: 0 }), []);
+assert.deepStrictEqual(R.reviewReasons('2026-09-04', { start: 1, workMin: 13 * 60 }, { longMin: 840 }), []);
+assert.deepStrictEqual(R.reviewReasons('2026-09-04', { start: 1, workMin: 14 * 60 }, { longMin: 840 }), ['実働14時間以上']);
 assert.strictEqual(R.toCSV([['a', 'b,c']]), 'a,"b,c"\r\n');
 
 // ---- みなし残業

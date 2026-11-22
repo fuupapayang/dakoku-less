@@ -546,9 +546,9 @@ function finalizeDay(key, stale = false) {
   day.status = 'pending';
   const est = day.estimation;
   const conf = est ? est.confidence : 'LOW';
-  // 休日・長時間・後から確定した日は、人が確認してから提出する(誤った値をそのまま提出しない)
-  const reasons = recoruLib.reviewReasons(key, est, { longMin: settings().reviewLongMin || 720 });
-  if (stale) reasons.push('記録中のまま残っていた日');
+  // 休日・長時間の日は、人が確認してから提出する(本人の設定で自動提出にもできる)。
+  // 「記録中のまま残っていた日」(PCを閉じた・スリープしたまま日付が変わった日)は記録自体は揃っているため、通常どおり判定する
+  const reasons = recoruLib.reviewReasons(key, est, autoSubmitReviewOpts());
   day.reviewReasons = reasons;
   if (est && est.start && !reasons.length && engine.shouldAutoSubmit(settings().submitMode, conf)) {
     submitDay(key, true);
@@ -563,13 +563,20 @@ function finalizeDay(key, stale = false) {
   }
 }
 
+/** 自動提出の前に人の確認を求める条件(本人の設定)。reviewHolidays=false で休日も自動、reviewLongMin=0 で長時間チェックなし */
+function autoSubmitReviewOpts() {
+  const s = settings();
+  return { holiday: s.reviewHolidays !== false, longMin: s.reviewLongMin === 0 ? 0 : (s.reviewLongMin || 720) };
+}
+
 /** 今日より前で「記録中」のまま残っている日をすべて確定(アプリ終了・PC再起動で日付を跨いだ場合の取りこぼし対策) */
 function finalizeStaleDays(todayKey) {
   const stale = Object.keys(store.data.days).filter(k => k < todayKey && store.data.days[k].status === 'recording');
   for (const k of stale) finalizeDay(k, true);
   if (stale.length) {
     store.save();
-    notify('未確定の勤怠を確定しました', `${stale.length}日分が「記録中」のまま残っていました。履歴タブで確認して提出してください。`);
+    const left = stale.filter(k => store.data.days[k].status !== 'submitted');
+    if (left.length) notify('勤怠の確認をお願いします', `${left.map(k => k.slice(5).replace('-', '/')).join('、')} の勤怠が未提出です。履歴タブで確認して提出してください。`);
   }
 }
 

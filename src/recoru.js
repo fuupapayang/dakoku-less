@@ -46,12 +46,17 @@ function hhmm(min) {
  * 確認が必要な理由(自動提出・レコル取込の前に人が見るべき日)
  * @param est {start,end,workMin}
  */
-function reviewReasons(key, est, { longMin = 720 } = {}) {
+/**
+ * 人が確認してから提出すべき理由。
+ * @param holiday 休日・祝日の稼働を理由にするか(既定: する)
+ * @param longMin この分数以上の実働を理由にする(0 = 長時間はチェックしない)
+ */
+function reviewReasons(key, est, { longMin = 720, holiday = true } = {}) {
   const r = [];
   if (!est || est.start == null) return r;
   const t = dayType(key);
-  if (t !== 'work') r.push(HOLIDAYS.has(key) ? '祝日の稼働' : '休日の稼働');
-  if ((est.workMin || 0) >= longMin) r.push(`実働${Math.floor(longMin / 60)}時間以上`);
+  if (holiday && t !== 'work') r.push(HOLIDAYS.has(key) ? '祝日の稼働' : '休日の稼働');
+  if (longMin > 0 && (est.workMin || 0) >= longMin) r.push(`実働${Math.floor(longMin / 60)}時間以上`);
   return r;
 }
 
