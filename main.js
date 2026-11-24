@@ -2630,6 +2630,20 @@ function registerIpc() {
       return { ok: true, ...projSheetLib.findDuplicates(code, name, r.resp, store.data.projects) };
     } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
   });
+  // 案件登録時に、WEB案件進行一覧の「番号だけ振ってある行」へ案件名・Dev(顧客)・営業担当を書き込む
+  ipcMain.handle('projsheet:add', async (e, p) => {
+    const cfg = projSheetConfig();
+    const url = projSheetLib.addUrl(cfg.url, cfg.token, p || {});
+    if (!url) return { ok: false, skipped: true, error: '書き込み先のタブ(T/F)に当てはまらない案件番号です' };
+    try {
+      const resp = await googleFetchJson(url);
+      projSheetCache = null;
+      if (!resp.v || resp.v < 2 || !(resp.row || resp.already)) return { ok: false, oldScript: true, error: 'WEB案件進行一覧のスクリプトが古いため書き込めません。設定 →「案件番号の参照」から新しいスクリプトをコピーして貼り替え、デプロイを「新バージョン」で更新してください' };
+      return { ok: true, tab: resp.tab, row: resp.row, already: !!resp.already, wrote: resp.wrote || [] };
+    } catch (err) {
+      return { ok: false, needLogin: !!(err && err.needLogin), dupName: !!(err && err.resp && err.resp.dupName), error: String((err && err.message) || err).slice(0, 200) };
+    }
+  });
   // 参照URLの保存。チーム同期中は総管理者がチーム全員に配る(meta/sheets.projUrl)、それ以外はこの端末だけ
   ipcMain.handle('projsheet:save', async (e, url) => {
     const u = String(url || '').trim();

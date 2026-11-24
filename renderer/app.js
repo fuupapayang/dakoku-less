@@ -1154,6 +1154,10 @@ function renderProjAdd() {
       <div class="field-row">
         <label class="field">楽楽販売の案件ID(スプレッドシートの工数に書き出し)<input type="text" id="pj-raku" placeholder="例: 12345"></label>
       </div>
+      ${(state.projSheetConfig || {}).url ? `<label class="check mt8" style="display:flex;gap:6px;align-items:center">
+        <input type="checkbox" id="pj-tosheet" ${renderProjAdd.noSheet ? '' : 'checked'}>
+        WEB案件進行一覧にも書き込む(番号の行に 案件名・Dev(顧客)・営業担当 を記入。T/Fの番号のみ・入力済みのセルは上書きしません)
+      </label>` : ''}
       <div class="row">
         <button class="btn primary" data-act="proj-add">案件を追加</button>
         <button class="btn" data-act="proj-import">📁 フォルダから一括インポート</button>
@@ -1223,6 +1227,19 @@ async function confirmProjDuplicates(code, name) {
   return confirm(`重複の可能性があります。\n\n${msgs.join('\n')}\n\nそれでも ${code} ${name} を登録しますか？`);
 }
 
+/** 登録した案件をWEB案件進行一覧に書き込み、結果の文(HTML)を返す。重複確認は登録前に済んでいるので force */
+async function writeProjToSheet(p) {
+  let r = await window.api.projSheetAdd({ ...p, force: true });
+  if (!r.ok && r.needLogin && confirm('WEB案件進行一覧に書き込むには、Google(qlea.net)へのログインが必要です。今ログインしますか？')) {
+    const lg = await window.api.projSheetLogin();
+    if (lg.ok) r = await window.api.projSheetAdd({ ...p, force: true });
+  }
+  if (r.ok && r.already) return `WEB案件進行一覧(${esc(r.tab)} ${r.row}行目)には既に同じ案件名が入っていました。`;
+  if (r.ok) return `WEB案件進行一覧(${esc(r.tab)} ${r.row}行目)に ${esc((r.wrote || []).join('・'))} を書き込みました。`;
+  if (r.skipped) return '';
+  return `<span style="color:var(--red)">WEB案件進行一覧には書き込めませんでした: ${esc(r.error || '')}</span>(アプリへの登録は完了しています。必要ならシートに手で入力してください)`;
+}
+
 /** 設定: 案件番号の参照(WEB案件進行一覧) */
 function projSheetCardHTML() {
   const cfg = state.projSheetConfig || {};
@@ -1230,7 +1247,7 @@ function projSheetCardHTML() {
   return `<div class="card">
     <h2>案件番号の参照(WEB案件進行一覧)</h2>
     <p class="muted">案件追加のときに、スプレッドシート「WEB案件進行一覧」の「東京」(T000)・「福岡・大阪」(F000)タブのA列を見て、
-    <b>案件名が入っている最後の行の次の番号</b>を「次の案件番号」として表示します。登録時には案件番号・案件名が重複していないかも確認します(シートには書き込みません)。</p>
+    <b>案件名が入っている最後の行の次の番号</b>を「次の案件番号」として表示します。登録時には案件番号・案件名が重複していないかも確認し、チェックを入れておけば<b>番号の行に 案件名・Dev(顧客)・営業担当 を書き込みます</b>(入力済みのセルは上書きせず、行の追加もしません)。</p>
     ${cfg.url ? `<div class="rule-item mt8"><div class="grow">${cfg.shared ? '<span class="tag work">チーム共有中</span> ' : ''}<span class="meta" style="word-break:break-all">${esc(cfg.url)}</span></div></div>` : ''}
     ${canEdit ? `<div class="row mt8">
       <input type="text" id="ps-url" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/..../exec" class="grow" style="margin:0">
@@ -1241,7 +1258,7 @@ function projSheetCardHTML() {
       <span class="muted">各自が1回だけ。WEB案件進行一覧を見られる qlea.net のアカウントでログインします(ログイン状態はこのアプリの中だけに保存され、パスワードはアプリに保存しません)</span>
     </div>` : ''}
     <div class="row mt8">
-      <button class="btn" data-act="ps-copy">参照用スクリプトをコピー</button>
+      <button class="btn" data-act="ps-copy">スクリプトをコピー</button>
       <span class="muted">合言葉は上の「Googleスプレッドシートへ書き出し」と共通です</span>
     </div>
     <details class="mt8"><summary class="muted" style="cursor:pointer">セットアップ手順(管理者が1回だけ)</summary>
@@ -1252,7 +1269,7 @@ function projSheetCardHTML() {
         4. 右上「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」→ 実行ユーザー「自分」、アクセスできるユーザー「qlea.net 内の全員」(「全員」でも可)→ デプロイ(初回はGoogleの承認画面で「許可」)<br>
         5. 表示された「ウェブアプリのURL(/exec)」を上の欄に貼り付けて「${state.syncReady ? 'チームで共有' : '保存'}」<br>
         6. 各メンバーは「Googleにログイン」で qlea.net のアカウントに1回ログイン(案件追加の画面からもログインできます)<br>
-        ※ このスクリプトはシートを読むだけで、書き込みはしません。合言葉を変えた場合は、スクリプトを貼り直して「デプロイを管理」→ 編集 →「新バージョン」で更新してください。
+        ※ 書き込むのは、案件追加で「WEB案件進行一覧にも書き込む」にチェックしたときだけです(番号の行の 案件名・Dev・営業担当 の空欄のみ。上書き・行の追加はしません)。スクリプトを更新したときや合言葉を変えたときは、貼り直して「デプロイ」→「デプロイを管理」→ 鉛筆(編集)→ バージョン「新バージョン」→「デプロイ」で更新してください(URLは変わりません)。
       </div>
     </details>
   </div>`;
@@ -2833,8 +2850,16 @@ document.addEventListener('click', async (e) => {
     });
     if (res.error) { toast(res.error); return; }
     state = res;
+    // WEB案件進行一覧にも書き込む
+    const toSheet = $('#pj-tosheet');
+    renderProjAdd.noSheet = !!toSheet && !toSheet.checked;
+    let sheetMsg = '';
+    if (toSheet && toSheet.checked && /^[TF]\d+$/.test(code)) {
+      toast('WEB案件進行一覧に書き込んでいます…');
+      sheetMsg = await writeProjToSheet({ code, name, client: $('#pj-client').value.trim(), sales: staff.sales });
+    }
     // 同じページに留まり、フォームをクリアして続けて登録できるようにする
-    renderProjAdd.last = `<b>${esc(code)}</b> ${esc(name)} を案件リストに登録しました。`;
+    renderProjAdd.last = `<b>${esc(code)}</b> ${esc(name)} を案件リストに登録しました。${sheetMsg ? `<br>${sheetMsg}` : ''}`;
     projNext = null; renderProjAdd(); toast('案件を追加しました');
   }
   if (act === 'goto-tab') { showTab(btn.dataset.tab); return; }

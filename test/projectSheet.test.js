@@ -46,3 +46,66 @@ assert.throws(() => PS.parseResponse('{"ok":false,"error":"合言葉が一致し
 assert.throws(() => PS.parseResponse('<html>?</html>', 'https://script.google.com/x'), e => !e.needLogin);
 
 console.log('✓ projectSheet tests passed');
+
+// --- GASスクリプト(書き込み)をモックのシートで実行 ---
+{
+  const vm = require('vm');
+  const mkSheet = (rows) => ({
+    rows,
+    getLastRow() { return this.rows.length; },
+    getLastColumn() { return Math.max(...this.rows.map(r => r.length)); },
+    getRange(r, c, nr = 1, nc = 1) {
+      const sh = this;
+      return {
+        getDisplayValues() { return Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => String((sh.rows[r - 1 + i] || [])[c - 1 + j] ?? ''))); },
+        setValue(v) { while (sh.rows[r - 1].length < c) sh.rows[r - 1].push(''); sh.rows[r - 1][c - 1] = v; }
+      };
+    }
+  });
+  const tokyo = mkSheet([
+    ['', 'イベント'], ['', '案件項目'],
+    ['iD', '案件名', 'Dev', '代理店', '営業担当', 'デザイン'],
+    ['T838', 'プレミストクラブ 特設物件LP', 'ダイワハウス', '', '与那嶺', '増満'],
+    ['T839', 'GM松濤　映像', '積水ハウス', '', '吉岡', ''],
+    ['T840', '', '', '', '', ''],
+    ['T841', '', '', '', '既存', '']
+  ]);
+  const fuk = mkSheet([['', ''], ['', ''], ['', '案件名', '制作内容', 'Dev', '代理店', '営業担当'], ['F1074', '', '', '', '', '']]);
+  const ctx = {
+    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: (n) => ({ '東京': tokyo, '福岡・大阪': fuk })[n] || null }) },
+    LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+    ContentService: { MimeType: { JSON: 'json' }, createTextOutput: (t) => ({ setMimeType() { return JSON.parse(t); } }) }
+  };
+  vm.createContext(ctx);
+  vm.runInContext(PS.gasScript('tk'), ctx);
+  const get = (p) => ctx.doGet({ parameter: { token: 'tk', ...p } });
+  assert.strictEqual(get({ token: 'x' }).ok, false);
+  assert.strictEqual(get({}).v, PS.PS_VERSION);
+  // 空行に書き込み(案件名・Dev・営業担当)
+  let r = get({ action: 'add', code: 'T840', name: '新案件', client: '三井', sales: '福永' });
+  assert.ok(r.ok && r.row === 6, JSON.stringify(r));
+  assert.deepStrictEqual(tokyo.rows[5].slice(0, 5), ['T840', '新案件', '三井', '', '福永']);
+  // 同じ内容で再実行 → already
+  assert.ok(get({ action: 'add', code: 'T840', name: '新案件' }).already);
+  // 別の名前が入っている番号 → エラー(上書きしない)
+  r = get({ action: 'add', code: 'T839', name: '別案件' });
+  assert.ok(!r.ok && /使われています/.test(r.error));
+  assert.strictEqual(tokyo.rows[4][1], 'GM松濤　映像');
+  // 同名が別番号 → force なしはエラー
+  r = get({ action: 'add', code: 'T841', name: 'GM松濤 映像' });
+  assert.ok(!r.ok && r.dupName);
+  // force あり、入力済みの営業担当は上書きしない
+  r = get({ action: 'add', code: 'T841', name: 'GM松濤 映像2', sales: '山岡', force: '1' });
+  assert.ok(r.ok); assert.strictEqual(tokyo.rows[6][4], '既存'); assert.deepStrictEqual(r.wrote, ['案件名']);
+  // 行が無い番号 → エラー(行を追加しない)
+  r = get({ action: 'add', code: 'T999', name: 'x' });
+  assert.ok(!r.ok && r.noRow); assert.strictEqual(tokyo.rows.length, 7);
+  // 福岡・大阪は見出しの列位置が違う(Dev=D, 営業担当=F)
+  r = get({ action: 'add', code: 'F1074', name: '福岡案件', client: 'C社', sales: '松尾' });
+  assert.ok(r.ok); assert.deepStrictEqual(fuk.rows[3], ['F1074', '福岡案件', '', 'C社', '', '松尾']);
+  // T/F以外は対象外
+  assert.ok(!get({ action: 'add', code: 'X1', name: 'x' }).ok);
+}
+assert.strictEqual(PS.addUrl('https://script.google.com/macros/s/a/exec', 't', { code: 'IKIIKI0001', name: 'x' }), null);
+assert.ok(/action=add&code=T840&name=%E6%96%B0&client=&sales=A%E3%83%BBB&force=1$/.test(PS.addUrl('https://script.google.com/macros/s/a/exec', 't', { code: 't840', name: '新', sales: ['A', 'B'], force: true })));
+console.log('projectSheet GAS write ok');

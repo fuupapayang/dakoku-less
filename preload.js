@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   projSheetCheck: (code, name) => ipcRenderer.invoke('projsheet:check', { code, name }),
   projSheetSave: (url) => ipcRenderer.invoke('projsheet:save', url),
   projSheetLogin: () => ipcRenderer.invoke('projsheet:login'),
+  projSheetAdd: (p) => ipcRenderer.invoke('projsheet:add', p),
   updateProject: (id, patch) => ipcRenderer.invoke('projects:update', { id, patch }),
   deleteProject: (id) => ipcRenderer.invoke('projects:delete', id),
   assignBlock: (key, idx, projectId, keywords) => ipcRenderer.invoke('day:assign', { key, idx, projectId, keywords }),
