@@ -1178,6 +1178,8 @@ function projNextHTML() {
   const cfg = state.projSheetConfig || {};
   if (!cfg.url) return `<span class="muted grow">案件番号の参照(WEB案件進行一覧)が未設定です。設定 →「案件番号の参照」で設定すると、次の案件番号を自動で入れられます。</span>`;
   if (!projNext || projNext.loading) return '<span class="muted grow">WEB案件進行一覧から次の案件番号を読み込み中…</span>';
+  if (!projNext.ok && projNext.needLogin) return `<span class="grow">次の案件番号を表示するには、WEB案件進行一覧を見られる Google アカウント(qlea.net)で一度ログインしてください。</span>
+    <button class="btn sm primary" data-act="ps-login">Googleにログイン</button>`;
   if (!projNext.ok) return `<span class="grow" style="color:var(--red)">案件番号を読み込めませんでした: ${esc(projNext.error || '')}</span>
     <button class="btn sm" data-act="pj-next-reload">再読み込み</button>`;
   return `<span class="muted">次の案件番号:</span>` + projNext.tabs.map(t => t.error
@@ -1204,6 +1206,14 @@ async function confirmProjDuplicates(code, name) {
   }
   toast('WEB案件進行一覧と重複を確認しています…');
   const r = await window.api.projSheetCheck(code, name);
+  if (!r.ok && r.needLogin) {
+    if (confirm('WEB案件進行一覧で重複を確認するには、Google(qlea.net)へのログインが必要です。\n今ログインしますか？\n(「キャンセル」で、確認せずに登録へ進むか選べます)')) {
+      const lg = await window.api.projSheetLogin();
+      if (lg.ok) return confirmProjDuplicates(code, name);
+      toast(lg.canceled ? 'ログインを中止しました' : `ログインできませんでした: ${lg.error}`);
+    }
+    return confirm('重複を確認せずに登録しますか？');
+  }
   if (!r.ok) return confirm(`WEB案件進行一覧を確認できませんでした(${r.error})。\n重複を確認せずに登録しますか？`);
   const msgs = [];
   if (r.codeInSheet && !r.sameAsSheet) msgs.push(`・案件番号 ${code} は、WEB案件進行一覧(${r.codeInSheet.tab})で「${r.codeInSheet.name}」に使われています。`);
@@ -1226,6 +1236,10 @@ function projSheetCardHTML() {
       <input type="text" id="ps-url" value="${esc(cfg.url || '')}" placeholder="https://script.google.com/macros/s/..../exec" class="grow" style="margin:0">
       <button class="btn primary" data-act="ps-save">${state.syncReady ? 'チームで共有' : '保存'}</button>
     </div>` : '<div class="muted mt8">設定の変更は総管理者モード(管理者ビューでロック解除)で行えます。</div>'}
+    ${cfg.url ? `<div class="row mt8">
+      <button class="btn" data-act="ps-login">Googleにログイン</button>
+      <span class="muted">各自が1回だけ。WEB案件進行一覧を見られる qlea.net のアカウントでログインします(ログイン状態はこのアプリの中だけに保存され、パスワードはアプリに保存しません)</span>
+    </div>` : ''}
     <div class="row mt8">
       <button class="btn" data-act="ps-copy">参照用スクリプトをコピー</button>
       <span class="muted">合言葉は上の「Googleスプレッドシートへ書き出し」と共通です</span>
@@ -1235,8 +1249,9 @@ function projSheetCardHTML() {
         1. 「WEB案件進行一覧」のスプレッドシートを開き、「拡張機能」→「Apps Script」<br>
         2. 左の「ファイル」の「＋」→「スクリプト」で新しいファイルを作り、名前を「案件番号参照」にする(既存のスクリプトは消さないでください)<br>
         3. 上の「参照用スクリプトをコピー」を押し、新しいファイルの中身を全部消してから貼り付け → 保存<br>
-        4. 右上「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」→ 実行ユーザー「自分」、アクセスできるユーザー「全員」→ デプロイ(初回はGoogleの承認画面で「許可」)<br>
+        4. 右上「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」→ 実行ユーザー「自分」、アクセスできるユーザー「qlea.net 内の全員」(「全員」でも可)→ デプロイ(初回はGoogleの承認画面で「許可」)<br>
         5. 表示された「ウェブアプリのURL(/exec)」を上の欄に貼り付けて「${state.syncReady ? 'チームで共有' : '保存'}」<br>
+        6. 各メンバーは「Googleにログイン」で qlea.net のアカウントに1回ログイン(案件追加の画面からもログインできます)<br>
         ※ このスクリプトはシートを読むだけで、書き込みはしません。合言葉を変えた場合は、スクリプトを貼り直して「デプロイを管理」→ 編集 →「新バージョン」で更新してください。
       </div>
     </details>
@@ -2774,6 +2789,13 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'pj-next-use') { $('#pj-code').value = btn.dataset.code; $('#pj-name').focus(); return; }
   if (act === 'pj-next-reload') { loadProjNext(true); return; }
+  if (act === 'ps-login') {
+    toast('ログインの画面を開きます。WEB案件進行一覧を見られる qlea.net のアカウントでログインしてください');
+    const r = await window.api.projSheetLogin();
+    if (r.ok) { toast('ログインしました。案件番号を読み込みます'); projNext = null; loadProjNext(true); }
+    else if (!r.canceled) toast(`ログインできませんでした: ${r.error}`);
+    return;
+  }
   if (act === 'ps-save') {
     const r = await window.api.projSheetSave($('#ps-url').value.trim());
     if (!r.ok) { toast(`エラー: ${r.error}`); return; }

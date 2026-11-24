@@ -1678,9 +1678,75 @@ async function loadProjSheet(force) {
   const cfg = projSheetConfig();
   if (!cfg.url) return { ok: false, error: '案件番号の参照URLが未設定です。設定 → 「案件番号の参照(WEB案件進行一覧)」で設定してください', notConfigured: true };
   if (!force && projSheetCache && projSheetCache.url === cfg.url && Date.now() - projSheetCache.at < 60 * 1000) return { ok: true, resp: projSheetCache.resp };
-  const resp = await projSheetLib.fetchSheet(cfg.url, cfg.token);
-  projSheetCache = { url: cfg.url, at: Date.now(), resp };
-  return { ok: true, resp };
+  try {
+    const resp = await googleFetchJson(projSheetLib.requestUrl(cfg.url, cfg.token));
+    projSheetCache = { url: cfg.url, at: Date.now(), resp };
+    return { ok: true, resp };
+  } catch (err) {
+    if (err && err.needLogin) return { ok: false, needLogin: true, error: err.message };
+    throw err;
+  }
+}
+
+/*
+ * Googleのログイン状態(社内=qlea.net のアカウント)で、組織内限定のGASウェブアプリを読む。
+ * ログイン情報はアプリ専用の保存領域(persist:google)に残り、PCのブラウザとは別。パスワードは本人が画面で入力する。
+ */
+const GOOGLE_PARTITION = 'persist:google';
+/** 組み込みブラウザだとGoogleのログインが拒否されることがあるため、通常のChromeと同じ形のUser-Agentにする */
+function googleUA() {
+  const os = process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'Windows NT 10.0; Win64; x64';
+  return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+}
+function googleWindow(show) {
+  const w = new BrowserWindow({
+    show, width: 480, height: 680, title: 'Googleにログイン(案件番号の参照)',
+    webPreferences: { partition: GOOGLE_PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false }
+  });
+  w.webContents.setUserAgent(googleUA());
+  w.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  return w;
+}
+/** ページを読み込むたびに本文を確かめ、JSONが返ったら(またはログイン画面なら)結果を返す */
+function googleWatch(w, url, { timeoutMs, untilJson }) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, v) => { if (done) return; done = true; clearTimeout(timer); fn(v); };
+    const timer = timeoutMs ? setTimeout(() => finish(reject, new Error('案件一覧の取得がタイムアウトしました')), timeoutMs) : null;
+    const check = async () => {
+      if (done || w.isDestroyed()) return;
+      let text = '';
+      try { text = await w.webContents.executeJavaScript('document.body ? document.body.innerText : ""'); } catch (_) {}
+      const pageUrl = w.isDestroyed() ? '' : w.webContents.getURL();
+      try { finish(resolve, projSheetLib.parseResponse(text, pageUrl)); }
+      catch (err) { if (!untilJson || !err.needLogin && /^https:\/\/script\./.test(pageUrl)) finish(reject, err); }
+    };
+    w.webContents.on('did-finish-load', check);
+    w.on('closed', () => finish(reject, Object.assign(new Error('ログインの画面が閉じられました'), { canceled: true })));
+    w.loadURL(url).catch(() => {});
+  });
+}
+async function googleFetchJson(url) {
+  if (!url) throw new Error('案件番号の参照URLが未設定です(設定 → 案件番号の参照)');
+  const w = googleWindow(false);
+  try { return await googleWatch(w, url, { timeoutMs: 30000, untilJson: false }); }
+  finally { if (!w.isDestroyed()) w.destroy(); }
+}
+/** ログイン画面を開き、ログインが終わって案件一覧が読めたら閉じる */
+let googleLoginWin = null;
+async function googleLogin() {
+  const cfg = projSheetConfig();
+  const url = projSheetLib.requestUrl(cfg.url, cfg.token);
+  if (!url) return { ok: false, error: '先に案件番号の参照URLを設定してください' };
+  if (googleLoginWin && !googleLoginWin.isDestroyed()) { googleLoginWin.focus(); return { ok: false, error: 'ログインの画面を開いています' }; }
+  const w = googleLoginWin = googleWindow(true);
+  try {
+    const resp = await googleWatch(w, url, { timeoutMs: 0, untilJson: true });
+    projSheetCache = { url: cfg.url, at: Date.now(), resp };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, canceled: !!err.canceled, error: String(err.message || err).slice(0, 200) };
+  } finally { if (!w.isDestroyed()) w.destroy(); googleLoginWin = null; }
 }
 
 /** 指定月(YYYY-MM)の「自分の」履歴・工数を個人タブへ書き出し(チーム集計タブはGASが再構成) */
@@ -2556,6 +2622,7 @@ function registerIpc() {
       return { ok: true, tabs: projSheetLib.summarize(r.resp, store.data.projects.map(p => p.code)), at: r.resp.at || '' };
     } catch (err) { return { ok: false, error: String(err.message || err).slice(0, 200) }; }
   });
+  ipcMain.handle('projsheet:login', async () => googleLogin());
   ipcMain.handle('projsheet:check', async (e, { code, name }) => {
     try {
       const r = await loadProjSheet(true);

@@ -37,4 +37,12 @@ assert.strictEqual(PS.normName('ザ・パークハウス 大手門'), PS.normNam
 new Function(PS.gasScript('abc'));
 assert.ok(PS.gasScript('abc').includes('"abc"'));
 
+// 応答の解釈(ログイン状態で読む)
+assert.strictEqual(PS.requestUrl('https://script.google.com/a/macros/qlea.net/s/AKfy/exec', 'a b'), 'https://script.google.com/a/macros/qlea.net/s/AKfy/exec?token=a%20b');
+assert.strictEqual(PS.requestUrl('https://example.com/x', ''), null);
+assert.deepStrictEqual(PS.parseResponse('{"ok":true,"tabs":[]}', 'https://script.googleusercontent.com/macros/echo?x').tabs, []);
+assert.throws(() => PS.parseResponse('ログイン', 'https://accounts.google.com/v3/signin/identifier?x'), e => e.needLogin);
+assert.throws(() => PS.parseResponse('{"ok":false,"error":"合言葉が一致しません"}', 'https://script.googleusercontent.com/x'), /合言葉/);
+assert.throws(() => PS.parseResponse('<html>?</html>', 'https://script.google.com/x'), e => !e.needLogin);
+
 console.log('✓ projectSheet tests passed');

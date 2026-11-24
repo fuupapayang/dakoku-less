@@ -112,15 +112,37 @@ function findDuplicates(code, name, resp, appProjects) {
   return { codeInSheet, sameAsSheet, nameInSheet: nameInSheet.filter(x => x.code !== c), nameInApp };
 }
 
-async function fetchSheet(url, token) {
+/** 参照URL(+合言葉)。/exec 形式でなければ null */
+function requestUrl(url, token) {
   const u = String(url || '').trim();
-  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(u)) throw new Error('案件番号の参照URLが未設定です(設定 → スプレッドシート連携)');
-  const res = await fetch(`${u}?token=${encodeURIComponent(token || '')}`, { redirect: 'follow' });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`案件一覧を取得できませんでした: HTTP ${res.status}`);
-  let json; try { json = JSON.parse(text); } catch (_) { throw new Error('案件一覧を取得できませんでした(スクリプトのデプロイ設定「アクセスできるユーザー: 全員」を確認してください)'); }
-  if (!json.ok) throw new Error(`案件一覧の取得エラー: ${json.error || '不明'}`);
-  return json;
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(u)) return null;
+  return `${u}?token=${encodeURIComponent(token || '')}`;
 }
 
-module.exports = { PS_VERSION, TABS, gasScript, nextFromRows, summarize, normName, findDuplicates, fetchSheet };
+/**
+ * ページの本文(GASの応答)を解釈。ログイン画面なら {needLogin:true} の Error を投げる。
+ * 「qlea.net 内の全員」で公開したスクリプトは、Googleにログインした状態でないと読めない。
+ */
+function parseResponse(text, pageUrl) {
+  const t = String(text || '').trim();
+  if (t.startsWith('{')) {
+    let json; try { json = JSON.parse(t); } catch (_) { json = null; }
+    if (json) {
+      if (!json.ok) throw new Error(`案件一覧の取得エラー: ${json.error || '不明'}`);
+      return json;
+    }
+  }
+  if (/accounts\.google\.com/.test(String(pageUrl || ''))) {
+    const e = new Error('Googleにログインしていません。「Googleにログイン」から、WEB案件進行一覧を見られるアカウント(qlea.net)でログインしてください');
+    e.needLogin = true;
+    throw e;
+  }
+  if (/アクセス|権限|access|permission/i.test(t.slice(0, 400))) {
+    const e = new Error('このGoogleアカウントでは参照できません。WEB案件進行一覧を見られるアカウント(qlea.net)でログインし直してください');
+    e.needLogin = true;
+    throw e;
+  }
+  throw new Error('案件一覧を取得できませんでした(参照URL・スクリプトのデプロイを確認してください)');
+}
+
+module.exports = { PS_VERSION, TABS, gasScript, nextFromRows, summarize, normName, findDuplicates, requestUrl, parseResponse };
